@@ -1,26 +1,26 @@
-<h1 align="center">Pocket Flow Project Template: Agentic Coding</h1>
+# Autonomous AI Dev Team
 
-<p align="center">
-  <a href="https://github.com/The-Pocket/PocketFlow" target="_blank">
-    <img 
-      src="./assets/banner.png" width="800"
-    />
-  </a>
-</p>
+An autonomous software development team composed of five AI agents working in a unified Rust/Tokio flow.
 
-This is a project template for Agentic Coding with [Pocket Flow](https://github.com/The-Pocket/PocketFlow), a 100-line LLM framework, and your editor of choice.
+## 🤖 The Team
+- **NEXUS** (Orchestrator): Scrum Master & Tech Lead. Assigns tickets and approves dangerous commands.
+- **FORGE** (Builder): Pragmatic Senior Engineer. Writes code, tests, and pushes PRs via GitHub MCP.
+- **SENTINEL** (Reviewer): Paranoid security auditor. Reviews PRs and ensures all logic is tested.
+- **VESSEL** (DevOps): Methodical deployment expert. Manages CI/CD and rollbacks.
+- **LORE** (Writer): Chronicler & Documenter. Writes ADRs and maintains the project history.
 
-- We have included rules files for various AI coding assistants to help you build LLM projects:
-  - [.cursorrules](.cursorrules) for Cursor AI
-  - [.clinerules](.clinerules) for Cline
-  - [.windsurfrules](.windsurfrules) for Windsurf
-  - [.goosehints](.goosehints) for Goose
-  - Configuration in [.github](.github) for GitHub Copilot
-  - [CLAUDE.md](CLAUDE.md) for Claude Code
-  - [GEMINI.md](GEMINI.md) for Gemini
-  
-- Want to learn how to build LLM projects with Agentic Coding?
+## 🏗️ Architecture
+Built on **PocketFlow (Rust)**, the team operates as a Graph + Shared Store state machine:
+1. **Flow**: Defined in `main.rs`, handles all state transitions.
+2. **SharedStore**: Redis-backed concurrent context for agent communication.
+3. **Claude Code**: The primary execution engine for all agents, routed via a **LiteLLM** proxy.
 
-  - Check out the [Agentic Coding Guidance](https://the-pocket.github.io/PocketFlow/guide.html)
-    
-  - Check out the [YouTube Tutorial](https://www.youtube.com/@ZacharyLLM?sub_confirmation=1)
+## ⚙️ Configuration
+The team's "constitution" is located in the `.agent/` directory:
+- `registry.json`: Live registry of active agents and instances.
+- `agents/`: Personality and capability definitions for each agent.
+- `standards/`: Coding, Security, and Review rules.
+- `templates/`: Structured Markdown templates for tasks and status reports.
+
+## 🚀 Getting Started
+Check the `FINAL_DESIGN.md` in the development brain for the full technical specification.

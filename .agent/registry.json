@@ -1,0 +1,34 @@
+{
+  "team": [
+    {
+      "id": "nexus",
+      "cli": "claude",
+      "active": true,
+      "instances": 1
+    },
+    {
+      "id": "forge",
+      "cli": "claude",
+      "active": true,
+      "instances": 2
+    },
+    {
+      "id": "sentinel",
+      "cli": "claude",
+      "active": true,
+      "instances": 1
+    },
+    {
+      "id": "vessel",
+      "cli": "claude",
+      "active": true,
+      "instances": 1
+    },
+    {
+      "id": "lore",
+      "cli": "claude",
+      "active": true,
+      "instances": 1
+    }
+  ]
+}
