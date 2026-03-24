@@ -26,10 +26,11 @@ pub const DOCKER_MCP_CMD: &[&str] = &[
 ];
 
 /// Command to spawn the hosted GitHub MCP server via a stdio bridge (npx).
-/// Connects to the official cloud endpoint: https://api.githubcopilot.com/mcp
+/// Connects to the official cloud endpoint: https://api.githubcopilot.com/mcp/
+/// NOTE: The BEARER_TOKEN and URI env vars are injected via Rust's Command::env()
+/// for reliability — see connect_hosted() below.
 pub const HOSTED_MCP_CMD: &[&str] = &[
-    "sh", "-c",
-    "URI=https://api.githubcopilot.com/mcp/ BEARER_TOKEN=\"Bearer $GITHUB_PERSONAL_ACCESS_TOKEN\" npx -y @pyroprompts/mcp-stdio-to-streamable-http-adapter",
+    "npx", "-y", "@pyroprompts/mcp-stdio-to-streamable-http-adapter",
 ];
 
 pub struct McpSession {
@@ -77,8 +78,34 @@ impl McpSession {
         let mcp_type = std::env::var("GITHUB_MCP_TYPE").unwrap_or_else(|_| "hosted".to_string());
         match mcp_type.as_str() {
             "docker" => Self::connect(DOCKER_MCP_CMD).await,
-            "hosted" | _ => Self::connect(HOSTED_MCP_CMD).await,
+            "hosted" | _ => Self::connect_hosted().await,
         }
+    }
+
+    /// Spawn the hosted MCP bridge (npx), injecting the required env vars in
+    /// Rust so that the Bearer prefix is always present and correctly formed.
+    async fn connect_hosted() -> Result<Self> {
+        let pat = std::env::var("GITHUB_PERSONAL_ACCESS_TOKEN")
+            .context("GITHUB_PERSONAL_ACCESS_TOKEN must be set for hosted MCP")?;
+        let bearer = format!("Bearer {}", pat);
+
+        info!("Spawning hosted GitHub MCP server via npx bridge");
+        let mut child = Command::new(HOSTED_MCP_CMD[0])
+            .args(&HOSTED_MCP_CMD[1..])
+            .env("URI", "https://api.githubcopilot.com/mcp/")
+            .env("BEARER_TOKEN", &bearer)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
+            .spawn()
+            .context("Failed to spawn hosted MCP npx bridge")?;
+
+        let stdin  = child.stdin.take().context("Failed to open MCP stdin")?;
+        let stdout = BufReader::new(child.stdout.take().context("Failed to open MCP stdout")?);
+
+        let mut session = Self { _child: child, stdin, stdout, next_id: 1 };
+        session.initialize().await?;
+        Ok(session)
     }
 
     // ── Private: JSON-RPC helpers ─────────────────────────────────────────
