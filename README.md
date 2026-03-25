@@ -1,4 +1,5 @@
 # 🤖 Autonomous AI Dev Team
+<img width="2975" height="1571" alt="image" src="https://github.com/user-attachments/assets/9b0a4517-16fb-4939-b129-a43cb6a57cd6" />
 
 An autonomous software development team composed of five AI agents working in a unified Rust/Tokio flow.
 
@@ -7,7 +8,7 @@ An autonomous software development team composed of five AI agents working in a 
 1. **Clone & Setup**:
    ```bash
    git clone <repo-url>
-   cd Soft-Dev
+   cd AgentFlow
    cp .env.example .env
    # Edit .env with your keys (OPENAI_API_KEY, GITHUB_PERSONAL_ACCESS_TOKEN)
    ```
