@@ -7,7 +7,7 @@ An autonomous software development team composed of five AI agents working in a 
 1. **Clone & Setup**:
    ```bash
    git clone <repo-url>
-   cd Soft-Dev
+   cd AgentFlow
    cp .env.example .env
    # Edit .env with your keys (OPENAI_API_KEY, GITHUB_PERSONAL_ACCESS_TOKEN)
    ```
