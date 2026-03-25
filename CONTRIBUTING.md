@@ -75,10 +75,17 @@ cargo test -p agent-forge --test forge_claude_e2e
 - **PocketFlow**: The engine that executes the graph and manages state transitions.
 
 ## 📜 Development Workflow
-1. **Plan**: Propose changes in an `implementation_plan.md`.
-2. **Implement**: Keep crates focused and minimal.
-3. **Verify**: Ensure both unit tests and `demo` pass.
-4. **Log**: Forge work is logged to `forge/workers/<id>/worker.log` during execution.
+
+If you want to contribute, please follow these steps:
+
+1. **Understand the Architecture**: Read the [design.pdf](file:///home/christian/sandbox/Soft-Dev/design.pdf) and [design.md](file:///home/christian/sandbox/Soft-Dev/docs/design.md) (provided in the repository) to get a deep understanding of the PocketFlow engine and agent roles.
+2. **Verify the Environment**: Run all tests (unit and E2E) to ensure the current flow is running fine on your side:
+   ```bash
+   cargo test --workspace
+   cargo run -p agent-team --bin demo
+   ```
+3. **Get Assigned**: Create a new issue or comment on an existing one to express your interest. I will then add you to the repository as a contributor.
+4. **Implement**: Follow the standard agentic coding workflow (Plan -> Implement -> Verify -> Walkthrough).
 
 ---
 For more specific rules, see `.agent/standards/`.
