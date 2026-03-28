@@ -10,7 +10,7 @@
 //   4. Send `initialized` notification
 //   5. Ready: call list_tools / call_tool freely
 
-use anyhow::{bail, Result, Context};
+use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -20,15 +20,19 @@ use tracing::{debug, info};
 
 /// Command to spawn the local GitHub MCP server via Docker.
 pub const DOCKER_MCP_CMD: &[&str] = &[
-    "docker", "run", "-i", "--rm",
-    "-e", "GITHUB_PERSONAL_ACCESS_TOKEN",
+    "docker",
+    "run",
+    "-i",
+    "--rm",
+    "-e",
+    "GITHUB_PERSONAL_ACCESS_TOKEN",
     "ghcr.io/github/github-mcp-server",
 ];
 
 pub struct McpSession {
-    _child:  Child,
-    stdin:   ChildStdin,
-    stdout:  BufReader<ChildStdout>,
+    _child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
     next_id: u64,
 }
 
@@ -45,10 +49,15 @@ impl McpSession {
             .spawn()
             .context("Failed to spawn GitHub MCP server")?;
 
-        let stdin  = child.stdin.take().context("Failed to open MCP stdin")?;
+        let stdin = child.stdin.take().context("Failed to open MCP stdin")?;
         let stdout = BufReader::new(child.stdout.take().context("Failed to open MCP stdout")?);
 
-        let mut session = Self { _child: child, stdin, stdout, next_id: 1 };
+        let mut session = Self {
+            _child: child,
+            stdin,
+            stdout,
+            next_id: 1,
+        };
         session.initialize().await?;
         Ok(session)
     }
@@ -94,10 +103,15 @@ impl McpSession {
             .spawn()
             .context("Failed to spawn hosted MCP npx bridge")?;
 
-        let stdin  = child.stdin.take().context("Failed to open MCP stdin")?;
+        let stdin = child.stdin.take().context("Failed to open MCP stdin")?;
         let stdout = BufReader::new(child.stdout.take().context("Failed to open MCP stdout")?);
 
-        let mut session = Self { _child: child, stdin, stdout, next_id: 1 };
+        let mut session = Self {
+            _child: child,
+            stdin,
+            stdout,
+            next_id: 1,
+        };
         session.initialize().await?;
         Ok(session)
     }
@@ -111,7 +125,7 @@ impl McpSession {
     }
 
     async fn send_request(&mut self, method: &str, params: Value) -> Result<Value> {
-        let id  = self.next_id();
+        let id = self.next_id();
         let req = json!({
             "jsonrpc": "2.0",
             "id":      id,
@@ -130,10 +144,12 @@ impl McpSession {
             let mut buf = String::new();
             self.stdout.read_line(&mut buf).await?;
             let buf = buf.trim();
-            if buf.is_empty() { continue; }
+            if buf.is_empty() {
+                continue;
+            }
 
-            let resp: Value = serde_json::from_str(buf)
-                .context("Failed to parse MCP JSON-RPC response")?;
+            let resp: Value =
+                serde_json::from_str(buf).context("Failed to parse MCP JSON-RPC response")?;
 
             // Match on id (notifications won't have id)
             if resp["id"] == id {
@@ -164,17 +180,22 @@ impl McpSession {
     // ── Initialization ────────────────────────────────────────────────────
 
     async fn initialize(&mut self) -> Result<()> {
-        self.send_request("initialize", json!({
-            "protocolVersion": "2024-11-05",
-            "capabilities":    {},
-            "clientInfo": {
-                "name":    "agent-team",
-                "version": "0.1.0"
-            }
-        })).await?;
+        self.send_request(
+            "initialize",
+            json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities":    {},
+                "clientInfo": {
+                    "name":    "agent-team",
+                    "version": "0.1.0"
+                }
+            }),
+        )
+        .await?;
 
         // ACK the server's initialized notification
-        self.send_notification("notifications/initialized", json!({})).await?;
+        self.send_notification("notifications/initialized", json!({}))
+            .await?;
         info!("GitHub MCP server initialized");
         Ok(())
     }
@@ -190,11 +211,14 @@ impl McpSession {
             .as_array()
             .context("MCP tools/list returned no 'tools' array")?;
 
-        let schemas = tools.iter().map(|t| crate::types::ToolSchema {
-            name:         t["name"].as_str().unwrap_or("").to_string(),
-            description:  t["description"].as_str().unwrap_or("").to_string(),
-            input_schema: t["inputSchema"].clone(),
-        }).collect();
+        let schemas = tools
+            .iter()
+            .map(|t| crate::types::ToolSchema {
+                name: t["name"].as_str().unwrap_or("").to_string(),
+                description: t["description"].as_str().unwrap_or("").to_string(),
+                input_schema: t["inputSchema"].clone(),
+            })
+            .collect();
 
         Ok(schemas)
     }
@@ -202,13 +226,17 @@ impl McpSession {
     /// Execute a named tool with the given arguments.
     pub async fn call_tool(&mut self, name: &str, args: Value) -> Result<crate::types::ToolResult> {
         debug!(tool = name, "Calling MCP tool");
-        let result = self.send_request("tools/call", json!({
-            "name":      name,
-            "arguments": args,
-        })).await?;
+        let result = self
+            .send_request(
+                "tools/call",
+                json!({
+                    "name":      name,
+                    "arguments": args,
+                }),
+            )
+            .await?;
 
-        Ok(serde_json::from_value(result)
-            .context("Failed to parse MCP tool result")?)
+        Ok(serde_json::from_value(result).context("Failed to parse MCP tool result")?)
     }
 }
 
@@ -221,7 +249,17 @@ mod tests {
     async fn test_mcp_list_tools() {
         let mut session = super::McpSession::connect_default().await.unwrap();
         let tools = session.list_tools().await.unwrap();
-        assert!(!tools.is_empty(), "Expected at least one tool from GitHub MCP server");
-        println!("Tools available: {}", tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", "));
+        assert!(
+            !tools.is_empty(),
+            "Expected at least one tool from GitHub MCP server"
+        );
+        println!(
+            "Tools available: {}",
+            tools
+                .iter()
+                .map(|t| t.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
     }
 }

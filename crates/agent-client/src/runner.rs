@@ -11,16 +11,16 @@ use tracing::{debug, info, warn};
 
 use crate::{
     anthropic::AnthropicClient,
-    openai::OpenAiClient,
     mcp::McpSession,
-    types::{AgentDecision, AgentPersona, Message, LlmClient, LlmResponse},
+    openai::OpenAiClient,
+    types::{AgentDecision, AgentPersona, LlmClient, LlmResponse, Message},
 };
 
 // ── AgentRunner ───────────────────────────────────────────────────────────
 
 pub struct AgentRunner {
     client: Box<dyn LlmClient>,
-    mcp:    McpSession,
+    mcp: McpSession,
 }
 
 impl AgentRunner {
@@ -31,17 +31,16 @@ impl AgentRunner {
     /// Create a runner using environment variables.
     /// Detects provider via LLM_PROVIDER (defaults to anthropic).
     pub async fn from_env() -> Result<Self> {
-        let provider = std::env::var("LLM_PROVIDER")
-            .unwrap_or_else(|_| "anthropic".to_string());
-        
+        let provider = std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "anthropic".to_string());
+
         let client: Box<dyn LlmClient> = match provider.as_str() {
-            "openai"    => Box::new(OpenAiClient::from_env()?),
+            "openai" => Box::new(OpenAiClient::from_env()?),
             "anthropic" => Box::new(AnthropicClient::from_env()?),
             other => bail!("Unknown LLM_PROVIDER: {}", other),
         };
-        
+
         info!(provider = %provider, model = %client.model(), "AgentRunner initialized from env");
-        
+
         let mcp = McpSession::connect_default().await?;
         Ok(Self::new(client, mcp))
     }
@@ -57,13 +56,17 @@ impl AgentRunner {
     /// `{"action": "<action_string>", "notes": "<free_text>"}`
     pub async fn run(
         &mut self,
-        persona:   &AgentPersona,
-        context:   Value,
+        persona: &AgentPersona,
+        context: Value,
         max_turns: usize,
     ) -> Result<AgentDecision> {
         // 1. Fetch current tool schemas from the MCP server
         let tools = self.mcp.list_tools().await?;
-        info!(agent = persona.id, tools = tools.len(), "Agent runner starting");
+        info!(
+            agent = persona.id,
+            tools = tools.len(),
+            "Agent runner starting"
+        );
 
         // 2. Seed the conversation
         let mut messages = vec![
@@ -88,11 +91,16 @@ impl AgentRunner {
 
                     // Execute the tool via MCP
                     let result = match self.mcp.call_tool(&name, args.clone()).await {
-                        Ok(r)  => {
+                        Ok(r) => {
                             let text = r.as_text();
-                            info!(agent = persona.id, tool = name, result = text, "Tool execution successful");
+                            info!(
+                                agent = persona.id,
+                                tool = name,
+                                result = text,
+                                "Tool execution successful"
+                            );
                             text
-                        },
+                        }
                         Err(e) => {
                             warn!(agent = persona.id, tool = name, err = %e, "Tool call failed");
                             format!("ERROR: {}", e)
@@ -110,7 +118,11 @@ impl AgentRunner {
 
                     // Extract the JSON decision from the last line of the response
                     let decision = extract_decision(&text)?;
-                    info!(action = decision.action, notes = decision.notes, "Parsed decision");
+                    info!(
+                        action = decision.action,
+                        notes = decision.notes,
+                        "Parsed decision"
+                    );
                     return Ok(decision);
                 }
             }
@@ -118,7 +130,8 @@ impl AgentRunner {
 
         Err(anyhow!(
             "Agent '{}' exceeded max_turns ({}) without returning a decision",
-            persona.id, max_turns
+            persona.id,
+            max_turns
         ))
     }
 }
@@ -148,7 +161,7 @@ fn extract_decision(text: &str) -> Result<AgentDecision> {
     // This handles cases where there's a conversational preamble.
     if let Some(last_brace) = text.rfind('{') {
         let potential_json = &text[last_brace..];
-        // We might need to find the matching '}' if there's trailing junk, 
+        // We might need to find the matching '}' if there's trailing junk,
         // but often LLMs just end with the JSON object.
         if let Ok(d) = serde_json::from_str::<AgentDecision>(potential_json.trim()) {
             return Ok(d);
@@ -180,7 +193,7 @@ mod tests {
         let text = r#"{"action": "work_assigned", "notes": "Assigned T-001 to forge-1"}"#;
         let d = extract_decision(text).unwrap();
         assert_eq!(d.action, "work_assigned");
-        assert_eq!(d.notes,  "Assigned T-001 to forge-1");
+        assert_eq!(d.notes, "Assigned T-001 to forge-1");
     }
 
     #[test]

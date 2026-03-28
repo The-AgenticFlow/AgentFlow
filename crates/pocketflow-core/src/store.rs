@@ -6,10 +6,7 @@
 use anyhow::Result;
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
-use std::{
-    collections::HashMap,
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
 use tracing::debug;
 
@@ -19,10 +16,10 @@ const RING_BUFFER_SIZE: usize = 1000;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StoreEvent {
-    pub agent:      String,
+    pub agent: String,
     pub event_type: String,
-    pub payload:    Value,
-    pub ts:         u64, // unix millis
+    pub payload: Value,
+    pub ts: u64, // unix millis
 }
 
 // ── Backend trait (sealed inside this module) ─────────────────────────────
@@ -42,7 +39,9 @@ struct InMemoryBackend {
 
 impl InMemoryBackend {
     fn new() -> Self {
-        Self { map: RwLock::new(HashMap::new()) }
+        Self {
+            map: RwLock::new(HashMap::new()),
+        }
     }
 }
 
@@ -86,9 +85,8 @@ impl StoreBackend for RedisBackend {
     async fn set(&self, key: &str, value: Value) {
         use fred::prelude::*;
         if let Ok(s) = serde_json::to_string(&value) {
-            let _: core::result::Result<(), _> = self.client
-                .set::<(),_,_>(key, s, None, None, false)
-                .await;
+            let _: core::result::Result<(), _> =
+                self.client.set::<(), _, _>(key, s, None, None, false).await;
         }
     }
     async fn del(&self, key: &str) {
@@ -101,15 +99,15 @@ impl StoreBackend for RedisBackend {
 
 #[derive(Clone)]
 pub struct SharedStore {
-    backend:      Arc<dyn StoreBackend>,
-    ring_buffer:  Arc<RwLock<Vec<StoreEvent>>>,
+    backend: Arc<dyn StoreBackend>,
+    ring_buffer: Arc<RwLock<Vec<StoreEvent>>>,
 }
 
 impl SharedStore {
     /// In-memory backend — use for dev and tests.
     pub fn new_in_memory() -> Self {
         Self {
-            backend:     Arc::new(InMemoryBackend::new()),
+            backend: Arc::new(InMemoryBackend::new()),
             ring_buffer: Arc::new(RwLock::new(Vec::with_capacity(RING_BUFFER_SIZE))),
         }
     }
@@ -117,7 +115,7 @@ impl SharedStore {
     /// Redis backend — use for Docker Compose and production.
     pub async fn new_redis(url: &str) -> Result<Self> {
         Ok(Self {
-            backend:     Arc::new(RedisBackend::new(url).await?),
+            backend: Arc::new(RedisBackend::new(url).await?),
             ring_buffer: Arc::new(RwLock::new(Vec::with_capacity(RING_BUFFER_SIZE))),
         })
     }
@@ -163,7 +161,7 @@ impl SharedStore {
             .as_millis() as u64;
 
         let event = StoreEvent {
-            agent:      agent.to_string(),
+            agent: agent.to_string(),
             event_type: event_type.to_string(),
             payload,
             ts,

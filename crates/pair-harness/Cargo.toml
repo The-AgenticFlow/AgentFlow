@@ -1,0 +1,21 @@
+[package]
+name = "pair-harness"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.40", features = ["full"] }
+notify = { version = "6.1", features = ["serde"] }
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+git2 = "0.19"
+anyhow = "1.0"
+thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+async-trait = "0.1"
+dotenvy = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

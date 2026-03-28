@@ -1,0 +1,19 @@
+[package]
+name = "agent-sentinel"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+pocketflow-core = { path = "../pocketflow-core" }
+config = { path = "../config" }
+agent-client = { path = "../agent-client" }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

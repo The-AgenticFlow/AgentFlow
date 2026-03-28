@@ -1,16 +1,19 @@
 # Contributing to Autonomous AI Dev Team
 
-This guide explains how to set up your environment, run the project in different modes, and contribute effectively.
+This guide explains how to set up your environment, test the FORGE-SENTINEL pair harness, and contribute effectively to the project.
 
 ## 🛠️ Prerequisites
 
-1. **Rust**: [Install Rust](https://rustup.rs/) (latest stable).
-2. **Python 3**: Required for running mock servers.
-3. **Claude Code CLI** (Optional but recommended for Forge):
+1. **Rust**: [Install Rust](https://rustup.rs/) (latest stable - 1.75+).
+2. **Git**: Version 2.25+ (for worktree isolation support).
+3. **Claude Code CLI** (Required for FORGE agent):
    ```bash
    npm install -g @anthropic-ai/claude-code
    claude auth login
    ```
+4. **GitHub Personal Access Token**: Required for MCP integration.
+   - Create at: https://github.com/settings/tokens
+   - Scopes needed: `repo`, `workflow`
 
 ## ⚙️ Environment Setup
 
@@ -20,23 +23,44 @@ This guide explains how to set up your environment, run the project in different
    ```
 
 2. **Configure Variables**:
-   - `OPENAI_API_KEY`: Required for Nexus if using OpenAI.
-   - `LLM_PROVIDER`: Set to `openai` or `anthropic`.
-   - `GITHUB_PERSONAL_ACCESS_TOKEN`: Required for real-world PR creation.
-   - `GITHUB_REPOSITORY`: The target repository (e.g., `owner/repo`).
+   - `AGENT_TEST_WORKDIR`: Optional checkout/workdir for real/E2E tests. Point it at the clone you want to inspect live while agents run.
+   - `GITHUB_TOKEN` or `GITHUB_PERSONAL_ACCESS_TOKEN`: Required for pair-harness E2E tests
+   - `REDIS_URL`: Redis connection string for pair-harness locking (defaults to `redis://localhost:6379`)
+   - `REPO_PATH`: Pair-harness-specific alias for the git repository path
+   - `OPENAI_API_KEY`: Optional (for legacy Nexus orchestration)
+   - `LLM_PROVIDER`: Set to `openai` or `anthropic`
+   - `GITHUB_REPOSITORY`: Target repo (e.g., `owner/repo`)
 
 ## 🚀 Running the Project
 
-### Option A: Local Mock Demo (Safe, No API Keys Needed)
-This uses local mock servers for the LLM and MCP, and a mock Claude script for Forge.
+### **RECOMMENDED: Pair Harness E2E Test** ✨
+The pair-harness is the core execution engine managing FORGE-SENTINEL pairs. Test it first:
+
+```bash
+# Full lifecycle test (worktree isolation, event-driven execution, autonomous recovery)
+cargo test -p pair-harness --test pair_real_e2e test_pair_harness_real_e2e -- --ignored
+
+# Crash recovery simulation
+cargo test -p pair-harness --test pair_real_e2e test_crash_recovery_simulation -- --ignored
+```
+
+**What the test validates:**
+- Git worktree isolation on dedicated branches (`forge-N/T-{id}`)
+- Event-driven file monitoring (zero polling)
+- Autonomous FORGE crash recovery with auto-respawn
+- Plugin ecosystem installation (manifest, skills, commands, hooks)
+- In-memory file locking (no Redis required)
+- SENTINEL evaluation and STATUS.json emission
+
+If you want to watch a live run, set `AGENT_TEST_WORKDIR` to a dedicated checkout first. The tests print the exact worktree and artifact paths they are using.
+
+### Legacy: Mock Demo (Safe, No API Keys Needed)
+Uses local mock servers for the LLM and MCP.
 
 1. **Start Mock Infrastructure**:
    ```bash
    # Terminal 1: Mock LLM (OpenAI-compatible)
    python3 scripts/mock_llm.py
-   
-   # Terminal 2: Mock GitHub MCP
-   # (The demo binary starts this automatically via GITHUB_MCP_CMD)
    ```
 
 2. **Run Demo**:
@@ -44,48 +68,156 @@ This uses local mock servers for the LLM and MCP, and a mock Claude script for F
    cargo run -p agent-team --bin demo
    ```
 
-### Option B: Real-World Orchestration
-This connects to live GitHub and live LLM providers.
+### Legacy: Real-World Orchestration
+Connects to live GitHub and LLM providers.
 
-1. **Run Real Test**:
-   ```bash
-   cargo run -p agent-team --bin real_test
-   ```
+```bash
+cargo run -p agent-team --bin real_test
+```
 
 ## 🧪 Testing
 
-### Unit Tests
+### Pair Harness (Core Module)
 ```bash
-cargo test --workspace
+# Unit tests
+cargo test -p pair-harness
+
+# E2E tests (load .env automatically)
+cargo test -p pair-harness --test pair_real_e2e -- --ignored
 ```
 
-### End-to-End Tests
-We have specific E2E tests for core logic:
+### Legacy Agent Tests
 ```bash
-# Test Nexus decision making
-cargo test -p agent-nexus
+# All workspace tests
+cargo test --workspace
 
-# Test Forge suspension logic (mocked)
+# Specific agent tests
+cargo test -p agent-nexus
 cargo test -p agent-forge --test forge_claude_e2e
 ```
 
 ## 📂 Architecture Overview
-- **SharedStore**: A key-value store where agents exchange state (e.g., `worker_slots`, `tickets`).
-- **Graph Nodes**: Each agent is a `BatchNode` that reads from the store and writes back "actions" (e.g., `work_assigned`).
-- **PocketFlow**: The engine that executes the graph and manages state transitions.
+
+### Pair Harness (Core Engine)
+The FORGE-SENTINEL execution engine manages isolated agent pairs:
+
+1. **Git Worktree Isolation**: Each pair operates in `/worktrees/pair-N` on branch `forge-N/T-{id}`
+2. **Event-Driven Monitoring**: Uses inotify/FSEvents to watch `WORKLOG.md` and `STATUS.json` (zero polling)
+3. **Autonomous Crash Recovery**: Auto-synthesizes HANDOFF.md from WORKLOG.md, increments reset counter, respawns FORGE
+4. **Plugin Ecosystem**: Installs complete Claude Code customization:
+   - `plugin.json` - Manifest with MCP servers, skills, commands, hooks
+   - `skills/*.md` - Agent behavioral guidelines (coding discipline, review protocol)
+   - `commands/*.md` - Slash commands (`/plan`, `/handoff`, `/segment-done`, `/status`)
+   - `hooks/*.sh` - Lifecycle handlers (session start, pre-tool guard, artifact validation)
+5. **In-Memory Locking**: Thread-safe file coordination using `Arc<Mutex<HashMap>>` (no Redis required)
+
+**Key Design Constraints (Non-Negotiable):**
+- SENTINEL is ephemeral (spawned on-demand, exits after evaluation)
+- No polling loops (event-driven via `notify` crate)
+- Dynamic locking (file ownership checked before every write)
+- MCP abstraction (no raw API clients in agents)
+
+### Legacy Orchestration (PocketFlow)
+- **SharedStore**: Key-value state exchange between agents
+- **Graph Nodes**: Each agent is a `BatchNode` in the execution graph
+- **PocketFlow**: Flow engine managing state transitions
 
 ## 📜 Development Workflow
 
-If you want to contribute, please follow these steps:
+### For New Contributors
 
-1. **Understand the Architecture**: Read the [design.pdf](file:///home/christian/sandbox/Soft-Dev/docs/design.pdf) (provided in the repository) to get a deep understanding of the PocketFlow engine and agent roles.
-2. **Verify the Environment**: Run all tests (unit and E2E) to ensure the current flow is running fine on your side:
+1. **Read the Architecture**:
+   - **CRITICAL**: [`docs/forge-sentinel-arch.md`](docs/forge-sentinel-arch.md) - Pair harness specification
+   - Optional: [`docs/validation-contract.md`](docs/validation-contract.md) - Acceptance criteria
+
+2. **Verify Your Environment**:
    ```bash
-   cargo test --workspace
-   cargo run -p agent-team --bin demo
+   # Check Rust toolchain
+   rustc --version  # Should be 1.75+
+   
+   # Install Claude Code CLI
+   npm install -g @anthropic-ai/claude-code
+   claude auth login
+   
+   # Populate .env with pair-harness settings
+   # AGENT_TEST_WORKDIR=/absolute/path/to/the checkout you want to inspect live
+   # GITHUB_TOKEN or GITHUB_PERSONAL_ACCESS_TOKEN
+   # REDIS_URL=redis://localhost:6379
+   # REPO_PATH=/absolute/path/to/Soft-Dev
+   
+   # Run E2E test to validate setup
+   cargo test -p pair-harness --test pair_real_e2e test_pair_harness_real_e2e -- --ignored
    ```
-3. **Get Assigned**: Create a new issue or comment on an existing one to express your interest. I will then add you to the repository as a contributor.
-4. **Implement**: Follow the standard agentic coding workflow (Plan -> Implement -> Verify -> Walkthrough).
+
+3. **Understand the Code Structure**:
+   ```
+   crates/pair-harness/
+   ├── src/
+   │   ├── worktree.rs      # Git worktree isolation
+   │   ├── watcher.rs       # Event-driven monitoring
+   │   ├── memory_locks.rs  # In-memory file locking
+   │   ├── pair.rs          # Main orchestration + crash recovery
+   │   ├── mcp_config.rs    # Plugin installer
+   │   └── process.rs       # FORGE/SENTINEL spawning
+   ├── tests/
+   │   └── pair_real_e2e.rs # E2E validation suite
+   └── Cargo.toml
+   
+   .sprintless/plugin/
+   ├── plugin.json          # Plugin manifest
+   ├── skills/              # Agent behavioral guidelines
+   ├── commands/            # Custom slash commands
+   └── hooks/               # Lifecycle event handlers
+   ```
+
+4. **Making Changes**:
+   - Create a feature branch: `git checkout -b feature/your-feature`
+   - Follow validation criteria in `docs/validation-contract.md`
+   - Add `// Validation: C{category}-{id}` comments for rule compliance
+   - Run tests before committing:
+     ```bash
+     cargo test -p pair-harness
+     cargo clippy -p pair-harness
+     ```
+
+5. **Contribution Types**:
+   - **Core Harness**: Improvements to worktree isolation, event handling, crash recovery
+   - **Plugin System**: New skills, commands, or lifecycle hooks
+   - **Testing**: Additional E2E scenarios, integration tests
+   - **Documentation**: Architecture updates, API docs, contribution examples
+
+6. **Submit PR**:
+   - Reference the issue number
+   - Include test results (E2E test output if applicable)
+   - Explain validation criteria satisfied
+
+### Common Development Tasks
+
+**Adding a new skill:**
+```bash
+# Create skill file
+cat > .sprintless/plugin/skills/my-skill.md << 'EOF'
+# My Skill
+## When to Use
+...
+EOF
+
+# Update plugin.json to reference it
+# Run test to validate plugin installation
+cargo test -p pair-harness test_plugin_installation
+```
+
+**Testing crash recovery:**
+```bash
+cargo test -p pair-harness test_crash_recovery_simulation -- --ignored --nocapture
+```
+
+**Debugging event monitoring:**
+```bash
+# Enable trace logs
+RUST_LOG=pair_harness::watcher=trace \
+cargo test -p pair-harness test_watcher -- --nocapture
+```
 
 ---
-For more specific rules, see `.agent/standards/`.
+For detailed architecture, see [`docs/forge-sentinel-arch.md`](docs/forge-sentinel-arch.md).

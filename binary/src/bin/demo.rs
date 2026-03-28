@@ -1,13 +1,16 @@
-use anyhow::Result;
-use pocketflow_core::{Flow, SharedStore};
-use agent_nexus::NexusNode;
 use agent_forge::ForgeNode;
-use config::{WorkerSlot, KEY_WORKER_SLOTS, KEY_TICKETS, Ticket, ACTION_WORK_ASSIGNED, ACTION_NO_WORK, ACTION_PR_OPENED, ACTION_FAILED, ACTION_EMPTY};
-use std::sync::Arc;
+use agent_nexus::NexusNode;
+use anyhow::Result;
+use config::{
+    Ticket, WorkerSlot, ACTION_EMPTY, ACTION_FAILED, ACTION_NO_WORK, ACTION_PR_OPENED,
+    ACTION_WORK_ASSIGNED, KEY_TICKETS, KEY_WORKER_SLOTS,
+};
+use dotenvy;
+use pocketflow_core::{Flow, SharedStore};
 use std::collections::HashMap;
+use std::sync::Arc;
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
-use dotenvy;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -27,7 +30,7 @@ async fn main() -> Result<()> {
     std::env::set_var("ANTHROPIC_API_URL", "http://localhost:8082"); // assume mock server if running, else we need a local mock
     std::env::set_var("GITHUB_MCP_CMD", "python3 scripts/mock_mcp.py");
     std::env::set_var("GITHUB_PERSONAL_ACCESS_TOKEN", "test-token");
-    
+
     // Ensure scripts/mock_claude.py is in PATH as 'claude'
     let repo_root = std::env::current_dir()?;
     let bin_dir = repo_root.join("target/debug/test_bin");
@@ -38,7 +41,7 @@ async fn main() -> Result<()> {
 
     // 3. Initialize Store
     let store = SharedStore::new_in_memory();
-    
+
     // Inject a sample ticket if list_issues is empty (our mock returns one, but let's be safe)
     let ticket = Ticket {
         id: "T-101".to_string(),
@@ -47,30 +50,49 @@ async fn main() -> Result<()> {
         priority: 1,
         branch: None,
     };
-    store.set(KEY_TICKETS, serde_json::json!(vec![ticket])).await;
+    store
+        .set(KEY_TICKETS, serde_json::json!(vec![ticket]))
+        .await;
 
     // 4. Build Nodes
-    let nexus = Arc::new(NexusNode::new(".agent/agents/nexus.agent.md", ".agent/registry.json"));
+    let nexus = Arc::new(NexusNode::new(
+        ".agent/agents/nexus.agent.md",
+        ".agent/registry.json",
+    ));
     let forge = Arc::new(ForgeNode::new("."));
 
     // 5. Build Flow
     let flow = Flow::new("nexus")
-        .add_node("nexus", nexus, vec![
-            (ACTION_WORK_ASSIGNED, "forge"),
-            (ACTION_NO_WORK,       "nexus"),
-            ("approve_command",    "forge"),
-            ("reject_command",     "nexus"),
-        ])
-        .add_node("forge", forge, vec![(ACTION_PR_OPENED, "nexus"), (ACTION_FAILED, "nexus"), (ACTION_EMPTY, "nexus"), ("suspended", "nexus")])
+        .add_node(
+            "nexus",
+            nexus,
+            vec![
+                (ACTION_WORK_ASSIGNED, "forge"),
+                (ACTION_NO_WORK, "nexus"),
+                ("approve_command", "forge"),
+                ("reject_command", "nexus"),
+            ],
+        )
+        .add_node(
+            "forge",
+            forge,
+            vec![
+                (ACTION_PR_OPENED, "nexus"),
+                (ACTION_FAILED, "nexus"),
+                (ACTION_EMPTY, "nexus"),
+                ("suspended", "nexus"),
+            ],
+        )
         .max_steps(5);
 
     // 6. Run Flow manually to show store updates
     let mut current_node = "nexus".to_string();
     for step in 0..5 {
         info!("--- STEP {}: Node {} ---", step, current_node);
-        
+
         // Print store BEFORE
-        let slots: HashMap<String, WorkerSlot> = store.get_typed(KEY_WORKER_SLOTS).await.unwrap_or_default();
+        let slots: HashMap<String, WorkerSlot> =
+            store.get_typed(KEY_WORKER_SLOTS).await.unwrap_or_default();
         info!("Worker Slots BEFORE: {:?}", slots);
 
         // Run the node once (logic simplified from Flow::run)
@@ -88,7 +110,8 @@ async fn main() -> Result<()> {
     flow.run(&store).await?;
 
     info!("Demo completed.");
-    let final_slots: HashMap<String, WorkerSlot> = store.get_typed(KEY_WORKER_SLOTS).await.unwrap_or_default();
+    let final_slots: HashMap<String, WorkerSlot> =
+        store.get_typed(KEY_WORKER_SLOTS).await.unwrap_or_default();
     info!("Final Worker Slots: {:?}", final_slots);
 
     Ok(())

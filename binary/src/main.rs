@@ -1,19 +1,18 @@
 // binary/src/main.rs
-mod state;
 mod nodes;
+mod state;
 
 use anyhow::Result;
 use pocketflow_core::{Flow, SharedStore};
-use tracing::{info};
 use std::collections::HashMap;
 use std::sync::Arc;
+use tracing::info;
 
+use crate::nodes::{ForgeNode, NexusNode};
 use crate::state::{
-    Ticket, WorkerSlot, WorkerStatus,
-    KEY_TICKETS, KEY_WORKER_SLOTS,
-    ACTION_WORK_ASSIGNED, ACTION_PR_OPENED, ACTION_NO_WORK, ACTION_EMPTY, ACTION_FAILED
+    Ticket, WorkerSlot, WorkerStatus, ACTION_EMPTY, ACTION_FAILED, ACTION_NO_WORK,
+    ACTION_PR_OPENED, ACTION_WORK_ASSIGNED, KEY_TICKETS, KEY_WORKER_SLOTS,
 };
-use crate::nodes::{NexusNode, ForgeNode};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -46,32 +45,59 @@ async fn main() -> Result<()> {
         priority: 1,
         branch: None,
     };
-    
+
     let worker_slots = HashMap::from([
-        ("forge-1".to_string(), WorkerSlot { id: "forge-1".to_string(), status: WorkerStatus::Idle }),
-        ("forge-2".to_string(), WorkerSlot { id: "forge-2".to_string(), status: WorkerStatus::Idle }),
+        (
+            "forge-1".to_string(),
+            WorkerSlot {
+                id: "forge-1".to_string(),
+                status: WorkerStatus::Idle,
+            },
+        ),
+        (
+            "forge-2".to_string(),
+            WorkerSlot {
+                id: "forge-2".to_string(),
+                status: WorkerStatus::Idle,
+            },
+        ),
     ]);
 
-    store.set(KEY_TICKETS, serde_json::to_value(vec![test_ticket])?).await;
-    store.set(KEY_WORKER_SLOTS, serde_json::to_value(worker_slots)?).await;
+    store
+        .set(KEY_TICKETS, serde_json::to_value(vec![test_ticket])?)
+        .await;
+    store
+        .set(KEY_WORKER_SLOTS, serde_json::to_value(worker_slots)?)
+        .await;
 
     // 4. Build Flow
-    let nexus = Arc::new(NexusNode::new(".agent/agents/nexus.agent.md", ".agent/registry.json"));
+    let nexus = Arc::new(NexusNode::new(
+        ".agent/agents/nexus.agent.md",
+        ".agent/registry.json",
+    ));
     let forge = Arc::new(ForgeNode::new("."));
 
     let flow = Flow::new("nexus")
-        .add_node("nexus", nexus, vec![
-            (ACTION_WORK_ASSIGNED, "forge"),
-            (ACTION_NO_WORK,       "nexus"),
-            ("approve_command",    "forge"),
-            ("reject_command",     "nexus"),
-        ])
-        .add_node("forge", forge, vec![
-            (ACTION_PR_OPENED, "nexus"),
-            (ACTION_FAILED,    "nexus"),
-            (ACTION_EMPTY,     "nexus"),
-            ("suspended",      "nexus"),
-        ])
+        .add_node(
+            "nexus",
+            nexus,
+            vec![
+                (ACTION_WORK_ASSIGNED, "forge"),
+                (ACTION_NO_WORK, "nexus"),
+                ("approve_command", "forge"),
+                ("reject_command", "nexus"),
+            ],
+        )
+        .add_node(
+            "forge",
+            forge,
+            vec![
+                (ACTION_PR_OPENED, "nexus"),
+                (ACTION_FAILED, "nexus"),
+                (ACTION_EMPTY, "nexus"),
+                ("suspended", "nexus"),
+            ],
+        )
         .max_steps(20); // allow more steps for real logic
 
     // 5. Run Flow
@@ -79,10 +105,8 @@ async fn main() -> Result<()> {
     let _final_action = flow.run(&store).await?;
 
     // 6. Results
-    let final_slots: HashMap<String, WorkerSlot> = store
-        .get_typed(KEY_WORKER_SLOTS)
-        .await
-        .unwrap_or_default();
+    let final_slots: HashMap<String, WorkerSlot> =
+        store.get_typed(KEY_WORKER_SLOTS).await.unwrap_or_default();
 
     for slot in final_slots.values() {
         info!(worker = slot.id, status = ?slot.status, "Final worker status");

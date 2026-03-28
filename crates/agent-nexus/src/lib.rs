@@ -1,13 +1,16 @@
 // crates/agent-nexus/src/lib.rs
+use agent_client::{AgentDecision, AgentPersona, AgentRunner};
 use anyhow::Result;
 use async_trait::async_trait;
-use pocketflow_core::{Node, SharedStore, Action};
-use agent_client::{AgentRunner, AgentPersona, AgentDecision};
-use config::{Registry, WorkerSlot, WorkerStatus, state::{KEY_WORKER_SLOTS, KEY_COMMAND_GATE}};
+use config::{
+    state::{KEY_COMMAND_GATE, KEY_WORKER_SLOTS},
+    Registry, WorkerSlot, WorkerStatus,
+};
+use pocketflow_core::{Action, Node, SharedStore};
 use serde_json::{json, Value};
-use tracing::{info, warn};
-use std::path::PathBuf;
 use std::collections::HashMap;
+use std::path::PathBuf;
+use tracing::{info, warn};
 
 pub struct NexusNode {
     pub persona_path: PathBuf,
@@ -16,7 +19,7 @@ pub struct NexusNode {
 
 impl NexusNode {
     pub fn new(persona_path: impl Into<PathBuf>, registry_path: impl Into<PathBuf>) -> Self {
-        Self { 
+        Self {
             persona_path: persona_path.into(),
             registry_path: registry_path.into(),
         }
@@ -35,23 +38,24 @@ impl NexusNode {
         if !self.registry_path.exists() {
             return Ok(());
         }
-        
+
         let registry = Registry::load(&self.registry_path)?;
-        let mut slots: HashMap<String, WorkerSlot> = store
-            .get_typed(KEY_WORKER_SLOTS)
-            .await
-            .unwrap_or_default();
+        let mut slots: HashMap<String, WorkerSlot> =
+            store.get_typed(KEY_WORKER_SLOTS).await.unwrap_or_default();
 
         let mut changed = false;
-        
+
         // Add new slots from registry
         for slot_id in registry.forge_slots() {
             if !slots.contains_key(&slot_id) {
                 info!(slot = slot_id, "Adding new worker slot from registry");
-                slots.insert(slot_id.clone(), WorkerSlot {
-                    id: slot_id,
-                    status: WorkerStatus::Idle,
-                });
+                slots.insert(
+                    slot_id.clone(),
+                    WorkerSlot {
+                        id: slot_id,
+                        status: WorkerStatus::Idle,
+                    },
+                );
                 changed = true;
             }
         }
@@ -68,7 +72,9 @@ impl NexusNode {
 
 #[async_trait]
 impl Node for NexusNode {
-    fn name(&self) -> &str { "nexus" }
+    fn name(&self) -> &str {
+        "nexus"
+    }
 
     async fn prep(&self, store: &SharedStore) -> Result<Value> {
         // Reload registry first
@@ -94,32 +100,35 @@ impl Node for NexusNode {
 
     async fn exec(&self, context: Value) -> Result<Value> {
         info!("Nexus calling AgentRunner for orchestration...");
-        
+
         let mut runner = AgentRunner::from_env().await?;
         let persona = self.load_persona().await?;
-        
+
         // The runner drives the tool-calling loop (Anthropic + MCP)
         let decision: AgentDecision = runner.run(&persona, context, 10).await?;
-        
+
         Ok(json!(decision))
     }
 
     async fn post(&self, store: &SharedStore, result: Value) -> Result<Action> {
         let decision: AgentDecision = serde_json::from_value(result)?;
-        
+
         info!(action = %decision.action, notes = %decision.notes, "Nexus decision reached");
 
         if decision.action == "work_assigned" {
             if let Some(worker_id) = &decision.assign_to {
                 if let Some(ticket_id) = &decision.ticket_id {
                     info!(worker_id, ticket_id, "Nexus: Assigning ticket to worker");
-                    let mut slots: HashMap<String, WorkerSlot> = store.get_typed(KEY_WORKER_SLOTS).await.unwrap_or_default();
+                    let mut slots: HashMap<String, WorkerSlot> =
+                        store.get_typed(KEY_WORKER_SLOTS).await.unwrap_or_default();
                     if let Some(slot) = slots.get_mut(worker_id) {
-                        slot.status = WorkerStatus::Assigned { 
+                        slot.status = WorkerStatus::Assigned {
                             ticket_id: ticket_id.clone(),
                             issue_url: decision.issue_url.clone(),
                         };
-                        store.set(KEY_WORKER_SLOTS, serde_json::to_value(slots)?).await;
+                        store
+                            .set(KEY_WORKER_SLOTS, serde_json::to_value(slots)?)
+                            .await;
                         info!(worker_id, ticket_id, issue_url = ?decision.issue_url, "Nexus: Store updated with NEW worker assignment");
                     }
                 }
@@ -128,18 +137,32 @@ impl Node for NexusNode {
 
         // Handle CommandGate approval/rejection
         if decision.action == "approve_command" || decision.action == "reject_command" {
-            let mut gate: HashMap<String, Value> = store.get_typed(KEY_COMMAND_GATE).await.unwrap_or_default();
+            let mut gate: HashMap<String, Value> =
+                store.get_typed(KEY_COMMAND_GATE).await.unwrap_or_default();
             if let Some(worker_id) = gate.keys().next().cloned() {
-                info!(worker = worker_id, action = decision.action, "CommandGate processing");
+                info!(
+                    worker = worker_id,
+                    action = decision.action,
+                    "CommandGate processing"
+                );
                 gate.remove(&worker_id);
                 store.set(KEY_COMMAND_GATE, json!(gate)).await;
-                
+
                 // Update worker status to Idle or Working (to be re-processed by Forge)
-                let mut slots: HashMap<String, WorkerSlot> = store.get_typed(KEY_WORKER_SLOTS).await.unwrap_or_default();
+                let mut slots: HashMap<String, WorkerSlot> =
+                    store.get_typed(KEY_WORKER_SLOTS).await.unwrap_or_default();
                 if let Some(slot) = slots.get_mut(&worker_id) {
                     if decision.action == "approve_command" {
-                        if let WorkerStatus::Suspended { ticket_id, issue_url, .. } = &slot.status {
-                             slot.status = WorkerStatus::Assigned { ticket_id: ticket_id.clone(), issue_url: issue_url.clone() };
+                        if let WorkerStatus::Suspended {
+                            ticket_id,
+                            issue_url,
+                            ..
+                        } = &slot.status
+                        {
+                            slot.status = WorkerStatus::Assigned {
+                                ticket_id: ticket_id.clone(),
+                                issue_url: issue_url.clone(),
+                            };
                         }
                     } else {
                         slot.status = WorkerStatus::Idle;
@@ -148,7 +171,7 @@ impl Node for NexusNode {
                 store.set(KEY_WORKER_SLOTS, json!(slots)).await;
             }
         }
-        
+
         Ok(Action::new(decision.action))
     }
 }

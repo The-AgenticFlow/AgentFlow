@@ -1,0 +1,17 @@
+{
+  "name": "sprintless",
+  "version": "1.0.0",
+  "description": "Autonomous agent pair tooling for Sprintless",
+  "mcp": {
+    "server": "mcp/mcp.json"
+  },
+  "skills": {
+    "forge": ["skills/forge-coding.md", "skills/forge-planning.md"],
+    "sentinel": ["skills/sentinel-review.md", "skills/sentinel-criteria.md"]
+  },
+  "hooks": {
+    "forge": "hooks/forge/",
+    "sentinel": "hooks/sentinel/"
+  },
+  "commands": "commands/"
+}

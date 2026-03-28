@@ -255,15 +255,12 @@ Claude Code's plugin system allows a directory to define:
 ├── plugin.json                     ← plugin manifest
 │
 ├── mcp/
-│   ├── server.toml                 ← MCP server config
-│   └── src/                        ← MCP server implementation (Rust)
-│       ├── main.rs
-│       └── tools/
-│           ├── github.rs
-│           ├── test_runner.rs
-│           ├── linter.rs
-│           ├── search.rs
-│           └── shared_store.rs
+│  ── mcp.json ← Configuration connecting to existing servers:
+│   - github-mcp-server (official)
+│   - redis-mcp-server (for locks/state)
+│   - filesystem-mcp-server (for scoped writes)
+│   - shell-mcp-server (for tests/lint)
+│
 │
 ├── skills/
 │   ├── forge-coding.md
@@ -335,95 +332,31 @@ hooks, and commands are all immediately available.
 
 ## 6. MCP Tools
 
-The Sprintless MCP server runs as a sidecar process alongside each
-FORGE instance. It exposes tools that FORGE calls via MCP protocol.
-These replace any direct API calls FORGE might otherwise attempt.
+We map high-level agent needs to specific existing MCP tools. Enforcement is handled by restricting the agent's permissions (e.g., denying direct Bash execution) so it *must* use the MCP tools.
 
-### Tool definitions
+### Tool Mapping & Enforcement
 
-```toml
-# mcp/server.toml
-[server]
-name = "sprintless"
-transport = "stdio"
+| Agent Need | MCP Server | Tool Name | Enforcement Rule |
+| :--- | :--- | :--- | :--- |
+| **Create PR** | `github` | `create_pull_request` | Hook blocks `git push` CLI command. |
+| **Lock File** | `redis` | `set` (with NX) | Hook blocks `Write` tool if lock not acquired. |
+| **Write Code** | `filesystem` | `write_file` | Agent restricted to filesystem MCP for writes. |
+| **Run Tests** | `shell` | `run_command` | Hook blocks direct `npm test`. Must use tool. |
 
-[[tools]]
-name = "create_pr"
-description = """
-Opens a pull request on GitHub after the done contract is fulfilled.
-Only callable after final-review.md exists with APPROVED verdict.
-"""
-params = ["title", "body", "head_branch", "base_branch"]
+### Specific Usage Rules
 
-[[tools]]
-name = "get_issue"
-description = "Fetches a GitHub issue by number for context."
-params = ["issue_number"]
+**1. Dynamic Locking (via Redis MCP)**
+*   **Action:** Before writing to a new file, the agent calls `redis.set` with key `lock:{filepath}` and value `pair-ID`.
+*   **Condition:** Use `NX` (Only set if not exists).
+*   **Result:** If returns `1` (Success), proceed. If `null` (Exists), the file is locked.
 
-[[tools]]
-name = "run_tests"
-description = """
-Runs the full test suite via .agent/tooling/run-tests.sh.
-Returns structured output: passed, failed, skipped counts and failures.
-"""
-params = []
+**2. GitHub Operations (via GitHub MCP)**
+*   **Action:** Creating branches, pushing commits, opening PRs.
+*   **Constraint:** The agent has no `git` credentials in the CLI environment. It *must* use the `github` MCP server which holds the scoped token.
 
-[[tools]]
-name = "run_linter"
-description = """
-Runs the project linter and returns violations as structured JSON.
-Each violation includes file, line, rule, and message.
-"""
-params = ["files"]   # optional — if empty, lints all changed files
-
-[[tools]]
-name = "search_codebase"
-description = """
-Semantic search across the codebase. Returns relevant file sections.
-Use before implementing to find existing patterns and avoid duplication.
-"""
-params = ["query", "limit"]
-
-[[tools]]
-name = "get_file_owners"
-description = """
-Returns which pair currently owns each file in the ownership map.
-Use to check if a file you want to modify is locked by another pair.
-"""
-params = ["files"]
-
-[[tools]]
-name = "write_to_shared"
-description = """
-Writes a structured artifact to the pair's shared/ directory.
-Validates against the artifact schema before writing.
-"""
-params = ["artifact_type", "content"]
-# artifact_type: PLAN | WORKLOG_ENTRY | HANDOFF | STATUS
-
-[[tools]]
-name = "read_from_shared"
-description = """
-Reads an artifact from the pair's shared/ directory.
-"""
-params = ["artifact_type"]
-# artifact_type: TICKET | TASK | CONTRACT | segment_eval | final_review
-
-[[tools]]
-name = "emit_event"
-description = """
-Emits a structured event to the shared store event stream.
-Visible in the Sprintless watcher UI in real time.
-"""
-params = ["event_type", "message", "data"]
-
-[[tools]]
-name = "commit_segment"
-description = """
-Commits all changes in the worktree for the current segment.
-Commit message is auto-formatted as: [T-{id}] segment-N: {description}
-"""
-params = ["segment_name", "description"]
+**3. Testing & Linting (via Shell MCP)**
+*   **Action:** Running `.agent/tooling/run-tests.sh`.
+*   **Constraint:** The `shell` MCP server is configured with an allow-list. The agent can only run commands explicitly defined in the tooling directory, preventing arbitrary code execution.
 ```
 
 ### MCP server implementation
@@ -893,7 +826,19 @@ fi
 
 exit 0
 ```
+crates/
+pocketflow-core/ Node, Flow, SharedStore, BatchNode, Action
 
+pair-harness/ Owns the pair lifecycle
+src/
+pair.rs ForgeSentinelPair struct
+worktree.rs Git worktree create/remove
+process.rs Spawns FORGE process (SENTINEL is now spawned by Harness directly)
+watcher.rs inotify logic
+mcp_config.rs Generates mcp.json env vars for the plugin
+agent-forge/ ForgeNode implementation
+agent-sentinel/ SentinelNode implementation
+agent-nexus/ NexusNode implementation
 ---
 
 ## 9. Slash Commands
