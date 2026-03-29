@@ -1,14 +1,16 @@
 // crates/agent-forge/src/lib.rs
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use pocketflow_core::{BatchNode, SharedStore, Action};
-use config::{WorkerSlot, WorkerStatus, state::{KEY_WORKER_SLOTS, KEY_COMMAND_GATE, ACTION_PR_OPENED, ACTION_FAILED, ACTION_EMPTY}};
+use config::{
+    state::{ACTION_EMPTY, ACTION_FAILED, ACTION_PR_OPENED, KEY_COMMAND_GATE, KEY_WORKER_SLOTS},
+    WorkerSlot, WorkerStatus,
+};
+use pocketflow_core::{Action, BatchNode, SharedStore};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tracing::{info, warn};
-use tokio::io;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ForgeStatus {
@@ -26,40 +28,58 @@ pub struct ForgeNode {
 
 impl ForgeNode {
     pub fn new(workspace_root: impl Into<PathBuf>) -> Self {
-        Self { workspace_root: workspace_root.into() }
+        Self {
+            workspace_root: workspace_root.into(),
+        }
     }
 }
 
 #[async_trait]
 impl BatchNode for ForgeNode {
-    fn name(&self) -> &str { "forge" }
+    fn name(&self) -> &str {
+        "forge"
+    }
 
     async fn prep_batch(&self, store: &SharedStore) -> Result<Vec<Value>> {
-        let slots: HashMap<String, WorkerSlot> = store
-            .get_typed(KEY_WORKER_SLOTS)
-            .await
-            .unwrap_or_default();
+        let slots: HashMap<String, WorkerSlot> =
+            store.get_typed(KEY_WORKER_SLOTS).await.unwrap_or_default();
 
-        let active_workers: Vec<Value> = slots.values()
-            .filter(|s| matches!(s.status, WorkerStatus::Assigned { .. } | WorkerStatus::Working { .. }))
+        let active_workers: Vec<Value> = slots
+            .values()
+            .filter(|s| {
+                matches!(
+                    s.status,
+                    WorkerStatus::Assigned { .. } | WorkerStatus::Working { .. }
+                )
+            })
             .map(|s| json!(s))
             .collect();
-        
+
         Ok(active_workers)
     }
 
     async fn exec_one(&self, item: Value) -> Result<Value> {
         let slot: WorkerSlot = serde_json::from_value(item)?;
         let worker_id = slot.id.clone();
-        
+
         let (ticket_id, issue_url) = match &slot.status {
-            WorkerStatus::Assigned { ticket_id, issue_url } => (ticket_id.clone(), issue_url.clone()),
-            WorkerStatus::Working { ticket_id, issue_url }  => (ticket_id.clone(), issue_url.clone()),
+            WorkerStatus::Assigned {
+                ticket_id,
+                issue_url,
+            } => (ticket_id.clone(), issue_url.clone()),
+            WorkerStatus::Working {
+                ticket_id,
+                issue_url,
+            } => (ticket_id.clone(), issue_url.clone()),
             _ => return Ok(json!({"outcome": "idle", "worker_id": worker_id})),
         };
 
         // Ensure worker dir exists
-        let worker_dir = self.workspace_root.join("forge").join("workers").join(&worker_id);
+        let worker_dir = self
+            .workspace_root
+            .join("forge")
+            .join("workers")
+            .join(&worker_id);
         if !worker_dir.exists() {
             tokio::fs::create_dir_all(&worker_dir).await?;
         }
@@ -91,17 +111,20 @@ impl BatchNode for ForgeNode {
             .args(["--print", "--output-format", "json"])
             .arg(&prompt)
             .current_dir(&worker_dir)
-            .env("ANTHROPIC_API_KEY", std::env::var("ANTHROPIC_API_KEY").unwrap_or_default())
+            .env(
+                "ANTHROPIC_API_KEY",
+                std::env::var("ANTHROPIC_API_KEY").unwrap_or_default(),
+            )
             .stdout(log_file)
             .stderr(log_file_err)
             .spawn()
             .map_err(|e| anyhow!("Failed to spawn Claude Code: {}", e))?;
 
-        // MONITORING: Since we redirected stdout/stderr to a file, we can't easily 
-        // monitor for "Dangerous command" strings in real-time within this process 
+        // MONITORING: Since we redirected stdout/stderr to a file, we can't easily
+        // monitor for "Dangerous command" strings in real-time within this process
         // without tailing the file. For now, we'll let it run and check the STATUS.json
         // or the log file afterwards.
-        
+
         let timeout_dur = std::time::Duration::from_secs(1800); // 30 minutes
 
         // 2. Wait for process
@@ -147,20 +170,12 @@ impl BatchNode for ForgeNode {
         }))
     }
 
-    async fn post_batch(
-        &self,
-        store: &SharedStore,
-        results: Vec<Result<Value>>,
-    ) -> Result<Action> {
-        let mut slots: HashMap<String, WorkerSlot> = store
-            .get_typed(KEY_WORKER_SLOTS)
-            .await
-            .unwrap_or_default();
+    async fn post_batch(&self, store: &SharedStore, results: Vec<Result<Value>>) -> Result<Action> {
+        let mut slots: HashMap<String, WorkerSlot> =
+            store.get_typed(KEY_WORKER_SLOTS).await.unwrap_or_default();
 
-        let mut command_gate: HashMap<String, Value> = store
-            .get_typed(KEY_COMMAND_GATE)
-            .await
-            .unwrap_or_default();
+        let mut command_gate: HashMap<String, Value> =
+            store.get_typed(KEY_COMMAND_GATE).await.unwrap_or_default();
 
         let mut all_success = true;
 
@@ -175,22 +190,31 @@ impl BatchNode for ForgeNode {
             };
             let worker_id = res["worker_id"].as_str().unwrap_or("");
             let ticket_id = res["ticket_id"].as_str().unwrap_or("");
-            let outcome   = res["outcome"].as_str().unwrap_or("failed");
+            let outcome = res["outcome"].as_str().unwrap_or("failed");
 
             if let Some(slot) = slots.get_mut(worker_id) {
                 match outcome {
                     "pr_opened" => {
-                        info!(worker = worker_id, ticket = ticket_id, "Work completed successfully");
-                        slot.status = WorkerStatus::Done { 
-                            ticket_id: ticket_id.to_string(), 
-                            outcome: outcome.to_string() 
+                        info!(
+                            worker = worker_id,
+                            ticket = ticket_id,
+                            "Work completed successfully"
+                        );
+                        slot.status = WorkerStatus::Done {
+                            ticket_id: ticket_id.to_string(),
+                            outcome: outcome.to_string(),
                         };
                     }
                     "suspended" => {
                         let reason = res["reason"].as_str().unwrap_or("unknown");
-                        info!(worker = worker_id, ticket = ticket_id, reason, "Work suspended for approval");
-                        slot.status = WorkerStatus::Suspended { 
-                            ticket_id: ticket_id.to_string(), 
+                        info!(
+                            worker = worker_id,
+                            ticket = ticket_id,
+                            reason,
+                            "Work suspended for approval"
+                        );
+                        slot.status = WorkerStatus::Suspended {
+                            ticket_id: ticket_id.to_string(),
                             reason: reason.to_string(),
                             issue_url: res["issue_url"].as_str().map(|s| s.to_string()),
                         };
@@ -199,7 +223,12 @@ impl BatchNode for ForgeNode {
                     }
                     "idle" => {}
                     _ => {
-                        warn!(worker = worker_id, ticket = ticket_id, outcome, "Work failed");
+                        warn!(
+                            worker = worker_id,
+                            ticket = ticket_id,
+                            outcome,
+                            "Work failed"
+                        );
                         slot.status = WorkerStatus::Idle;
                         all_success = false;
                     }
@@ -210,7 +239,9 @@ impl BatchNode for ForgeNode {
         store.set(KEY_WORKER_SLOTS, json!(slots)).await;
         store.set(KEY_COMMAND_GATE, json!(command_gate)).await;
 
-        let has_suspended = slots.values().any(|s| matches!(s.status, WorkerStatus::Suspended { .. }));
+        let has_suspended = slots
+            .values()
+            .any(|s| matches!(s.status, WorkerStatus::Suspended { .. }));
 
         if has_suspended {
             Ok(Action::new("suspended"))

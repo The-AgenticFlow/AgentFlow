@@ -1,9 +1,8 @@
 use anyhow::Result;
-use pocketflow_core::{Flow, SharedStore, Action};
+use pocketflow_core::{Flow, SharedStore};
 use agent_nexus::NexusNode;
 use agent_forge::ForgeNode;
 use config::{KEY_WORKER_SLOTS, KEY_TICKETS, ACTION_WORK_ASSIGNED, ACTION_PR_OPENED, ACTION_FAILED, ACTION_NO_WORK};
-use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::info;
 
