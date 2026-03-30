@@ -14,9 +14,12 @@ async fn test_forge_dangerous_command_suspends() -> Result<()> {
     let worker_id = "forge-1";
     let ticket_id = "T-DANGER-001";
     let slots = HashMap::from([
-        (worker_id.to_string(), WorkerSlot { 
-            id: worker_id.to_string(), 
-            status: WorkerStatus::Working { ticket_id: ticket_id.to_string() } 
+        (worker_id.to_string(), WorkerSlot {
+            id: worker_id.to_string(),
+            status: WorkerStatus::Working {
+                ticket_id: ticket_id.to_string(),
+                issue_url: None,
+            }
         }),
     ]);
     store.set("worker_slots", json!(slots)).await;
@@ -48,8 +51,9 @@ async fn test_forge_dangerous_command_suspends() -> Result<()> {
     let new_path = format!("{}:{}", bin_dir.display(), old_path);
     std::env::set_var("PATH", new_path);
 
-    // 3. Run ForgeNode
-    let forge = ForgeNode::new(&repo_root);
+    // 3. Run ForgeNode with persona path
+    let persona_path = repo_root.join(".agent/agents/forge.agent.md");
+    let forge = ForgeNode::new(&repo_root, &persona_path);
     
     // Prep
     let items = forge.prep_batch(&store).await?;

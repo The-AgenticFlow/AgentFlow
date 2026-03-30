@@ -19,21 +19,37 @@ use crate::nodes::{NexusNode, ForgeNode};
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt::init();
-    // 1. Load environment and tracing
-    // The original tracing setup was more elaborate, but the instruction simplifies it.
-    // let _ = dotenvy::dotenv(); // Replaced by dotenvy::dotenv().ok();
-    // tracing_subscriber::fmt()
-    //     .with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| "info,agent_team=debug,pocketflow_core=debug".to_string()))
-    //     .init();
 
-    info!("🚀 Autonomous AI Dev Team starting (Phase 3 Integration)...");
+    info!("Autonomous AI Dev Team starting (Phase 3 Integration)...");
+
+    // 1. Check for target repository configuration
+    let github_token = std::env::var("GITHUB_PERSONAL_ACCESS_TOKEN");
+    let github_repo = std::env::var("GITHUB_REPOSITORY");
+    
+    // Determine workspace directory
+    let workspace_dir = if let (Ok(token), Ok(repo)) = (&github_token, &github_repo) {
+        // Production mode: clone/update target repository
+        info!(repo = %repo, "Target repository configured, setting up workspace...");
+        
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .expect("Could not determine home directory");
+        let workspaces_base = std::path::PathBuf::from(home).join(".agentflow").join("workspaces");
+        
+        let workspace_manager = pair_harness::WorkspaceManager::new(&workspaces_base, repo);
+        workspace_manager.ensure_workspace(token).await?
+    } else {
+        // Dev mode: use current directory for testing
+        info!("No GITHUB_REPOSITORY configured - using current directory (dev mode)");
+        std::env::current_dir()?
+    };
 
     // 2. Initialise SharedStore (Redis or In-Memory)
     let store = if let Ok(url) = std::env::var("REDIS_URL") {
         info!("Using Redis backend: {}", url);
         SharedStore::new_redis(&url).await?
     } else {
-        info!("REDIS_URL not set — using in-memory store (dev mode)");
+        info!("REDIS_URL not set - using in-memory store (dev mode)");
         SharedStore::new_in_memory()
     };
 
@@ -55,9 +71,16 @@ async fn main() -> Result<()> {
     store.set(KEY_TICKETS, serde_json::to_value(vec![test_ticket])?).await;
     store.set(KEY_WORKER_SLOTS, serde_json::to_value(worker_slots)?).await;
 
-    // 4. Build Flow
-    let nexus = Arc::new(NexusNode::new(".agent/agents/nexus.agent.md", ".agent/registry.json"));
-    let forge = Arc::new(ForgeNode::new("."));
+    // 4. Build Flow - use orchestrator's .agent directory for personas
+    let orchestrator_dir = std::env::current_dir()?;
+    let nexus = Arc::new(NexusNode::new(
+        orchestrator_dir.join(".agent/agents/nexus.agent.md"),
+        orchestrator_dir.join(".agent/registry.json")
+    ));
+    let forge = Arc::new(ForgeNode::new(
+        &workspace_dir,
+        orchestrator_dir.join(".agent/agents/forge.agent.md")
+    ));
 
     let flow = Flow::new("nexus")
         .add_node("nexus", nexus, vec![
@@ -88,6 +111,6 @@ async fn main() -> Result<()> {
         info!(worker = slot.id, status = ?slot.status, "Final worker status");
     }
 
-    info!("🏁 Phase 3 Dry Run complete.");
+    info!("Phase 3 Dry Run complete.");
     Ok(())
 }

@@ -9,6 +9,7 @@
 
 pub mod pair;
 pub mod worktree;
+pub mod workspace;
 pub mod isolation;
 pub mod process;
 pub mod watcher;
@@ -21,6 +22,7 @@ pub mod types;
 pub use pair::ForgeSentinelPair;
 pub use types::{FsEvent, Ticket, PairConfig, PairOutcome};
 pub use worktree::WorktreeManager;
+pub use workspace::WorkspaceManager;
 pub use isolation::FileLockManager;
 pub use process::{ProcessManager, SentinelMode};
 pub use watcher::SharedDirWatcher;

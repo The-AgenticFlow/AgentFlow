@@ -58,7 +58,7 @@ async fn main() -> Result<()> {
         ".agent/agents/nexus.agent.md",
         ".agent/registry.json",
     ));
-    let forge = Arc::new(ForgeNode::new("."));
+    let forge = Arc::new(ForgeNode::new(".", ".agent/agents/forge.agent.md"));
 
     // 5. Build Flow
     let flow = Flow::new("nexus")

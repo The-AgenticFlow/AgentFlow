@@ -1,0 +1,179 @@
+// crates/pair-harness/src/workspace.rs
+//! Workspace management for isolated repository operations.
+//!
+//! Handles cloning of target repositories into dedicated workspace
+//! directories, ensuring the orchestrator doesn't work on itself.
+
+use anyhow::{Context, Result, anyhow};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use tracing::{info, warn, debug};
+
+/// Manages the target repository workspace.
+///
+/// The orchestrator clones the target GitHub repository into a dedicated
+/// workspace directory, ensuring complete isolation from the orchestrator's
+/// own source code.
+pub struct WorkspaceManager {
+    /// Base directory for all workspaces (e.g., ~/.agentflow/workspaces/)
+    workspaces_base: PathBuf,
+    /// The specific workspace directory for this repository
+    workspace_dir: PathBuf,
+    /// Repository identifier (e.g., "owner/repo")
+    repo_id: String,
+}
+
+impl WorkspaceManager {
+    /// Create a new workspace manager for a given repository.
+    ///
+    /// # Arguments
+    /// * `workspaces_base` - Base directory for all workspaces
+    /// * `repo_id` - Repository identifier in "owner/repo" format
+    pub fn new(workspaces_base: impl Into<PathBuf>, repo_id: &str) -> Self {
+        let workspaces_base = workspaces_base.into();
+        // Convert "owner/repo" to "owner-repo" for directory name
+        let dir_name = repo_id.replace('/', "-");
+        let workspace_dir = workspaces_base.join(&dir_name);
+        
+        Self {
+            workspaces_base,
+            workspace_dir,
+            repo_id: repo_id.to_string(),
+        }
+    }
+
+    /// Get the workspace directory path.
+    pub fn workspace_dir(&self) -> &Path {
+        &self.workspace_dir
+    }
+
+    /// Ensure the workspace exists, cloning if necessary.
+    ///
+    /// If the workspace already exists, it will be updated with `git pull`.
+    /// If it doesn't exist, it will be cloned from GitHub.
+    ///
+    /// # Arguments
+    /// * `github_token` - GitHub personal access token for authentication
+    ///
+    /// # Returns
+    /// Path to the workspace directory.
+    pub async fn ensure_workspace(&self, github_token: &str) -> Result<PathBuf> {
+        // Create base workspaces directory
+        tokio::fs::create_dir_all(&self.workspaces_base)
+            .await
+            .context("Failed to create workspaces base directory")?;
+
+        if self.workspace_dir.exists() {
+            info!(workspace = %self.workspace_dir.display(), "Workspace exists, updating...");
+            self.update_workspace()?;
+        } else {
+            info!(repo = %self.repo_id, workspace = %self.workspace_dir.display(), "Cloning repository...");
+            self.clone_workspace(github_token).await?;
+        }
+
+        Ok(self.workspace_dir.clone())
+    }
+
+    /// Clone the repository into the workspace.
+    async fn clone_workspace(&self, github_token: &str) -> Result<()> {
+        // Build authenticated URL
+        // Format: https://x-access-token:TOKEN@github.com/owner/repo.git
+        let clone_url = format!(
+            "https://x-access-token:{}@github.com/{}.git",
+            github_token, self.repo_id
+        );
+
+        // Run git clone
+        let output = Command::new("git")
+            .args(["clone", "--depth", "1"])
+            .arg(&clone_url)
+            .arg(&self.workspace_dir)
+            .output()
+            .context("Failed to execute git clone")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(anyhow!("Failed to clone repository: {}", stderr));
+        }
+
+        info!(workspace = %self.workspace_dir.display(), "Repository cloned successfully");
+        Ok(())
+    }
+
+    /// Update an existing workspace with git pull.
+    fn update_workspace(&self) -> Result<()> {
+        // Fetch and pull latest changes
+        let output = Command::new("git")
+            .args(["fetch", "origin"])
+            .current_dir(&self.workspace_dir)
+            .output()
+            .context("Failed to execute git fetch")?;
+
+        if !output.status.success() {
+            warn!(stderr = %String::from_utf8_lossy(&output.stderr), "Git fetch failed, continuing anyway");
+        }
+
+        let output = Command::new("git")
+            .args(["pull", "--rebase", "origin", "main"])
+            .current_dir(&self.workspace_dir)
+            .output()
+            .context("Failed to execute git pull")?;
+
+        if !output.status.success() {
+            // Try with master if main fails
+            let output = Command::new("git")
+                .args(["pull", "--rebase", "origin", "master"])
+                .current_dir(&self.workspace_dir)
+                .output()
+                .context("Failed to execute git pull")?;
+
+            if !output.status.success() {
+                warn!(stderr = %String::from_utf8_lossy(&output.stderr), "Git pull failed, continuing anyway");
+            }
+        }
+
+        info!(workspace = %self.workspace_dir.display(), "Workspace updated");
+        Ok(())
+    }
+
+    /// Remove the workspace directory.
+    pub fn remove_workspace(&self) -> Result<()> {
+        if self.workspace_dir.exists() {
+            std::fs::remove_dir_all(&self.workspace_dir)
+                .context("Failed to remove workspace directory")?;
+            info!(workspace = %self.workspace_dir.display(), "Workspace removed");
+        }
+        Ok(())
+    }
+
+    /// Get the default branch name for the repository.
+    pub fn get_default_branch(&self) -> Result<String> {
+        let output = Command::new("git")
+            .args(["symbolic-ref", "--short", "HEAD"])
+            .current_dir(&self.workspace_dir)
+            .output()
+            .context("Failed to get default branch")?;
+
+        if output.status.success() {
+            let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            Ok(branch)
+        } else {
+            // Default to main if we can't determine
+            Ok("main".to_string())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_workspace_dir_naming() {
+        let temp_dir = tempdir().unwrap();
+        let manager = WorkspaceManager::new(temp_dir.path(), "owner/repo");
+        
+        assert!(manager.workspace_dir().ends_with("owner-repo"));
+    }
+}

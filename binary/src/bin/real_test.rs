@@ -2,6 +2,7 @@ use anyhow::Result;
 use pocketflow_core::{Flow, SharedStore};
 use agent_nexus::NexusNode;
 use agent_forge::ForgeNode;
+use pair_harness::WorkspaceManager;
 use config::{KEY_WORKER_SLOTS, KEY_TICKETS, ACTION_WORK_ASSIGNED, ACTION_PR_OPENED, ACTION_FAILED, ACTION_NO_WORK};
 use std::sync::Arc;
 use tracing::info;
@@ -14,21 +15,36 @@ async fn main() -> Result<()> {
     info!("Starting REAL End-to-End Orchestration (No Mocks)");
 
     // 1. Validate Environment
-    let _token = std::env::var("GITHUB_PERSONAL_ACCESS_TOKEN").expect("GITHUB_PERSONAL_ACCESS_TOKEN must be set");
-    let repo = std::env::var("GITHUB_REPOSITORY").expect("GITHUB_REPOSITORY must be set (e.g. owner/repo)");
+    let github_token = std::env::var("GITHUB_PERSONAL_ACCESS_TOKEN")
+        .expect("GITHUB_PERSONAL_ACCESS_TOKEN must be set");
+    let repo = std::env::var("GITHUB_REPOSITORY")
+        .expect("GITHUB_REPOSITORY must be set (e.g. owner/repo)");
     
     // Ensure LLM provider is set for AgentRunner
     if std::env::var("LLM_PROVIDER").is_err() {
         std::env::set_var("LLM_PROVIDER", "openai");
     }
 
-    let workspace_root = std::env::current_dir()?;
-    let persona_path = workspace_root.join(".agent").join("agents").join("nexus.agent.md");
-    let registry_path = workspace_root.join(".agent").join("registry.json");
+    // 2. Clone/Update the target repository workspace
+    // Use ~/.agentflow/workspaces as base directory for all workspaces
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .expect("Could not determine home directory");
+    let workspaces_base = std::path::PathBuf::from(home).join(".agentflow").join("workspaces");
+    
+    let workspace_manager = WorkspaceManager::new(&workspaces_base, &repo);
+    let workspace_dir = workspace_manager.ensure_workspace(&github_token).await?;
+    
+    info!(workspace = %workspace_dir.display(), "Target repository workspace ready");
 
-    // 2. Initialize Nodes
+    // 3. Initialize Nodes with the CLONED workspace (not the orchestrator's directory)
+    let orchestrator_dir = std::env::current_dir()?;
+    let persona_path = orchestrator_dir.join(".agent").join("agents").join("nexus.agent.md");
+    let registry_path = orchestrator_dir.join(".agent").join("registry.json");
+    let forge_persona_path = orchestrator_dir.join(".agent").join("agents").join("forge.agent.md");
+    
     let nexus = Arc::new(NexusNode::new(persona_path, registry_path));
-    let forge = Arc::new(ForgeNode::new(&workspace_root));
+    let forge = Arc::new(ForgeNode::new(&workspace_dir, forge_persona_path));
     
     // 3. Setup Flow with Routing
     let flow = Flow::new("nexus")

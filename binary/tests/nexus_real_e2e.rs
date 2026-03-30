@@ -52,7 +52,7 @@ async fn test_nexus_real_e2e() -> Result<()> {
 
     // 3. Initialize Nexus
     println!("Loading Nexus agent persona...");
-    let nexus = Arc::new(NexusNode::new("../.agent/agents/nexus.agent.md"));
+    let nexus = Arc::new(NexusNode::new("../.agent/agents/nexus.agent.md", "../.agent/registry.json"));
     
     // 4. Run NexusNode
     println!("Context injected. Entering Nexus orchestration loop...");

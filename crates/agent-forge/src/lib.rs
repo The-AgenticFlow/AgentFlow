@@ -5,6 +5,7 @@ use config::{
     state::{ACTION_EMPTY, ACTION_FAILED, ACTION_PR_OPENED, KEY_COMMAND_GATE, KEY_WORKER_SLOTS},
     WorkerSlot, WorkerStatus,
 };
+use pair_harness::worktree::WorktreeManager;
 use pocketflow_core::{Action, BatchNode, SharedStore};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -24,13 +25,21 @@ pub struct ForgeStatus {
 
 pub struct ForgeNode {
     pub workspace_root: PathBuf,
+    pub persona_path: PathBuf,
 }
 
 impl ForgeNode {
-    pub fn new(workspace_root: impl Into<PathBuf>) -> Self {
+    pub fn new(workspace_root: impl Into<PathBuf>, persona_path: impl Into<PathBuf>) -> Self {
         Self {
             workspace_root: workspace_root.into(),
+            persona_path: persona_path.into(),
         }
+    }
+
+    async fn load_persona(&self) -> Result<String> {
+        let content = tokio::fs::read_to_string(&self.persona_path).await
+            .map_err(|e| anyhow!("Failed to load forge persona from {:?}: {}", self.persona_path, e))?;
+        Ok(content)
     }
 }
 
@@ -74,51 +83,70 @@ impl BatchNode for ForgeNode {
             _ => return Ok(json!({"outcome": "idle", "worker_id": worker_id})),
         };
 
-        // Ensure worker dir exists
-        let worker_dir = self
-            .workspace_root
-            .join("forge")
-            .join("workers")
-            .join(&worker_id);
-        if !worker_dir.exists() {
-            tokio::fs::create_dir_all(&worker_dir).await?;
-        }
-        let status_path = worker_dir.join("STATUS.json");
+        // Create worktree manager
+        let worktree_mgr = WorktreeManager::new(&self.workspace_root);
+        
+        // Create worktree for this worker
+        let worktree_path = worktree_mgr
+            .create_worktree(&worker_id, &ticket_id)
+            .map_err(|e| anyhow!("Failed to create worktree: {}", e))?;
 
-        let log_path = worker_dir.join("worker.log");
+        info!(worker = worker_id, ticket = ticket_id, path = ?worktree_path, "Worktree created");
+
+        // Create log directory to persist logs even after worktree cleanup
+        let log_dir = self.workspace_root.join("forge").join("workers").join(&worker_id);
+        tokio::fs::create_dir_all(&log_dir).await?;
+        
+        let status_path = worktree_path.join("STATUS.json");
+        let log_path = log_dir.join("worker.log");
         let log_file = std::fs::File::create(&log_path)?;
         let log_file_err = log_file.try_clone()?;
 
         info!(worker = worker_id, ticket = ticket_id, issue_url = ?issue_url, "Spawning Claude Code...");
 
-        // 1. Prepare command
+        // Load the persona from the agent definition file (source of truth)
+        let persona_content = self.load_persona().await?;
+
+        // 1. Prepare command - build prompt from persona + task context
         let issue_context = if let Some(url) = &issue_url {
             format!("Issue URL: {}. Use your MCP tools (e.g. `get_issue` or `read_url`) to fetch the full description.", url)
         } else {
             "".to_string()
         };
 
+        let branch_name = WorktreeManager::branch_name(&worker_id, &ticket_id);
+        
+        // Combine persona with task-specific context
         let prompt = format!(
-            "You are FORGE agent {}. \
-             Implement ticket {}. \
-             {} \
-             Branch: forge/{}/{}. \
-             When done, open a PR and write STATUS.json.",
-            worker_id, ticket_id, issue_context, worker_id, ticket_id
+            "{}\n\n---\n\n# Current Task\n\nYou are FORGE agent {} (worker slot).\nImplement ticket {}.\n{}\nBranch: {}.\nWhen done, open a PR and write STATUS.json.",
+            persona_content, worker_id, ticket_id, issue_context, branch_name
         );
 
+        // Use CLI flags to grant permissions
+        // Note: When using --allowedTools with comma-separated values, Claude Code
+        // doesn't properly recognize the prompt as a positional argument.
+        // We must pass the prompt via stdin instead.
         let mut child = tokio::process::Command::new("claude")
             .args(["--print", "--output-format", "json"])
-            .arg(&prompt)
-            .current_dir(&worker_dir)
+            .args(["--permission-mode", "auto"])
+            .args(["--allowedTools", "Read,Write,Edit,Bash,WebFetch"])
+            .current_dir(&worktree_path)
             .env(
                 "ANTHROPIC_API_KEY",
                 std::env::var("ANTHROPIC_API_KEY").unwrap_or_default(),
             )
+            .stdin(std::process::Stdio::piped())
             .stdout(log_file)
             .stderr(log_file_err)
             .spawn()
             .map_err(|e| anyhow!("Failed to spawn Claude Code: {}", e))?;
+
+        // Write prompt to stdin
+        if let Some(mut stdin) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            stdin.write_all(prompt.as_bytes()).await
+                .map_err(|e| anyhow!("Failed to write prompt to stdin: {}", e))?;
+        }
 
         // MONITORING: Since we redirected stdout/stderr to a file, we can't easily
         // monitor for "Dangerous command" strings in real-time within this process
@@ -178,6 +206,7 @@ impl BatchNode for ForgeNode {
             store.get_typed(KEY_COMMAND_GATE).await.unwrap_or_default();
 
         let mut all_success = true;
+        let worktree_mgr = WorktreeManager::new(&self.workspace_root);
 
         for res_opt in &results {
             let res = match res_opt {
@@ -204,6 +233,12 @@ impl BatchNode for ForgeNode {
                             ticket_id: ticket_id.to_string(),
                             outcome: outcome.to_string(),
                         };
+                        // Cleanup worktree for completed work
+                        if let Err(e) = worktree_mgr.remove_worktree(worker_id) {
+                            warn!(worker = worker_id, error = %e, "Failed to cleanup worktree");
+                        } else {
+                            info!(worker = worker_id, "Worktree cleaned up");
+                        }
                     }
                     "suspended" => {
                         let reason = res["reason"].as_str().unwrap_or("unknown");
@@ -231,6 +266,12 @@ impl BatchNode for ForgeNode {
                         );
                         slot.status = WorkerStatus::Idle;
                         all_success = false;
+                        // Cleanup worktree for failed work
+                        if let Err(e) = worktree_mgr.remove_worktree(worker_id) {
+                            warn!(worker = worker_id, error = %e, "Failed to cleanup worktree");
+                        } else {
+                            info!(worker = worker_id, "Worktree cleaned up");
+                        }
                     }
                 }
             }
