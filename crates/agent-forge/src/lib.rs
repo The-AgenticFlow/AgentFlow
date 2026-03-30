@@ -16,11 +16,24 @@ use tracing::{info, warn};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ForgeStatus {
     pub outcome: String,
+    /// Ticket ID - can be "ticket" or "ticket_id" in STATUS.json
+    #[serde(alias = "ticket")]
     pub ticket_id: String,
+    /// Branch name
     pub branch: String,
+    /// PR URL if a PR was opened
+    #[serde(alias = "pr")]
     pub pr_url: Option<String>,
+    /// PR number if a PR was opened
     pub pr_number: Option<u32>,
+    /// Notes about the work done
     pub notes: Option<String>,
+    /// Summary of changes (optional)
+    pub summary: Option<String>,
+    /// List of changes made (optional)
+    pub changes: Option<Vec<String>>,
+    /// Issue URL (optional)
+    pub issue: Option<String>,
 }
 
 pub struct ForgeNode {
@@ -223,10 +236,11 @@ impl BatchNode for ForgeNode {
 
             if let Some(slot) = slots.get_mut(worker_id) {
                 match outcome {
-                    "pr_opened" => {
+                    "success" | "pr_opened" => {
                         info!(
                             worker = worker_id,
                             ticket = ticket_id,
+                            outcome,
                             "Work completed successfully"
                         );
                         slot.status = WorkerStatus::Done {
@@ -240,7 +254,7 @@ impl BatchNode for ForgeNode {
                             info!(worker = worker_id, "Worktree cleaned up");
                         }
                     }
-                    "suspended" => {
+                    "suspended" | "blocked" => {
                         let reason = res["reason"].as_str().unwrap_or("unknown");
                         info!(
                             worker = worker_id,
