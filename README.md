@@ -11,13 +11,25 @@ cd AgentFlow
 cp .env.example .env
 # Edit .env with your API keys
 
-# 2. Run the orchestration
+# 2. Verify setup (optional but recommended)
+./scripts/check_setup.sh
+
+# 3. Run the orchestration
 cargo run --bin real_test
 ```
 
-## Demo
+## Getting Started
 
-**See [DEMO.md](DEMO.md) for a complete step-by-step guide** including:
+### 📖 Complete Tutorial
+**NEW: [TUTORIAL.md](TUTORIAL.md)** - Detailed walkthrough with:
+- ✅ Step-by-step setup from zero
+- ✅ Expected logs and outputs at each step
+- ✅ File structure and locations explained
+- ✅ Troubleshooting common issues
+- ✅ How to inspect generated code and PRs
+
+### 🚀 Quick Demo
+**[DEMO.md](DEMO.md)** - Quick reference guide with:
 - Prerequisites and setup
 - Creating a target repository with issues
 - Running the autonomous team
@@ -86,7 +98,8 @@ GitHub Issues
 
 ## Documentation
 
-- **[DEMO.md](DEMO.md)** - Complete step-by-step demo guide
+- **[TUTORIAL.md](TUTORIAL.md)** - Complete tutorial with logs, file structure, and troubleshooting
+- **[DEMO.md](DEMO.md)** - Quick step-by-step demo guide
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** - Development guidelines
 - **[docs/forge-sentinel-arch.md](docs/forge-sentinel-arch.md)** - Architecture details
 
