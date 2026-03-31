@@ -388,56 +388,142 @@ The cycle repeats for each issue!
 
 ## Inspecting Generated Files
 
-### 1. Check the Worktree
+### 1. Understanding the File Structure
+
+AgentFlow uses a specific directory structure for work completion:
 
 ```bash
+~/.agentflow/workspaces/your-username-test-calculator/
+├── main/                    # Main repository clone
+├── worktrees/              # Agent work areas
+│   └── forge-1/            # Files created by agent
+│       ├── index.html      # Calculator UI
+│       ├── calculator.js   # Core logic
+│       ├── styles.css      # Styling
+│       └── README.md       # Documentation
+└── forge/
+    └── workers/
+        └── forge-1/
+            ├── worker.log          # Detailed logs
+            └── shared/             # Status and evaluation files
+                ├── PLAN.md         # Initial implementation plan
+                ├── WORKLOG.md      # Progress tracking
+                ├── CONTRACT.md     # SENTINEL-approved contract (if enabled)
+                ├── segment-N-eval.md # SENTINEL segment reviews (if enabled)
+                ├── final-review.md # SENTINEL final review (if enabled)
+                └── STATUS.json     # Final work status
+```
+
+### 2. Check the Code Files
+
+```bash
+# View the generated code
 cd ~/.agentflow/workspaces/your-username-test-calculator/worktrees/forge-1
 
-# List files created by the agent
+# List all files
 ls -la
+
+# View specific files
+cat index.html
+cat calculator.js
+cat styles.css
 ```
 
-**Expected files:**
-
-```
-.
-├── index.html          # Calculator UI
-├── calculator.js       # Core logic
-├── styles.css          # Styling
-├── README.md           # Documentation
-├── STATUS.json         # Work completion status
-└── .git/               # Git metadata (worktree)
-```
-
-### 2. View STATUS.json
+### 3. View STATUS.json (Work Completion)
 
 ```bash
-cat STATUS.json
+# STATUS.json is in the shared directory
+cat ~/.agentflow/workspaces/your-username-test-calculator/forge/workers/forge-1/shared/STATUS.json
 ```
 
 **Example content:**
 
 ```json
 {
-  "ticket": "T-001",
-  "issue_number": 1,
-  "status": "complete",
-  "summary": "Implemented basic calculator with HTML/CSS/JavaScript. Supports add, subtract, multiply, divide. Modern glassmorphism design.",
-  "pr": "https://github.com/your-username/test-calculator/pull/1",
+  "pair": "forge-1",
+  "ticket_id": "T-001",
+  "status": "PR_OPENED",
+  "pr_url": "https://github.com/your-username/test-calculator/pull/1",
+  "pr_number": 1,
+  "files_changed": [
+    "index.html",
+    "calculator.js",
+    "styles.css",
+    "README.md"
+  ],
   "commits": [
     "abc1234 Create calculator UI structure",
     "def5678 Implement calculator logic",
     "ghi9012 Add modern styling",
     "jkl3456 Add README documentation"
   ],
-  "artifacts": [
-    "index.html",
-    "calculator.js",
-    "styles.css",
-    "README.md"
-  ],
-  "test_results": "All manual tests passed"
+  "summary": "Implemented basic calculator with HTML/CSS/JavaScript. Supports add, subtract, multiply, divide. Modern glassmorphism design."
 }
+```
+
+### 4. View SENTINEL Evaluation Files (if SENTINEL is enabled)
+
+**Note**: In the current simplified configuration, SENTINEL may not be active. When enabled, you'll see these files:
+
+```bash
+cd ~/.agentflow/workspaces/your-username-test-calculator/forge/workers/forge-1/shared
+
+# View the implementation plan
+cat PLAN.md
+
+# View SENTINEL's contract approval (if SENTINEL reviewed the plan)
+cat CONTRACT.md
+```
+
+**Example CONTRACT.md (when SENTINEL is enabled):**
+
+```markdown
+# Contract for T-001: Implement calculator core logic
+
+status: AGREED
+
+## Acceptance Criteria
+
+1. ✅ Basic operations: add, subtract, multiply, divide
+2. ✅ Clean, modern UI
+3. ✅ Responsive design
+4. ✅ Error handling for division by zero
+5. ✅ Clear documentation in README
+
+## Definition of Done
+
+- All operations working correctly
+- UI passes visual inspection
+- No console errors
+- README includes usage instructions
+```
+
+**Example segment-1-eval.md (when SENTINEL reviews segments):**
+
+```markdown
+# Segment 1 Evaluation
+
+verdict: APPROVED
+
+## Correctness
+✅ All calculator operations implemented correctly
+✅ Division by zero handled properly
+
+## Test Coverage
+✅ Manual testing shows all operations work
+
+## Standards Compliance
+✅ Clean HTML structure
+✅ Proper CSS organization
+✅ JavaScript follows modern practices
+
+## Code Quality
+✅ Well-organized code
+✅ Good variable naming
+✅ Comments where needed
+
+## No Regressions
+✅ No existing functionality affected (new project)
 ```
 
 ### 3. Check Git History
@@ -619,19 +705,28 @@ AgentFlow/                                    # Orchestrator project
         ├── main/                             # Main repository clone
         │   ├── .git/
         │   └── README.md
-        ├── worktrees/                        # Agent work areas
+        ├── worktrees/                        # Agent work areas (CODE FILES)
         │   ├── forge-1/                      # Worker #1 isolated workspace
-        │   │   ├── index.html                # Files created by agent
+        │   │   ├── index.html                # Generated code files
         │   │   ├── calculator.js
         │   │   ├── styles.css
-        │   │   └── STATUS.json               # Work completion status
+        │   │   └── README.md
         │   └── forge-2/                      # Worker #2 isolated workspace
-        └── forge/
+        └── forge/                            # Worker management directory
             └── workers/
                 ├── forge-1/
-                │   └── worker.log            # Detailed Claude Code logs
+                │   ├── worker.log            # Detailed Claude Code logs
+                │   └── shared/               # Status & evaluation files
+                │       ├── PLAN.md           # Implementation plan
+                │       ├── WORKLOG.md        # Progress tracking
+                │       ├── CONTRACT.md       # SENTINEL approval (if enabled)
+                │       ├── segment-N-eval.md # SENTINEL reviews (if enabled)
+                │       ├── final-review.md   # Final review (if enabled)
+                │       └── STATUS.json       # ⭐ Work completion status
                 └── forge-2/
-                    └── worker.log
+                    ├── worker.log
+                    └── shared/
+                        └── STATUS.json
 ```
 
 ---
