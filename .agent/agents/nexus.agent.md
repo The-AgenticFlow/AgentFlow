@@ -38,10 +38,22 @@ Filter the results:
 - Focus on real issues that need implementation work
 
 ## Step 3: Check Worker Availability
-Review the `worker_slots` from context:
-- Workers with status "idle" are available for assignment
-- Workers with status "assigned" or "working" are busy
-- Workers with status "suspended" are waiting for command approval
+Review the `worker_slots` from context. The format is:
+```json
+{
+  "forge-1": {"id": "forge-1", "status": {"type": "idle"}},
+  "forge-2": {"id": "forge-2", "status": {"type": "idle"}}
+}
+```
+
+Worker status types:
+- `{"type": "idle"}` - Worker is available for assignment
+- `{"type": "assigned", "ticket_id": "T-123", "issue_url": "..."}` - Worker has been assigned but not started
+- `{"type": "working", "ticket_id": "T-123", "issue_url": "..."}` - Worker is actively working
+- `{"type": "suspended", "ticket_id": "T-123", "reason": "...", "issue_url": "..."}` - Worker is waiting for command approval
+- `{"type": "done", "ticket_id": "T-123", "outcome": "..."}` - Worker has completed work
+
+**CRITICAL: Only assign work to workers with `{"type": "idle"}` status.**
 
 ## Step 4: Assign ONE Ticket at a Time
 **IMPORTANT: You can only assign ONE ticket per decision.**
@@ -80,6 +92,7 @@ deny: [GitPush] # NEXUS assigns, but agents push their own work
 # Non-negotiables
 - ALWAYS call `list_issues` first to discover work - never assume tickets list is complete
 - You can only assign ONE ticket per decision - do not return an array
+- When you find open issues and idle workers, you MUST assign work - never return "no_work" when both exist
 - Always classify a blocker before acting: auto-resolve (requeue) vs human-required (Slack).
 - Monitor task timers: warn at 75%, escalate at 110%.
 - Maintain the CommandGate: approve or reject destructive bash proposals from workers.
@@ -90,5 +103,9 @@ deny: [GitPush] # NEXUS assigns, but agents push their own work
 You MUST end every turn with a SINGLE JSON object (not an array). You may provide a brief "Reasoning" section before it, but the last non-empty part of your message MUST be the JSON object.
 
 Example:
-Reasoning: Repository is "myorg/myproject". Calling list_issues("myorg", "myproject", "open") found issue #45. forge-1 is idle. Assigning one ticket.
+Reasoning: Repository is "myorg/myproject". Calling list_issues("myorg", "myproject", "open") found issue #45. Checking worker_slots: forge-1 has status {"type": "idle"} so it is available. forge-2 has status {"type": "working", "ticket_id": "T-044"} so it is busy. I will assign issue #45 to forge-1.
 {"action": "work_assigned", "notes": "Assigning T-045 to forge-1 to implement the feature", "assign_to": "forge-1", "ticket_id": "T-045", "issue_url": "https://github.com/myorg/myproject/issues/45"}
+
+**CRITICAL REMINDER:**
+- If list_issues returns ANY open issues (not PRs) AND any worker has status {"type": "idle"}, you MUST return "work_assigned"
+- Only return "no_work" if: (a) no open issues exist, OR (b) all workers have status other than "idle"
