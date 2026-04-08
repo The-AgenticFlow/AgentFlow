@@ -3,13 +3,16 @@
 //!
 //! Uses notify crate for cross-platform inotify/FSEvents support.
 
+use crate::types::FsEvent;
 use anyhow::{Context, Result};
-use notify::{Watcher, RecursiveMode, Event, EventKind, Config, RecommendedWatcher};
+use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::time::Duration;
-use tracing::{debug, warn, error};
-use crate::types::FsEvent;
+use std::time::{Duration, Instant};
+use tracing::{debug, error, warn};
+
+const DEBOUNCE_MS: u64 = 500;
 
 /// Watches the shared directory for file changes.
 pub struct SharedDirWatcher {
@@ -17,18 +20,21 @@ pub struct SharedDirWatcher {
     watcher: RecommendedWatcher,
     /// Receiver for filesystem events
     receiver: Receiver<FsEvent>,
+    /// Last seen timestamps for debouncing
+    last_seen: HashMap<String, Instant>,
 }
 
 impl SharedDirWatcher {
     /// Create a new watcher for the shared directory.
     pub fn new(shared_dir: &Path) -> Result<Self> {
         let (tx, rx) = channel::<FsEvent>();
-        
+
         let watcher = Self::create_watcher(tx.clone(), shared_dir)?;
-        
+
         Ok(Self {
             watcher,
             receiver: rx,
+            last_seen: HashMap::new(),
         })
     }
 
@@ -50,12 +56,13 @@ impl SharedDirWatcher {
         }).context("Failed to create filesystem watcher")?;
 
         // Configure for low latency
-        watcher.configure(Config::default()
-            .with_poll_interval(Duration::from_millis(100)))
+        watcher
+            .configure(Config::default().with_poll_interval(Duration::from_millis(100)))
             .context("Failed to configure watcher")?;
 
         // Watch the shared directory (non-recursive since we only care about top-level files)
-        watcher.watch(shared_dir, RecursiveMode::NonRecursive)
+        watcher
+            .watch(shared_dir, RecursiveMode::NonRecursive)
             .context("Failed to start watching shared directory")?;
 
         debug!(path = %shared_dir.display(), "Started watching shared directory");
@@ -73,7 +80,7 @@ impl SharedDirWatcher {
         // Check each path in the event
         for path in &event.paths {
             let filename = path.file_name()?.to_str()?;
-            
+
             let fs_event = match filename {
                 "PLAN.md" => Some(FsEvent::PlanWritten),
                 "CONTRACT.md" => Some(FsEvent::ContractWritten),
@@ -102,13 +109,56 @@ impl SharedDirWatcher {
     }
 
     /// Try to receive an event without blocking.
-    pub fn try_recv(&self) -> Option<FsEvent> {
-        self.receiver.try_recv().ok()
+    pub fn try_recv(&mut self) -> Option<FsEvent> {
+        loop {
+            match self.receiver.try_recv() {
+                Ok(event) => {
+                    if self.should_emit(&event) {
+                        return Some(event);
+                    }
+                    debug!(event = ?event, "Debounced duplicate event");
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => return None,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => return None,
+            }
+        }
     }
 
     /// Receive an event with a timeout.
-    pub fn recv_timeout(&self, timeout: Duration) -> Option<FsEvent> {
-        self.receiver.recv_timeout(timeout).ok()
+    pub fn recv_timeout(&mut self, timeout: Duration) -> Option<FsEvent> {
+        let start = Instant::now();
+        loop {
+            let remaining = timeout.saturating_sub(start.elapsed());
+            if remaining.is_zero() {
+                return None;
+            }
+
+            match self.receiver.recv_timeout(remaining) {
+                Ok(event) => {
+                    if self.should_emit(&event) {
+                        return Some(event);
+                    }
+                    debug!(event = ?event, "Debounced duplicate event");
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => return None,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return None,
+            }
+        }
+    }
+
+    /// Check if an event should be emitted (debounce logic).
+    fn should_emit(&mut self, event: &FsEvent) -> bool {
+        let key = format!("{:?}", event);
+        let now = Instant::now();
+
+        if let Some(last) = self.last_seen.get(&key) {
+            if now.duration_since(*last) < Duration::from_millis(DEBOUNCE_MS) {
+                return false;
+            }
+        }
+
+        self.last_seen.insert(key, now);
+        true
     }
 
     /// Get a reference to the underlying receiver for use in async contexts.
@@ -137,7 +187,7 @@ impl AsyncWatcher {
     }
 
     /// Try to receive without blocking.
-    pub fn try_recv(&self) -> Option<FsEvent> {
+    pub fn try_recv(&mut self) -> Option<FsEvent> {
         self.watcher.try_recv()
     }
 }
@@ -145,24 +195,24 @@ impl AsyncWatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
     use std::fs;
     use std::io::Write;
+    use tempfile::tempdir;
 
     #[test]
     fn test_classify_plan_event() {
         let dir = tempdir().unwrap();
         let shared = dir.path();
-        
-        let watcher = SharedDirWatcher::new(shared).unwrap();
-        
+
+        let mut watcher = SharedDirWatcher::new(shared).unwrap();
+
         // Write PLAN.md
         let plan_path = shared.join("PLAN.md");
         fs::write(&plan_path, "# Plan\n").unwrap();
-        
+
         // Give the watcher time to detect
         std::thread::sleep(Duration::from_millis(200));
-        
+
         let event = watcher.try_recv();
         assert!(matches!(event, Some(FsEvent::PlanWritten)));
     }
@@ -171,17 +221,40 @@ mod tests {
     fn test_classify_segment_eval_event() {
         let dir = tempdir().unwrap();
         let shared = dir.path();
-        
-        let watcher = SharedDirWatcher::new(shared).unwrap();
-        
+
+        let mut watcher = SharedDirWatcher::new(shared).unwrap();
+
         // Write segment-3-eval.md
         let eval_path = shared.join("segment-3-eval.md");
         fs::write(&eval_path, "# Eval\n").unwrap();
-        
+
         // Give the watcher time to detect
         std::thread::sleep(Duration::from_millis(200));
-        
+
         let event = watcher.try_recv();
         assert!(matches!(event, Some(FsEvent::SegmentEvalWritten(3))));
+    }
+
+    #[test]
+    fn test_debounce_duplicates() {
+        let dir = tempdir().unwrap();
+        let shared = dir.path();
+
+        let mut watcher = SharedDirWatcher::new(shared).unwrap();
+
+        // Write PLAN.md
+        let plan_path = shared.join("PLAN.md");
+        fs::write(&plan_path, "# Plan\n").unwrap();
+
+        // Give the watcher time to detect (might get multiple events)
+        std::thread::sleep(Duration::from_millis(200));
+
+        // Should get one event
+        let event1 = watcher.try_recv();
+        assert!(matches!(event1, Some(FsEvent::PlanWritten)));
+
+        // Immediately check again - should be debounced
+        let event2 = watcher.try_recv();
+        assert!(event2.is_none());
     }
 }
