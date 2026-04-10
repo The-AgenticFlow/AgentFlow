@@ -1,0 +1,6 @@
+{
+  "name": "nexus",
+  "version": "1.0.0",
+  "description": "Orchestrator agent - assigns work to workers and approves dangerous commands",
+  "author": { "name": "AgentFlow Team" }
+}

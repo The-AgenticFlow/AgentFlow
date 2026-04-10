@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "nexus-store": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/nexus-mcp",
+      "args": ["--store-path", "${AGENTFLOW_STORE}"],
+      "env": {
+        "REDIS_URL": "${REDIS_URL:-redis://localhost:6379}",
+        "AGENTFLOW_REGISTRY": "${AGENTFLOW_REGISTRY:-.agent/registry.json}"
+      }
+    }
+  }
+}

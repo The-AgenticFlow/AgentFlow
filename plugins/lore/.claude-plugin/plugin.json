@@ -1,0 +1,6 @@
+{
+  "name": "lore",
+  "version": "1.0.0",
+  "description": "Documenter agent - maintains documentation and changelogs",
+  "author": { "name": "AgentFlow Team" }
+}

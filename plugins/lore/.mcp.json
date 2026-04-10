@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "lore-tools": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/lore-mcp",
+      "args": ["--repo", "${GITHUB_REPOSITORY}"],
+      "env": {
+        "GITHUB_TOKEN": "${GITHUB_TOKEN}"
+      }
+    }
+  }
+}

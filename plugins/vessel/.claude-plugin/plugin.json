@@ -1,0 +1,6 @@
+{
+  "name": "vessel",
+  "version": "1.0.0",
+  "description": "Deployer agent - checks CI and merges approved PRs",
+  "author": { "name": "AgentFlow Team" }
+}

@@ -16,7 +16,10 @@ async fn test_forge_dangerous_command_suspends() -> Result<()> {
     let slots = HashMap::from([
         (worker_id.to_string(), WorkerSlot { 
             id: worker_id.to_string(), 
-            status: WorkerStatus::Working { ticket_id: ticket_id.to_string() } 
+            status: WorkerStatus::Working { 
+                ticket_id: ticket_id.to_string(),
+                issue_url: Some("https://github.com/test/repo/issues/1".to_string())
+            } 
         }),
     ]);
     store.set("worker_slots", json!(slots)).await;

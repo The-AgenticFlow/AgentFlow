@@ -1,0 +1,6 @@
+{
+  "name": "sentinel",
+  "version": "1.0.0",
+  "description": "Reviewer agent - evaluates segments and approves/rejects work",
+  "author": { "name": "AgentFlow Team" }
+}

@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "sentinel-tools": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/sentinel-mcp",
+      "args": [
+        "--worktree", "${SPRINTLESS_WORKTREE}",
+        "--shared", "${SPRINTLESS_SHARED}"
+      ],
+      "env": {
+        "GITHUB_TOKEN": "${GITHUB_TOKEN}"
+      }
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "vessel-github": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/vessel-mcp",
+      "args": ["--repo", "${GITHUB_REPOSITORY}"],
+      "env": {
+        "GITHUB_TOKEN": "${GITHUB_TOKEN}",
+        "REDIS_URL": "${REDIS_URL:-redis://localhost:6379}"
+      }
+    }
+  }
+}

@@ -20,6 +20,7 @@ pub struct ForgeStatus {
     pub pr_url: Option<String>,
     pub pr_number: Option<u32>,
     pub notes: Option<String>,
+    pub reason: Option<String>,
 }
 
 pub struct ForgeNode {
@@ -159,6 +160,7 @@ impl BatchNode for ForgeNode {
                 "pr_url": forge_status.pr_url,
                 "pr_number": forge_status.pr_number,
                 "notes": forge_status.notes,
+                "reason": forge_status.reason,
             }));
         }
 

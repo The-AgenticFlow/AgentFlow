@@ -1,0 +1,63 @@
+#!/usr/bin/env python3
+"""Mock VESSEL MCP Server for testing plugins."""
+
+import json
+import sys
+
+MOCK_RESPONSES = {
+    "get_open_prs": {"prs": []},
+    "check_ci_status": {"status": "success", "checks": []},
+    "merge_pr": {"merged": True, "merge_sha": "abc123", "message": "PR merged"},
+    "check_final_review": {"approved": True, "pr_description": "Mock description"},
+    "emit_event": {"success": True}
+}
+
+def handle_request(request):
+    method = request.get("method", "")
+    params = request.get("params", {})
+    
+    if method == "initialize":
+        return {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "vessel-mcp", "version": "1.0.0"}
+        }
+    elif method == "tools/list":
+        return {
+            "tools": [
+                {"name": "get_open_prs", "description": "Get open PRs"},
+                {"name": "check_ci_status", "description": "Check CI status"},
+                {"name": "merge_pr", "description": "Merge PR"},
+                {"name": "check_final_review", "description": "Check final review"},
+                {"name": "emit_event", "description": "Emit event"}
+            ]
+        }
+    elif method == "tools/call":
+        tool_name = params.get("name", "")
+        if tool_name in MOCK_RESPONSES:
+            return {"content": [{"type": "text", "text": json.dumps(MOCK_RESPONSES[tool_name])}]}
+        return {"error": f"Unknown tool: {tool_name}"}
+    return {"error": f"Unknown method: {method}"}
+
+def main():
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            request = json.loads(line)
+            response = {
+                "jsonrpc": "2.0",
+                "id": request.get("id"),
+                "result": handle_request(request)
+            }
+            print(json.dumps(response), flush=True)
+        except Exception as e:
+            print(json.dumps({
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {"code": -32603, "message": str(e)}
+            }), flush=True)
+
+if __name__ == "__main__":
+    main()
