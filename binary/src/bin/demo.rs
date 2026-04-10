@@ -2,7 +2,7 @@ use agent_forge::ForgeNode;
 use agent_nexus::NexusNode;
 use anyhow::Result;
 use config::{
-    Ticket, WorkerSlot, ACTION_EMPTY, ACTION_FAILED, ACTION_NO_WORK, ACTION_PR_OPENED,
+    Ticket, TicketStatus, WorkerSlot, ACTION_EMPTY, ACTION_FAILED, ACTION_NO_WORK, ACTION_PR_OPENED,
     ACTION_WORK_ASSIGNED, KEY_TICKETS, KEY_WORKER_SLOTS,
 };
 use dotenvy;
@@ -52,6 +52,9 @@ async fn main() -> Result<()> {
         body: "We need a JWT middleware in src/auth.rs".to_string(),
         priority: 1,
         branch: None,
+        status: TicketStatus::Open,
+        issue_url: None,
+        attempts: 0,
     };
     store
         .set(KEY_TICKETS, serde_json::json!(vec![ticket]))

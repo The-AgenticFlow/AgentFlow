@@ -3,8 +3,8 @@ use agent_client::{AgentDecision, AgentPersona, AgentRunner};
 use anyhow::Result;
 use async_trait::async_trait;
 use config::{
-    state::{KEY_COMMAND_GATE, KEY_WORKER_SLOTS},
-    Registry, WorkerSlot, WorkerStatus,
+    state::{KEY_COMMAND_GATE, KEY_TICKETS, KEY_WORKER_SLOTS},
+    Registry, Ticket, TicketStatus, WorkerSlot, WorkerStatus,
 };
 use pocketflow_core::{Action, Node, SharedStore};
 use serde_json::{json, Value};
@@ -45,7 +45,6 @@ impl NexusNode {
 
         let mut changed = false;
 
-        // Add new slots from registry
         for slot_id in registry.forge_slots() {
             if !slots.contains_key(&slot_id) {
                 info!(slot = slot_id, "Adding new worker slot from registry");
@@ -59,8 +58,6 @@ impl NexusNode {
                 changed = true;
             }
         }
-
-        // TODO: Handle removal of slots if needed
 
         if changed {
             store.set(KEY_WORKER_SLOTS, json!(slots)).await;
@@ -77,19 +74,17 @@ impl Node for NexusNode {
     }
 
     async fn prep(&self, store: &SharedStore) -> Result<Value> {
-        // Reload registry first
         if let Err(e) = self.sync_registry(store).await {
             warn!("Failed to sync registry: {}", e);
         }
 
-        // Read everything the orchestrator needs to see
-        let tickets = store.get("tickets").await.unwrap_or(json!([]));
+        let tickets: Vec<Ticket> =
+            store.get_typed(KEY_TICKETS).await.unwrap_or_default();
         let worker_slots = store.get(KEY_WORKER_SLOTS).await.unwrap_or(json!({}));
         let open_prs = store.get("open_prs").await.unwrap_or(json!([]));
         let command_gate = store.get(KEY_COMMAND_GATE).await.unwrap_or(json!({}));
         let repository = store.get("repository").await.unwrap_or(json!(""));
 
-        // Pre-parse repository into owner/repo for easier use
         let (owner, repo_name) = repository
             .as_str()
             .and_then(|r| {
@@ -102,8 +97,11 @@ impl Node for NexusNode {
             })
             .unwrap_or((String::new(), String::new()));
 
+        let assignable_tickets: Vec<&Ticket> = tickets.iter().filter(|t| t.is_assignable()).collect();
+
         Ok(json!({
             "tickets": tickets,
+            "assignable_tickets": assignable_tickets,
             "worker_slots": worker_slots,
             "open_prs": open_prs,
             "command_gate": command_gate,
@@ -119,7 +117,6 @@ impl Node for NexusNode {
         let mut runner = AgentRunner::from_env().await?;
         let persona = self.load_persona().await?;
 
-        // The runner drives the tool-calling loop (Anthropic + MCP)
         let decision: AgentDecision = runner.run(&persona, context, 10).await?;
 
         Ok(json!(decision))
@@ -134,6 +131,19 @@ impl Node for NexusNode {
             if let Some(worker_id) = &decision.assign_to {
                 if let Some(ticket_id) = &decision.ticket_id {
                     info!(worker_id, ticket_id, "Nexus: Assigning ticket to worker");
+
+                    let mut tickets: Vec<Ticket> =
+                        store.get_typed(KEY_TICKETS).await.unwrap_or_default();
+                    if let Some(ticket) = tickets.iter_mut().find(|t| t.id == *ticket_id) {
+                        ticket.status = TicketStatus::Assigned {
+                            worker_id: worker_id.clone(),
+                        };
+                        if let Some(url) = &decision.issue_url {
+                            ticket.issue_url = Some(url.clone());
+                        }
+                        store.set(KEY_TICKETS, json!(tickets)).await;
+                    }
+
                     let mut slots: HashMap<String, WorkerSlot> =
                         store.get_typed(KEY_WORKER_SLOTS).await.unwrap_or_default();
                     if let Some(slot) = slots.get_mut(worker_id) {
@@ -150,7 +160,6 @@ impl Node for NexusNode {
             }
         }
 
-        // Handle CommandGate approval/rejection
         if decision.action == "approve_command" || decision.action == "reject_command" {
             let mut gate: HashMap<String, Value> =
                 store.get_typed(KEY_COMMAND_GATE).await.unwrap_or_default();
@@ -163,7 +172,6 @@ impl Node for NexusNode {
                 gate.remove(&worker_id);
                 store.set(KEY_COMMAND_GATE, json!(gate)).await;
 
-                // Update worker status to Idle or Working (to be re-processed by Forge)
                 let mut slots: HashMap<String, WorkerSlot> =
                     store.get_typed(KEY_WORKER_SLOTS).await.unwrap_or_default();
                 if let Some(slot) = slots.get_mut(&worker_id) {

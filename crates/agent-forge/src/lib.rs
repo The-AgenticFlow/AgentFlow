@@ -2,10 +2,16 @@
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use config::{
-    state::{ACTION_EMPTY, ACTION_FAILED, ACTION_PR_OPENED, KEY_COMMAND_GATE, KEY_WORKER_SLOTS},
-    WorkerSlot, WorkerStatus,
+    state::{
+        ACTION_EMPTY, ACTION_FAILED, ACTION_PR_OPENED, KEY_COMMAND_GATE, KEY_TICKETS,
+        KEY_WORKER_SLOTS,
+    },
+    Ticket, TicketStatus, WorkerSlot, WorkerStatus,
 };
-use pair_harness::{worktree::WorktreeManager, ForgeSentinelPair, PairConfig, PairOutcome, Ticket};
+use pair_harness::{
+    worktree::WorktreeManager, ForgeSentinelPair, PairConfig, PairOutcome,
+    Ticket as PairTicket,
+};
 use pocketflow_core::{Action, BatchNode, SharedStore};
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
 use serde::{Deserialize, Serialize};
@@ -252,8 +258,13 @@ impl BatchNode for ForgeNode {
         let mut command_gate: HashMap<String, Value> =
             store.get_typed(KEY_COMMAND_GATE).await.unwrap_or_default();
 
+        let mut tickets: Vec<Ticket> =
+            store.get_typed(KEY_TICKETS).await.unwrap_or_default();
+
         let mut all_success = true;
         let worktree_mgr = WorktreeManager::new(&self.workspace_root);
+
+        let mut ticket_updates: Vec<(String, TicketStatus)> = Vec::new();
 
         for res_opt in &results {
             let res = match res_opt {
@@ -281,7 +292,13 @@ impl BatchNode for ForgeNode {
                             ticket_id: ticket_id.to_string(),
                             outcome: outcome.to_string(),
                         };
-                        // Cleanup worktree for completed work
+                        ticket_updates.push((
+                            ticket_id.to_string(),
+                            TicketStatus::Completed {
+                                worker_id: worker_id.to_string(),
+                                outcome: outcome.to_string(),
+                            },
+                        ));
                         if let Err(e) = worktree_mgr.remove_worktree(worker_id) {
                             warn!(worker = worker_id, error = %e, "Failed to cleanup worktree");
                         } else {
@@ -301,7 +318,6 @@ impl BatchNode for ForgeNode {
                             reason: reason.to_string(),
                             issue_url: res["issue_url"].as_str().map(|s| s.to_string()),
                         };
-                        // Push to command gate
                         command_gate.insert(worker_id.to_string(), res.clone());
                     }
                     "idle" => {}
@@ -314,7 +330,30 @@ impl BatchNode for ForgeNode {
                         );
                         slot.status = WorkerStatus::Idle;
                         all_success = false;
-                        // Cleanup worktree for failed work
+                        let prev_attempts = tickets
+                            .iter()
+                            .find(|t| t.id == ticket_id)
+                            .map(|t| t.attempts)
+                            .unwrap_or(0)
+                            + 1;
+                        if prev_attempts >= Ticket::MAX_ATTEMPTS {
+                            ticket_updates.push((
+                                ticket_id.to_string(),
+                                TicketStatus::Exhausted {
+                                    worker_id: worker_id.to_string(),
+                                    attempts: prev_attempts,
+                                },
+                            ));
+                        } else {
+                            ticket_updates.push((
+                                ticket_id.to_string(),
+                                TicketStatus::Failed {
+                                    worker_id: worker_id.to_string(),
+                                    reason: outcome.to_string(),
+                                    attempts: prev_attempts,
+                                },
+                            ));
+                        }
                         if let Err(e) = worktree_mgr.remove_worktree(worker_id) {
                             warn!(worker = worker_id, error = %e, "Failed to cleanup worktree");
                         } else {
@@ -325,8 +364,20 @@ impl BatchNode for ForgeNode {
             }
         }
 
+        for (ticket_id, new_status) in ticket_updates {
+            if let Some(ticket) = tickets.iter_mut().find(|t| t.id == ticket_id) {
+                if let TicketStatus::Failed { attempts, .. } = &new_status {
+                    ticket.attempts = *attempts;
+                } else if let TicketStatus::Exhausted { attempts, .. } = &new_status {
+                    ticket.attempts = *attempts;
+                }
+                ticket.status = new_status;
+            }
+        }
+
         store.set(KEY_WORKER_SLOTS, json!(slots)).await;
         store.set(KEY_COMMAND_GATE, json!(command_gate)).await;
+        store.set(KEY_TICKETS, json!(tickets)).await;
 
         let has_suspended = slots
             .values()
@@ -475,8 +526,8 @@ impl ForgePairNode {
         Ok(response.json::<GithubIssue>().await?)
     }
 
-    async fn build_ticket(&self, ticket_id: &str, issue_url: Option<&str>) -> Ticket {
-        let mut ticket = Ticket {
+    async fn build_ticket(&self, ticket_id: &str, issue_url: Option<&str>) -> PairTicket {
+        let mut ticket = PairTicket {
             id: ticket_id.to_string(),
             issue_number: 0,
             title: format!("Ticket {}", ticket_id),
@@ -576,21 +627,13 @@ impl BatchNode for ForgePairNode {
 
         let ticket = self.build_ticket(&ticket_id, issue_url.as_deref()).await;
 
-        // Create pair configuration (filesystem-based state, no Redis)
         let config = PairConfig::new(&worker_id, &self.workspace_root, &self.github_token);
 
-        // Run the pair lifecycle in a blocking task
-        // (ForgeSentinelPair uses sync mpsc channels internally)
-        let outcome = tokio::task::spawn_blocking(move || {
-            // Create a new runtime for the pair lifecycle
-            let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(async move {
-                let mut pair = ForgeSentinelPair::new(config);
-                pair.run(&ticket).await
-            })
-        })
-        .await
-        .map_err(|e| anyhow!("Failed to spawn pair task: {}", e))??;
+        let mut pair = ForgeSentinelPair::new(config);
+        let outcome = pair
+            .run(&ticket)
+            .await
+            .map_err(|e| anyhow!("Pair lifecycle failed: {}", e))?;
 
         match outcome {
             PairOutcome::PrOpened {
@@ -655,17 +698,21 @@ impl BatchNode for ForgePairNode {
         let mut command_gate: HashMap<String, Value> =
             store.get_typed(KEY_COMMAND_GATE).await.unwrap_or_default();
 
-        // Get the list of workers we tried to process in this batch
+        let mut tickets: Vec<Ticket> =
+            store.get_typed(KEY_TICKETS).await.unwrap_or_default();
+
         let batch_workers: Vec<String> = store
             .get("_forge_batch_workers")
             .await
             .and_then(|v| serde_json::from_value(v).ok())
             .unwrap_or_default();
 
-        // Track which workers had successful results
         let mut successful_workers: std::collections::HashSet<String> =
             std::collections::HashSet::new();
         let mut all_success = true;
+
+        // Collect ticket status updates to apply
+        let mut ticket_updates: Vec<(String, TicketStatus)> = Vec::new();
 
         for res_opt in &results {
             let res = match res_opt {
@@ -696,7 +743,13 @@ impl BatchNode for ForgePairNode {
                             ticket_id: ticket_id.to_string(),
                             outcome: "pr_opened".to_string(),
                         };
-                        // Cleanup is handled by pair harness
+                        ticket_updates.push((
+                            ticket_id.to_string(),
+                            TicketStatus::Completed {
+                                worker_id: worker_id.to_string(),
+                                outcome: "pr_opened".to_string(),
+                            },
+                        ));
                     }
                     "blocked" => {
                         let reason = res["reason"].as_str().unwrap_or("unknown");
@@ -711,40 +764,160 @@ impl BatchNode for ForgePairNode {
                             reason: reason.to_string(),
                             issue_url: res["issue_url"].as_str().map(|s| s.to_string()),
                         };
-                        // Push to command gate
                         command_gate.insert(worker_id.to_string(), res.clone());
                     }
                     "idle" => {}
+                    "fuel_exhausted" => {
+                        warn!(
+                            worker = worker_id,
+                            ticket = ticket_id,
+                            "Pair fuel exhausted"
+                        );
+                        slot.status = WorkerStatus::Idle;
+                        all_success = false;
+                        let prev_attempts = tickets
+                            .iter()
+                            .find(|t| t.id == ticket_id)
+                            .map(|t| t.attempts)
+                            .unwrap_or(0)
+                            + 1;
+                        if prev_attempts >= Ticket::MAX_ATTEMPTS {
+                            ticket_updates.push((
+                                ticket_id.to_string(),
+                                TicketStatus::Exhausted {
+                                    worker_id: worker_id.to_string(),
+                                    attempts: prev_attempts,
+                                },
+                            ));
+                        } else {
+                            ticket_updates.push((
+                                ticket_id.to_string(),
+                                TicketStatus::Failed {
+                                    worker_id: worker_id.to_string(),
+                                    reason: "fuel_exhausted".to_string(),
+                                    attempts: prev_attempts,
+                                },
+                            ));
+                        }
+                    }
                     _ => {
                         warn!(
                             worker = worker_id,
                             ticket = ticket_id,
                             outcome,
-                            "Pair failed or exhausted"
+                            "Pair failed"
                         );
                         slot.status = WorkerStatus::Idle;
                         all_success = false;
+                        let prev_attempts = tickets
+                            .iter()
+                            .find(|t| t.id == ticket_id)
+                            .map(|t| t.attempts)
+                            .unwrap_or(0)
+                            + 1;
+                        if prev_attempts >= Ticket::MAX_ATTEMPTS {
+                            ticket_updates.push((
+                                ticket_id.to_string(),
+                                TicketStatus::Exhausted {
+                                    worker_id: worker_id.to_string(),
+                                    attempts: prev_attempts,
+                                },
+                            ));
+                        } else {
+                            ticket_updates.push((
+                                ticket_id.to_string(),
+                                TicketStatus::Failed {
+                                    worker_id: worker_id.to_string(),
+                                    reason: outcome.to_string(),
+                                    attempts: prev_attempts,
+                                },
+                            ));
+                        }
                     }
                 }
             }
         }
 
-        // Reset any workers that were in the batch but didn't get a successful result
-        // This handles the case where exec_one returns an Err
         for worker_id in &batch_workers {
             if !successful_workers.contains(worker_id) {
                 if let Some(slot) = slots.get_mut(worker_id) {
+                    let failed_ticket_id = match &slot.status {
+                        WorkerStatus::Assigned { ticket_id, .. } => Some(ticket_id.clone()),
+                        WorkerStatus::Working { ticket_id, .. } => Some(ticket_id.clone()),
+                        _ => None,
+                    };
+
                     warn!(
                         worker = worker_id,
                         "Resetting worker to Idle due to execution failure"
                     );
                     slot.status = WorkerStatus::Idle;
+
+                    if let Some(ticket_id) = failed_ticket_id {
+                        let prev_attempts = tickets
+                            .iter()
+                            .find(|t| t.id == ticket_id)
+                            .map(|t| t.attempts)
+                            .unwrap_or(0)
+                            + 1;
+                        if prev_attempts >= Ticket::MAX_ATTEMPTS {
+                            ticket_updates.push((
+                                ticket_id,
+                                TicketStatus::Exhausted {
+                                    worker_id: worker_id.to_string(),
+                                    attempts: prev_attempts,
+                                },
+                            ));
+                        } else {
+                            ticket_updates.push((
+                                ticket_id,
+                                TicketStatus::Failed {
+                                    worker_id: worker_id.to_string(),
+                                    reason: "spawn_failed".to_string(),
+                                    attempts: prev_attempts,
+                                },
+                            ));
+                        }
+                    }
                 }
+            }
+        }
+
+        // Apply ticket status updates
+        for (ticket_id, new_status) in ticket_updates {
+            if let Some(ticket) = tickets.iter_mut().find(|t| t.id == ticket_id) {
+                if let TicketStatus::Failed { attempts, .. } = &new_status {
+                    ticket.attempts = *attempts;
+                } else if let TicketStatus::Exhausted { attempts, .. } = &new_status {
+                    ticket.attempts = *attempts;
+                }
+                ticket.status = new_status;
+                info!(
+                    ticket = ticket.id,
+                    status = ?ticket.status,
+                    "Ticket status updated"
+                );
+            } else {
+                warn!(
+                    ticket_id,
+                    "Ticket not found in store for status update - adding"
+                );
+                tickets.push(Ticket {
+                    id: ticket_id.clone(),
+                    title: String::new(),
+                    body: String::new(),
+                    priority: 0,
+                    branch: None,
+                    status: new_status,
+                    issue_url: None,
+                    attempts: 1,
+                });
             }
         }
 
         store.set(KEY_WORKER_SLOTS, json!(slots)).await;
         store.set(KEY_COMMAND_GATE, json!(command_gate)).await;
+        store.set(KEY_TICKETS, json!(tickets)).await;
 
         let has_suspended = slots
             .values()

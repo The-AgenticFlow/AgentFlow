@@ -10,7 +10,7 @@ use tracing::info;
 
 use crate::nodes::{ForgeNode, NexusNode};
 use crate::state::{
-    Ticket, WorkerSlot, WorkerStatus, ACTION_EMPTY, ACTION_FAILED, ACTION_NO_WORK,
+    Ticket, TicketStatus, WorkerSlot, WorkerStatus, ACTION_EMPTY, ACTION_FAILED, ACTION_NO_WORK,
     ACTION_PR_OPENED, ACTION_WORK_ASSIGNED, KEY_TICKETS, KEY_WORKER_SLOTS,
 };
 
@@ -66,6 +66,9 @@ async fn main() -> Result<()> {
         body: "Add a new CSS class for glassmorphism and apply to the hero section.".to_string(),
         priority: 1,
         branch: None,
+        status: TicketStatus::Open,
+        issue_url: None,
+        attempts: 0,
     };
 
     let worker_slots = HashMap::from([

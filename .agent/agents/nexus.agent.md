@@ -39,23 +39,28 @@ DO NOT use `search_repositories` - that is for searching across all of GitHub.
 DO NOT use `search_issues` - that is for searching across multiple repos.
 Use `list_issues` with the specific owner/repo to get issues for THIS repository.
 
-## Step 3: Check Worker Availability
-Review the `worker_slots` from context. The format is:
-```json
-{
-  "forge-1": {"id": "forge-1", "status": {"type": "idle"}},
-  "forge-2": {"id": "forge-2", "status": {"type": "idle"}}
-}
-```
+## Step 3: Check Ticket and Worker Status
 
-Worker status types:
+Review the `tickets` and `worker_slots` from context. 
+
+**Ticket status types:**
+- `{"type": "open"}` - Ticket is unassigned and ready for work
+- `{"type": "assigned", "worker_id": "forge-1"}` - Ticket is assigned to a worker (in progress)
+- `{"type": "in_progress", "worker_id": "forge-1"}` - Ticket is actively being worked on
+- `{"type": "failed", "worker_id": "forge-1", "reason": "spawn_failed", "attempts": 1}` - Ticket failed but can be retried (attempts < 3)
+- `{"type": "exhausted", "worker_id": "forge-1", "attempts": 3}` - Ticket exceeded max retries, do NOT re-assign
+- `{"type": "completed", "worker_id": "forge-1", "outcome": "pr_opened"}` - Ticket is done
+
+**Worker status types:**
 - `{"type": "idle"}` - Worker is available for assignment
 - `{"type": "assigned", "ticket_id": "T-123", "issue_url": "..."}` - Worker has been assigned but not started
 - `{"type": "working", "ticket_id": "T-123", "issue_url": "..."}` - Worker is actively working
 - `{"type": "suspended", "ticket_id": "T-123", "reason": "...", "issue_url": "..."}` - Worker is waiting for command approval
 - `{"type": "done", "ticket_id": "T-123", "outcome": "..."}` - Worker has completed work
 
-**CRITICAL: Only assign work to workers with `{"type": "idle"}` status.**
+The `assignable_tickets` list in your context is pre-filtered to only show tickets that are safe to assign (status `open` or `failed` with attempts < 3). Use this list as your primary source for finding work.
+
+**CRITICAL: Only assign work to workers with `{"type": "idle"}` status AND tickets that appear in `assignable_tickets`.**
 
 ## Step 4: Assign ONE Ticket at a Time
 **IMPORTANT: You can only assign ONE ticket per decision.**
@@ -111,3 +116,5 @@ Reasoning: Context shows owner="myorg", repo_name="myproject". Calling list_issu
 **CRITICAL REMINDER:**
 - If list_issues returns ANY open issues (not PRs) AND any worker has status {"type": "idle"}, you MUST return "work_assigned"
 - Only return "no_work" if: (a) no open issues exist, OR (b) all workers have status other than "idle"
+- When a ticket has status "failed" with attempts < 3, it is retryable - assign it again to an idle worker
+- When a ticket has status "exhausted", do NOT try to assign it again - it has exceeded max retries
