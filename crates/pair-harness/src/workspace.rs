@@ -4,10 +4,10 @@
 //! Handles cloning of target repositories into dedicated workspace
 //! directories, ensuring the orchestrator doesn't work on itself.
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use tracing::{info, warn, debug};
+use tracing::{debug, info, warn};
 
 /// Manages the target repository workspace.
 ///
@@ -34,7 +34,7 @@ impl WorkspaceManager {
         // Convert "owner/repo" to "owner-repo" for directory name
         let dir_name = repo_id.replace('/', "-");
         let workspace_dir = workspaces_base.join(&dir_name);
-        
+
         Self {
             workspaces_base,
             workspace_dir,
@@ -173,7 +173,7 @@ mod tests {
     fn test_workspace_dir_naming() {
         let temp_dir = tempdir().unwrap();
         let manager = WorkspaceManager::new(temp_dir.path(), "owner/repo");
-        
+
         assert!(manager.workspace_dir().ends_with("owner-repo"));
     }
 }

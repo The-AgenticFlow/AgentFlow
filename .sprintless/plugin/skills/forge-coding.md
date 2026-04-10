@@ -70,6 +70,62 @@ If you receive a "CONTEXT RESET REQUIRED" message:
 2. This writes `HANDOFF.md` with your current state
 3. Exit cleanly - a fresh FORGE will continue from your handoff
 
+## When work is complete
+
+When SENTINEL approves all segments and you're ready to finish:
+
+1. **Push the branch to remote:**
+   ```bash
+   git push -u origin forge-${SPRINTLESS_PAIR_ID}/${SPRINTLESS_TICKET_ID}
+   ```
+   
+   NOTE: Direct `git push` is blocked. Instead, use the GitHub MCP tool:
+   - Get the current commit SHA
+   - Create a new branch reference on the remote
+
+2. **Create a Pull Request using GitHub MCP tool:**
+   - Use `create_pull_request` from the GitHub MCP server
+   - Set title: `[T-{id}] Brief description of the change`
+   - Set body: Use the PR description from `final-review.md`
+   - Set head: `forge-${SPRINTLESS_PAIR_ID}/${SPRINTLESS_TICKET_ID}`
+   - Set base: `main`
+
+3. **Write STATUS.json with PR_OPENED:**
+   ```json
+   {
+     "status": "PR_OPENED",
+     "pair": "${SPRINTLESS_PAIR_ID}",
+     "ticket_id": "${SPRINTLESS_TICKET_ID}",
+     "branch": "forge-${SPRINTLESS_PAIR_ID}/${SPRINTLESS_TICKET_ID}",
+     "pr_url": "https://github.com/owner/repo/pull/42",
+     "pr_number": 42,
+     "files_changed": ["list", "of", "files"],
+     "segments_completed": N,
+     "timestamp": "2025-03-24T10:00:00Z"
+   }
+   ```
+
+4. **Exit** - The harness will detect STATUS.json and complete the lifecycle.
+
+## If you cannot create a PR
+
+If you encounter issues pushing or creating a PR:
+
+1. Write STATUS.json with `BLOCKED` status:
+   ```json
+   {
+     "status": "BLOCKED",
+     "pair": "${SPRINTLESS_PAIR_ID}",
+     "ticket_id": "${SPRINTLESS_TICKET_ID}",
+     "branch": "forge-${SPRINTLESS_PAIR_ID}/${SPRINTLESS_TICKET_ID}",
+     "reason": "Could not push/create PR: <specific error>",
+     "blockers": [],
+     "files_changed": ["list", "of", "files"]
+   }
+   ```
+
+2. Exit - NEXUS will be alerted for human intervention.
+
 ## Branch naming
 
 Your branch is: `forge-${SPRINTLESS_PAIR_ID}/${SPRINTLESS_TICKET_ID}`

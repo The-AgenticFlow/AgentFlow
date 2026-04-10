@@ -6,11 +6,11 @@
 //! continues from the exact next step.
 
 use anyhow::{Context, Result};
-use std::path::{Path, PathBuf};
-use std::fs;
 use chrono::{DateTime, Utc};
-use tracing::{info, warn, debug};
 use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::{Path, PathBuf};
+use tracing::{debug, info, warn};
 
 /// Manages context resets and handoff synthesis.
 pub struct ResetManager {
@@ -40,9 +40,8 @@ impl ResetManager {
     /// Read the handoff file.
     pub fn read_handoff(&self) -> Result<Handoff> {
         let path = self.shared.join("HANDOFF.md");
-        let content = fs::read_to_string(&path)
-            .context("Failed to read HANDOFF.md")?;
-        
+        let content = fs::read_to_string(&path).context("Failed to read HANDOFF.md")?;
+
         Ok(Handoff::parse(&content))
     }
 
@@ -112,7 +111,10 @@ impl ResetManager {
 
             // Look for files changed
             if line.starts_with("  - ") || line.starts_with("- ") {
-                let file = line.trim_start_matches("  - ").trim_start_matches("- ").to_string();
+                let file = line
+                    .trim_start_matches("  - ")
+                    .trim_start_matches("- ")
+                    .to_string();
                 if !file.is_empty() && !file.starts_with("Status:") {
                     files_changed.push(file.clone());
                     if let Some(ref mut seg) = current_segment {
@@ -146,7 +148,10 @@ impl ResetManager {
 
         // Determine next step
         let next_segment = completed_segments.len() as u32 + 1;
-        let next_step = format!("Continue with segment {} (check PLAN.md for details)", next_segment);
+        let next_step = format!(
+            "Continue with segment {} (check PLAN.md for details)",
+            next_segment
+        );
 
         Ok(Handoff {
             ticket_id: "UNKNOWN".to_string(),
@@ -164,8 +169,7 @@ impl ResetManager {
     pub fn clear_handoff(&self) -> Result<()> {
         let path = self.shared.join("HANDOFF.md");
         if path.exists() {
-            fs::remove_file(&path)
-                .context("Failed to remove HANDOFF.md")?;
+            fs::remove_file(&path).context("Failed to remove HANDOFF.md")?;
             debug!("HANDOFF.md cleared");
         }
         Ok(())
@@ -249,12 +253,16 @@ impl Handoff {
                 }
                 "Decisions" => {
                     if line.starts_with("- ") {
-                        handoff.decisions.push(line.trim_start_matches("- ").to_string());
+                        handoff
+                            .decisions
+                            .push(line.trim_start_matches("- ").to_string());
                     }
                 }
                 "Files Changed" => {
                     if line.starts_with("- ") {
-                        handoff.files_changed.push(line.trim_start_matches("- ").to_string());
+                        handoff
+                            .files_changed
+                            .push(line.trim_start_matches("- ").to_string());
                     }
                 }
                 "Exact next step" => {
@@ -278,7 +286,10 @@ impl Handoff {
         md.push_str("# HANDOFF\n\n");
         md.push_str(&format!("**Ticket:** {}\n\n", self.ticket_id));
         md.push_str(&format!("**Pair:** {}\n\n", self.pair_id));
-        md.push_str(&format!("**Timestamp:** {}\n\n", self.timestamp.to_rfc3339()));
+        md.push_str(&format!(
+            "**Timestamp:** {}\n\n",
+            self.timestamp.to_rfc3339()
+        ));
 
         md.push_str("## Completed Segments\n\n");
         for seg in &self.completed_segments {
@@ -290,7 +301,10 @@ impl Handoff {
 
         if let Some(ref in_prog) = self.in_progress {
             md.push_str("\n## In Progress\n\n");
-            md.push_str(&format!("- Segment {}: {}\n", in_prog.number, in_prog.status));
+            md.push_str(&format!(
+                "- Segment {}: {}\n",
+                in_prog.number, in_prog.status
+            ));
         }
 
         md.push_str("\n## Decisions\n\n");
@@ -356,13 +370,11 @@ Continue with segment 2: Implement JWT token generation.
         let handoff = Handoff {
             ticket_id: "T-42".to_string(),
             pair_id: "pair-1".to_string(),
-            completed_segments: vec![
-                SegmentSummary {
-                    number: 1,
-                    status: "APPROVED".to_string(),
-                    files: vec!["src/auth.ts".to_string()],
-                },
-            ],
+            completed_segments: vec![SegmentSummary {
+                number: 1,
+                status: "APPROVED".to_string(),
+                files: vec!["src/auth.ts".to_string()],
+            }],
             in_progress: None,
             decisions: vec!["Use httpOnly cookies".to_string()],
             files_changed: vec!["src/auth.ts".to_string()],
@@ -375,6 +387,9 @@ Continue with segment 2: Implement JWT token generation.
 
         assert_eq!(parsed.ticket_id, handoff.ticket_id);
         assert_eq!(parsed.pair_id, handoff.pair_id);
-        assert_eq!(parsed.completed_segments.len(), handoff.completed_segments.len());
+        assert_eq!(
+            parsed.completed_segments.len(),
+            handoff.completed_segments.len()
+        );
     }
 }

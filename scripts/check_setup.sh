@@ -53,11 +53,29 @@ else
 fi
 
 # Check Claude Code CLI
-if command -v claude &> /dev/null; then
+# First check CLAUDE_PATH from .env, then fallback to system PATH
+CLAUDE_PATH=""
+if [ -f ".env" ] && grep -q "^CLAUDE_PATH=" .env; then
+    CLAUDE_PATH=$(grep "^CLAUDE_PATH=" .env | cut -d'=' -f2-)
+fi
+
+if [ -n "$CLAUDE_PATH" ] && [ "$CLAUDE_PATH" != "claude" ]; then
+    # CLAUDE_PATH is set to a specific path
+    if [ -x "$CLAUDE_PATH" ]; then
+        CLAUDE_VERSION=$("$CLAUDE_PATH" --version 2>&1 || echo "unknown")
+        success "Claude Code CLI is installed at $CLAUDE_PATH ($CLAUDE_VERSION)"
+    else
+        error "CLAUDE_PATH is set to '$CLAUDE_PATH' but the file doesn't exist or isn't executable"
+        echo "    See docs/setup-claude-cli.md for setup instructions"
+    fi
+elif command -v claude &> /dev/null; then
+    # Claude is in system PATH
     CLAUDE_VERSION=$(claude --version 2>&1 || echo "unknown")
-    success "Claude Code CLI is installed ($CLAUDE_VERSION)"
+    success "Claude Code CLI is installed in PATH ($CLAUDE_VERSION)"
 else
-    error "Claude Code CLI is not installed. Install from: https://www.anthropic.com/claude-code"
+    error "Claude Code CLI is not installed. Install from: https://claude.ai/download"
+    echo "    Or set CLAUDE_PATH in .env to the full path of the claude binary"
+    echo "    See docs/setup-claude-cli.md for setup instructions"
 fi
 
 # Check Git
@@ -103,9 +121,34 @@ if [ -f ".env" ]; then
             else
                 error "OPENAI_API_KEY is required when LLM_PROVIDER=openai"
             fi
+        elif [ "$LLM_PROVIDER" = "gemini" ]; then
+            if grep -q "^GEMINI_API_KEY=" .env && ! grep -q "^GEMINI_API_KEY=$" .env && ! grep -q "^GEMINI_API_KEY=your_gemini_api_key_here" .env; then
+                success "GEMINI_API_KEY is set"
+            else
+                error "GEMINI_API_KEY is required when LLM_PROVIDER=gemini"
+            fi
+
+            if grep -q "^GEMINI_MODEL=" .env; then
+                GEMINI_MODEL=$(grep "^GEMINI_MODEL=" .env | cut -d'=' -f2- | sed 's/^\"//; s/\"$//')
+                if [[ "$GEMINI_MODEL" =~ ^gemini-[a-z0-9.-]+$ ]]; then
+                    success "GEMINI_MODEL looks valid: $GEMINI_MODEL"
+                else
+                    error "GEMINI_MODEL must be a Gemini API model code like gemini-2.5-flash or gemini-2.5-flash-lite"
+                fi
+            else
+                warning "GEMINI_MODEL not set; runtime default is gemini-2.5-flash"
+            fi
+        elif [ "$LLM_PROVIDER" = "anthropic" ]; then
+            if grep -q "^ANTHROPIC_API_KEY=" .env && ! grep -q "^ANTHROPIC_API_KEY=$" .env && ! grep -q "^ANTHROPIC_API_KEY=sk-ant-xxx" .env; then
+                success "ANTHROPIC_API_KEY is set for NEXUS"
+            else
+                error "ANTHROPIC_API_KEY is required when LLM_PROVIDER=anthropic"
+            fi
+        else
+            error "LLM_PROVIDER must be one of: openai, gemini, anthropic"
         fi
     else
-        warning "LLM_PROVIDER not set (will default to openai)"
+        warning "LLM_PROVIDER not set (runtime default may apply, but explicit openai/gemini/anthropic is recommended)"
     fi
     
     if grep -q "^GITHUB_PERSONAL_ACCESS_TOKEN=" .env && ! grep -q "^GITHUB_PERSONAL_ACCESS_TOKEN=$" .env && ! grep -q "^GITHUB_PERSONAL_ACCESS_TOKEN=ghp_xxx" .env; then

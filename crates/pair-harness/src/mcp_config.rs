@@ -5,25 +5,25 @@
 //! and credentials.
 
 use anyhow::{Context, Result};
-use std::path::{Path, PathBuf};
-use std::fs;
 use serde_json::{json, Value};
-use tracing::{info, debug};
+use std::fs;
+use std::path::{Path, PathBuf};
+use tracing::{debug, info};
 
 /// Generates MCP configuration files for pairs.
 pub struct McpConfigGenerator {
     /// GitHub token for MCP tools
     github_token: String,
-    /// Redis URL for shared store
-    redis_url: String,
+    /// Optional Redis URL for shared store (uses filesystem if None)
+    redis_url: Option<String>,
 }
 
 impl McpConfigGenerator {
-    /// Create a new MCP config generator.
-    pub fn new(github_token: impl Into<String>, redis_url: impl Into<String>) -> Self {
+    /// Create a new MCP config generator without Redis (uses filesystem state).
+    pub fn new(github_token: impl Into<String>, redis_url: Option<impl Into<String>>) -> Self {
         Self {
             github_token: github_token.into(),
-            redis_url: redis_url.into(),
+            redis_url: redis_url.map(|s| s.into()),
         }
     }
 
@@ -50,7 +50,8 @@ impl McpConfigGenerator {
                     "args": [
                         "-y",
                         "@modelcontextprotocol/server-filesystem",
-                        worktree.to_string_lossy().to_string()
+                        worktree.to_string_lossy().to_string(),
+                        shared.to_string_lossy().to_string()
                     ]
                 },
                 "shell": {
@@ -89,8 +90,8 @@ impl McpConfigGenerator {
                     "args": [
                         "-y",
                         "@modelcontextprotocol/server-filesystem",
-                        "--read-only",
-                        worktree.to_string_lossy().to_string()
+                        worktree.to_string_lossy().to_string(),
+                        shared.to_string_lossy().to_string()
                     ]
                 },
                 "shell": {
@@ -110,21 +111,18 @@ impl McpConfigGenerator {
     fn write_config(&self, path: &Path, config: &Value) -> Result<()> {
         // Ensure parent directory exists
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .context("Failed to create mcp.json parent directory")?;
+            fs::create_dir_all(parent).context("Failed to create mcp.json parent directory")?;
         }
 
         // Write to temp file first
         let temp_path = path.with_extension("json.tmp");
-        let content = serde_json::to_string_pretty(config)
-            .context("Failed to serialize mcp.json")?;
+        let content =
+            serde_json::to_string_pretty(config).context("Failed to serialize mcp.json")?;
 
-        fs::write(&temp_path, content)
-            .context("Failed to write mcp.json")?;
+        fs::write(&temp_path, content).context("Failed to write mcp.json")?;
 
         // Atomic rename
-        fs::rename(&temp_path, path)
-            .context("Failed to rename mcp.json")?;
+        fs::rename(&temp_path, path).context("Failed to rename mcp.json")?;
 
         debug!(path = %path.display(), "MCP config written");
         Ok(())
@@ -144,26 +142,25 @@ impl McpConfigGenerator {
             "Generating mcp.json from template"
         );
 
-        let template = fs::read_to_string(template_path)
-            .context("Failed to read mcp.json template")?;
+        let template =
+            fs::read_to_string(template_path).context("Failed to read mcp.json template")?;
 
         // Substitute variables
+        let redis_url_str = self.redis_url.as_deref().unwrap_or("");
         let config = template
             .replace("${SPRINTLESS_GITHUB_TOKEN}", &self.github_token)
-            .replace("${SPRINTLESS_REDIS_URL}", &self.redis_url)
+            .replace("${SPRINTLESS_REDIS_URL}", redis_url_str)
             .replace("${SPRINTLESS_WORKTREE}", &worktree.to_string_lossy())
             .replace("${SPRINTLESS_SHARED}", &shared.to_string_lossy());
 
         // Parse to validate JSON
-        let _: Value = serde_json::from_str(&config)
-            .context("Generated mcp.json is not valid JSON")?;
+        let _: Value =
+            serde_json::from_str(&config).context("Generated mcp.json is not valid JSON")?;
 
         // Write atomically
         let temp_path = output_path.with_extension("json.tmp");
-        fs::write(&temp_path, config)
-            .context("Failed to write mcp.json")?;
-        fs::rename(&temp_path, output_path)
-            .context("Failed to rename mcp.json")?;
+        fs::write(&temp_path, config).context("Failed to write mcp.json")?;
+        fs::rename(&temp_path, output_path).context("Failed to rename mcp.json")?;
 
         Ok(())
     }
@@ -184,7 +181,8 @@ pub const DEFAULT_MCP_TEMPLATE: &str = r#"{
       "args": [
         "-y",
         "@modelcontextprotocol/server-filesystem",
-        "${SPRINTLESS_WORKTREE}"
+        "${SPRINTLESS_WORKTREE}",
+        "${SPRINTLESS_SHARED}"
       ]
     },
     "shell": {
@@ -212,8 +210,8 @@ pub const DEFAULT_SENTINEL_MCP_TEMPLATE: &str = r#"{
       "args": [
         "-y",
         "@modelcontextprotocol/server-filesystem",
-        "--read-only",
-        "${SPRINTLESS_WORKTREE}"
+        "${SPRINTLESS_WORKTREE}",
+        "${SPRINTLESS_SHARED}"
       ]
     },
     "shell": {
@@ -238,8 +236,10 @@ mod tests {
         let shared = dir.path().join("shared");
         let output = dir.path().join("mcp.json");
 
-        let generator = McpConfigGenerator::new("test-token", "redis://localhost");
-        generator.generate_forge_config(&worktree, &shared, &output).unwrap();
+        let generator = McpConfigGenerator::new("test-token", Some("redis://localhost"));
+        generator
+            .generate_forge_config(&worktree, &shared, &output)
+            .unwrap();
 
         let content = fs::read_to_string(&output).unwrap();
         let config: Value = serde_json::from_str(&content).unwrap();
@@ -247,6 +247,13 @@ mod tests {
         assert!(config["mcpServers"]["github"].is_object());
         assert!(config["mcpServers"]["filesystem"].is_object());
         assert!(config["mcpServers"]["shell"].is_object());
+
+        // FORGE should have filesystem access to both worktree and shared
+        let fs_args = config["mcpServers"]["filesystem"]["args"]
+            .as_array()
+            .unwrap();
+        // Should have both worktree and shared paths
+        assert_eq!(fs_args.len(), 4); // -y, server-filesystem, worktree, shared
     }
 
     #[test]
@@ -256,14 +263,21 @@ mod tests {
         let shared = dir.path().join("shared");
         let output = dir.path().join("mcp.json");
 
-        let generator = McpConfigGenerator::new("test-token", "redis://localhost");
-        generator.generate_sentinel_config(&worktree, &shared, &output).unwrap();
+        let generator = McpConfigGenerator::new("test-token", Some("redis://localhost"));
+        generator
+            .generate_sentinel_config(&worktree, &shared, &output)
+            .unwrap();
 
         let content = fs::read_to_string(&output).unwrap();
         let config: Value = serde_json::from_str(&content).unwrap();
 
-        // SENTINEL should have read-only filesystem
-        let fs_args = config["mcpServers"]["filesystem"]["args"].as_array().unwrap();
-        assert!(fs_args.iter().any(|a| a == "--read-only"));
+        // SENTINEL has filesystem access to both worktree and shared
+        let fs_args = config["mcpServers"]["filesystem"]["args"]
+            .as_array()
+            .unwrap();
+        // Should NOT have --read-only (SENTINEL needs to write reviews)
+        assert!(!fs_args.iter().any(|a| a == "--read-only"));
+        // Should have both worktree and shared paths
+        assert_eq!(fs_args.len(), 4); // -y, server-filesystem, worktree, shared
     }
 }

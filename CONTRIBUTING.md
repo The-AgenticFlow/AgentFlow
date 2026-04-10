@@ -21,7 +21,8 @@ This guide explains how to set up your environment, run the project in different
 
 2. **Configure Variables**:
    - `OPENAI_API_KEY`: Required for Nexus if using OpenAI.
-   - `LLM_PROVIDER`: Set to `openai` or `anthropic`.
+   - `GEMINI_API_KEY`: Required for Nexus if using Gemini.
+   - `LLM_PROVIDER`: Set to `openai`, `gemini`, or `anthropic`.
    - `GITHUB_PERSONAL_ACCESS_TOKEN`: Required for real-world PR creation.
    - `GITHUB_REPOSITORY`: The target repository (e.g., `owner/repo`).
 

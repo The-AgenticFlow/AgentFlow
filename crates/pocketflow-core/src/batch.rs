@@ -24,17 +24,15 @@ pub trait BatchNode: Send + Sync {
     async fn exec_one(&self, item: Value) -> Result<Value>;
 
     /// Collect all results, write to store, return routing Action.
-    async fn post_batch(
-        &self,
-        store: &SharedStore,
-        results: Vec<Result<Value>>,
-    ) -> Result<Action>;
+    async fn post_batch(&self, store: &SharedStore, results: Vec<Result<Value>>) -> Result<Action>;
 
     /// Orchestrated run — returns immediately if no items to process.
     async fn run_batch(&self, store: &SharedStore) -> Result<Action> {
         let name = self.name();
 
-        store.emit(name, "batch_prep_started", serde_json::json!({})).await;
+        store
+            .emit(name, "batch_prep_started", serde_json::json!({}))
+            .await;
 
         let items = self.prep_batch(store).await?;
         let item_count = items.len();
@@ -46,22 +44,42 @@ pub trait BatchNode: Send + Sync {
             return Ok(Action::new(crate::action::Action::NO_TICKETS));
         }
 
-        store.emit(name, "batch_exec_started", serde_json::json!({ "items": item_count })).await;
+        store
+            .emit(
+                name,
+                "batch_exec_started",
+                serde_json::json!({ "items": item_count }),
+            )
+            .await;
 
         // Run all items concurrently using futures (no tokio::spawn — avoids 'static bound)
-        let futures: Vec<_> = items
-            .into_iter()
-            .map(|item| self.exec_one(item))
-            .collect();
+        let futures: Vec<_> = items.into_iter().map(|item| self.exec_one(item)).collect();
 
         let results: Vec<Result<Value>> = join_all(futures).await;
 
-        store.emit(name, "batch_exec_done", serde_json::json!({ "items": item_count })).await;
+        store
+            .emit(
+                name,
+                "batch_exec_done",
+                serde_json::json!({ "items": item_count }),
+            )
+            .await;
 
         let action = self.post_batch(store, results).await?;
 
-        store.emit(name, "batch_done", serde_json::json!({ "action": action.as_str() })).await;
-        info!(node = name, action = action.as_str(), items = item_count, "batch completed");
+        store
+            .emit(
+                name,
+                "batch_done",
+                serde_json::json!({ "action": action.as_str() }),
+            )
+            .await;
+        info!(
+            node = name,
+            action = action.as_str(),
+            items = item_count,
+            "batch completed"
+        );
 
         Ok(action)
     }
@@ -102,7 +120,9 @@ mod tests {
 
     #[async_trait]
     impl BatchNode for DoubleNode {
-        fn name(&self) -> &str { "double" }
+        fn name(&self) -> &str {
+            "double"
+        }
 
         async fn prep_batch(&self, _store: &SharedStore) -> Result<Vec<Value>> {
             Ok(vec![

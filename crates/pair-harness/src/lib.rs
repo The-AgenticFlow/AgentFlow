@@ -7,26 +7,26 @@
 //! - File locking uses flock for atomic acquisition
 //! - Both FORGE and SENTINEL run with auto-mode permissions
 
-pub mod pair;
-pub mod worktree;
-pub mod workspace;
 pub mod isolation;
-pub mod process;
-pub mod watcher;
-pub mod reset;
-pub mod watchdog;
 pub mod mcp_config;
+pub mod pair;
+pub mod process;
 pub mod provision;
+pub mod reset;
 pub mod types;
+pub mod watchdog;
+pub mod watcher;
+pub mod workspace;
+pub mod worktree;
 
-pub use pair::ForgeSentinelPair;
-pub use types::{FsEvent, Ticket, PairConfig, PairOutcome};
-pub use worktree::WorktreeManager;
-pub use workspace::WorkspaceManager;
 pub use isolation::FileLockManager;
-pub use process::{ProcessManager, SentinelMode};
-pub use watcher::SharedDirWatcher;
-pub use reset::ResetManager;
-pub use watchdog::Watchdog;
 pub use mcp_config::McpConfigGenerator;
+pub use pair::ForgeSentinelPair;
+pub use process::{ProcessManager, SentinelMode};
 pub use provision::Provisioner;
+pub use reset::ResetManager;
+pub use types::{FsEvent, PairConfig, PairOutcome, Ticket};
+pub use watchdog::Watchdog;
+pub use watcher::SharedDirWatcher;
+pub use workspace::WorkspaceManager;
+pub use worktree::WorktreeManager;

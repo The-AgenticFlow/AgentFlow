@@ -48,12 +48,14 @@ pub struct Ticket {
 pub struct PairConfig {
     /// Pair identifier (e.g., "pair-1")
     pub pair_id: String,
+    /// Path to the project root (contains .git)
+    pub project_root: PathBuf,
     /// Path to the Git worktree for this pair
     pub worktree: PathBuf,
     /// Path to the shared directory for FORGE-SENTINEL communication
     pub shared: PathBuf,
-    /// Redis URL for shared store
-    pub redis_url: String,
+    /// Optional Redis URL for shared store (if not provided, uses filesystem-based state)
+    pub redis_url: Option<String>,
     /// GitHub token for MCP tools
     pub github_token: String,
     /// Maximum number of context resets allowed
@@ -63,8 +65,31 @@ pub struct PairConfig {
 }
 
 impl PairConfig {
-    /// Create a new pair configuration.
+    /// Create a new pair configuration with filesystem-based state.
     pub fn new(
+        pair_id: impl Into<String>,
+        project_root: &std::path::Path,
+        github_token: impl Into<String>,
+    ) -> Self {
+        let pair_id = pair_id.into();
+        Self {
+            project_root: project_root.to_path_buf(),
+            worktree: project_root.join("worktrees").join(&pair_id),
+            shared: project_root
+                .join(".sprintless")
+                .join("pairs")
+                .join(&pair_id)
+                .join("shared"),
+            pair_id,
+            redis_url: None,
+            github_token: github_token.into(),
+            max_resets: 10,
+            watchdog_timeout_secs: 1200,
+        }
+    }
+
+    /// Create a pair configuration with Redis backend.
+    pub fn with_redis(
         pair_id: impl Into<String>,
         project_root: &std::path::Path,
         redis_url: impl Into<String>,
@@ -72,10 +97,15 @@ impl PairConfig {
     ) -> Self {
         let pair_id = pair_id.into();
         Self {
+            project_root: project_root.to_path_buf(),
             worktree: project_root.join("worktrees").join(&pair_id),
-            shared: project_root.join(".sprintless").join("pairs").join(&pair_id).join("shared"),
+            shared: project_root
+                .join(".sprintless")
+                .join("pairs")
+                .join(&pair_id)
+                .join("shared"),
             pair_id,
-            redis_url: redis_url.into(),
+            redis_url: Some(redis_url.into()),
             github_token: github_token.into(),
             max_resets: 10,
             watchdog_timeout_secs: 1200,
@@ -99,10 +129,7 @@ pub enum PairOutcome {
         blockers: Vec<Blocker>,
     },
     /// Fuel exhausted (too many context resets or timeout)
-    FuelExhausted {
-        reason: String,
-        reset_count: u32,
-    },
+    FuelExhausted { reason: String, reset_count: u32 },
 }
 
 /// A blocker preventing progress.
@@ -117,14 +144,45 @@ pub struct Blocker {
     pub nexus_action: String,
 }
 
+/// Files changed - can be either a count (integer) or a list of paths.
+/// FORGE may write either format depending on the skill version.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(untagged)]
+pub enum FilesChanged {
+    #[default]
+    Unknown,
+    Count(u64),
+    List(Vec<String>),
+}
+
+impl FilesChanged {
+    pub fn is_empty(&self) -> bool {
+        match self {
+            FilesChanged::Unknown => true,
+            FilesChanged::Count(c) => *c == 0,
+            FilesChanged::List(v) => v.is_empty(),
+        }
+    }
+
+    pub fn to_list(&self) -> Vec<String> {
+        match self {
+            FilesChanged::Unknown => vec![],
+            FilesChanged::Count(_) => vec![],
+            FilesChanged::List(v) => v.clone(),
+        }
+    }
+}
+
 /// Status written to STATUS.json by FORGE.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatusJson {
     /// Current status
     pub status: String,
-    /// Pair identifier
-    pub pair: String,
-    /// Ticket identifier
+    /// Pair identifier (optional - may not be present in all STATUS.json formats)
+    #[serde(default)]
+    pub pair: Option<String>,
+    /// Ticket identifier - can be "ticket" or "ticket_id" in STATUS.json
+    #[serde(alias = "ticket")]
     pub ticket_id: String,
     /// PR URL (if PR_OPENED)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -132,24 +190,32 @@ pub struct StatusJson {
     /// PR number (if PR_OPENED)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pr_number: Option<u64>,
-    /// Branch name
-    pub branch: String,
-    /// Files changed
-    pub files_changed: Vec<String>,
-    /// Test results
-    pub test_results: TestResults,
-    /// Number of segments completed
+    /// Branch name (optional - may not be present in all STATUS.json formats)
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// Files changed (can be count or list)
+    #[serde(default)]
+    pub files_changed: FilesChanged,
+    /// Test results (optional)
+    #[serde(default)]
+    pub test_results: Option<TestResults>,
+    /// Number of segments completed (optional)
+    #[serde(default)]
     pub segments_completed: u32,
-    /// Number of context resets
+    /// Number of context resets (optional)
+    #[serde(default)]
     pub context_resets: u32,
-    /// Whether SENTINEL approved
+    /// Whether SENTINEL approved (optional)
+    #[serde(default)]
     pub sentinel_approved: bool,
     /// Active blockers (if BLOCKED)
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub blockers: Vec<Blocker>,
-    /// Elapsed time in milliseconds
+    /// Elapsed time in milliseconds (optional)
+    #[serde(default)]
     pub elapsed_ms: u64,
-    /// Timestamp
+    /// Timestamp (optional)
+    #[serde(default)]
     pub timestamp: String,
 }
 
@@ -233,5 +299,58 @@ impl FileLock {
             file: file.into(),
             acquired_at: chrono::Utc::now().to_rfc3339(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_files_changed_count() {
+        let json = r#"{
+            "ticket_id": "T-1",
+            "status": "IMPLEMENTATION_COMPLETE",
+            "branch": "forge-1/T-1",
+            "files_changed": 14
+        }"#;
+
+        let status: StatusJson = serde_json::from_str(json).expect("Failed to parse");
+        assert_eq!(status.ticket_id, "T-1");
+        assert_eq!(status.status, "IMPLEMENTATION_COMPLETE");
+        match status.files_changed {
+            FilesChanged::Count(n) => assert_eq!(n, 14),
+            _ => panic!("Expected Count variant, got {:?}", status.files_changed),
+        }
+    }
+
+    #[test]
+    fn test_files_changed_list() {
+        let json = r#"{
+            "ticket_id": "T-2",
+            "status": "PR_OPENED",
+            "branch": "forge-1/T-2",
+            "files_changed": ["src/main.rs", "src/lib.rs"]
+        }"#;
+
+        let status: StatusJson = serde_json::from_str(json).expect("Failed to parse");
+        assert_eq!(status.ticket_id, "T-2");
+        match status.files_changed {
+            FilesChanged::List(v) => assert_eq!(v.len(), 2),
+            _ => panic!("Expected List variant, got {:?}", status.files_changed),
+        }
+    }
+
+    #[test]
+    fn test_files_changed_missing() {
+        let json = r#"{
+            "ticket_id": "T-3",
+            "status": "BLOCKED",
+            "branch": "forge-1/T-3"
+        }"#;
+
+        let status: StatusJson = serde_json::from_str(json).expect("Failed to parse");
+        assert_eq!(status.ticket_id, "T-3");
+        assert!(status.files_changed.is_empty());
     }
 }

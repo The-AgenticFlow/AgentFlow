@@ -14,7 +14,11 @@ use tracing_subscriber::FmtSubscriber;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    dotenvy::dotenv().ok();
+    match dotenvy::dotenv() {
+        Ok(path) => eprintln!("Loaded environment from {}", path.display()),
+        Err(dotenvy::Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err.into()),
+    }
     // 1. Setup logging
     let subscriber = FmtSubscriber::builder()
         .with_max_level(Level::INFO)

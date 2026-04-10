@@ -6,7 +6,7 @@ This guide walks you through running a complete autonomous development cycle, fr
 
 1. **API Keys Required**:
    - `ANTHROPIC_API_KEY` - For Claude Code (forge worker)
-   - `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` - For Nexus orchestrator (LLM provider)
+   - `OPENAI_API_KEY`, `GEMINI_API_KEY`, or `ANTHROPIC_API_KEY` - For Nexus orchestrator (LLM provider)
    - `GITHUB_PERSONAL_ACCESS_TOKEN` - For GitHub MCP operations (create PRs, push code)
 
 2. **Tools Required**:
@@ -37,6 +37,7 @@ Your `.env` file should contain:
 # LLM Provider for Nexus orchestrator
 LLM_PROVIDER=openai
 OPENAI_API_KEY=sk-...
+# GEMINI_API_KEY=AIza...
 
 # For Claude Code (forge worker)
 ANTHROPIC_API_KEY=sk-ant-...

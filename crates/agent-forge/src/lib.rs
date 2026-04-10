@@ -5,11 +5,9 @@ use config::{
     state::{ACTION_EMPTY, ACTION_FAILED, ACTION_PR_OPENED, KEY_COMMAND_GATE, KEY_WORKER_SLOTS},
     WorkerSlot, WorkerStatus,
 };
-use pair_harness::{
-    ForgeSentinelPair, PairConfig, PairOutcome, Ticket,
-    worktree::WorktreeManager,
-};
+use pair_harness::{worktree::WorktreeManager, ForgeSentinelPair, PairConfig, PairOutcome, Ticket};
 use pocketflow_core::{Action, BatchNode, SharedStore};
+use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -63,8 +61,15 @@ impl ForgeNode {
     }
 
     async fn load_persona(&self) -> Result<String> {
-        let content = tokio::fs::read_to_string(&self.persona_path).await
-            .map_err(|e| anyhow!("Failed to load forge persona from {:?}: {}", self.persona_path, e))?;
+        let content = tokio::fs::read_to_string(&self.persona_path)
+            .await
+            .map_err(|e| {
+                anyhow!(
+                    "Failed to load forge persona from {:?}: {}",
+                    self.persona_path,
+                    e
+                )
+            })?;
         Ok(content)
     }
 }
@@ -111,7 +116,7 @@ impl BatchNode for ForgeNode {
 
         // Create worktree manager
         let worktree_mgr = WorktreeManager::new(&self.workspace_root);
-        
+
         // Create worktree for this worker
         let worktree_path = worktree_mgr
             .create_worktree(&worker_id, &ticket_id)
@@ -120,9 +125,13 @@ impl BatchNode for ForgeNode {
         info!(worker = worker_id, ticket = ticket_id, path = ?worktree_path, "Worktree created");
 
         // Create log directory to persist logs even after worktree cleanup
-        let log_dir = self.workspace_root.join("forge").join("workers").join(&worker_id);
+        let log_dir = self
+            .workspace_root
+            .join("forge")
+            .join("workers")
+            .join(&worker_id);
         tokio::fs::create_dir_all(&log_dir).await?;
-        
+
         let status_path = worktree_path.join("STATUS.json");
         let log_path = log_dir.join("worker.log");
         let log_file = std::fs::File::create(&log_path)?;
@@ -141,7 +150,7 @@ impl BatchNode for ForgeNode {
         };
 
         let branch_name = WorktreeManager::branch_name(&worker_id, &ticket_id);
-        
+
         // Combine persona with task-specific context
         let prompt = format!(
             "{}\n\n---\n\n# Current Task\n\nYou are FORGE agent {} (worker slot).\nImplement ticket {}.\n{}\nBranch: {}.\nWhen done, open a PR and write STATUS.json.",
@@ -154,7 +163,7 @@ impl BatchNode for ForgeNode {
         // We must pass the prompt via stdin instead.
         let mut child = tokio::process::Command::new("claude")
             .args(["--print", "--output-format", "json"])
-            .args(["--permission-mode", "auto"])
+            .arg("--dangerously-skip-permissions")
             .args(["--allowedTools", "Read,Write,Edit,Bash,WebFetch"])
             .current_dir(&worktree_path)
             .env(
@@ -170,7 +179,9 @@ impl BatchNode for ForgeNode {
         // Write prompt to stdin
         if let Some(mut stdin) = child.stdin.take() {
             use tokio::io::AsyncWriteExt;
-            stdin.write_all(prompt.as_bytes()).await
+            stdin
+                .write_all(prompt.as_bytes())
+                .await
                 .map_err(|e| anyhow!("Failed to write prompt to stdin: {}", e))?;
         }
 
@@ -205,13 +216,13 @@ impl BatchNode for ForgeNode {
         if tokio::fs::try_exists(&status_path).await? {
             let content = tokio::fs::read_to_string(&status_path).await?;
             let forge_status: ForgeStatus = serde_json::from_str(&content)?;
-            
+
             // Map status values to outcome values
             let outcome = match forge_status.outcome.as_str() {
                 "complete" | "completed" => "success",
                 other => other,
             };
-            
+
             return Ok(json!({
                 "worker_id": worker_id,
                 "ticket_id": ticket_id,
@@ -347,16 +358,166 @@ pub struct ForgePairNode {
     pub github_token: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct GithubIssue {
+    number: u64,
+    title: String,
+    #[serde(default)]
+    body: String,
+    html_url: String,
+}
+
 impl ForgePairNode {
     /// Create a new ForgePairNode with filesystem-based state.
-    pub fn new(
-        workspace_root: impl Into<PathBuf>,
-        github_token: impl Into<String>,
-    ) -> Self {
+    pub fn new(workspace_root: impl Into<PathBuf>, github_token: impl Into<String>) -> Self {
         Self {
             workspace_root: workspace_root.into(),
             github_token: github_token.into(),
         }
+    }
+
+    fn parse_github_issue_url(issue_url: &str) -> Option<(String, String, u64)> {
+        let trimmed = issue_url.trim_end_matches('/');
+        let parts: Vec<_> = trimmed.split('/').collect();
+        let issue_idx = parts.iter().position(|part| *part == "issues")?;
+        if issue_idx < 2 || issue_idx + 1 >= parts.len() {
+            return None;
+        }
+
+        let owner = parts.get(issue_idx - 2)?.to_string();
+        let repo = parts.get(issue_idx - 1)?.to_string();
+        let number = parts.get(issue_idx + 1)?.parse().ok()?;
+
+        Some((owner, repo, number))
+    }
+
+    fn extract_acceptance_criteria(body: &str) -> Vec<String> {
+        fn normalize_bullet(line: &str) -> Option<String> {
+            let trimmed = line.trim();
+            let stripped = trimmed
+                .strip_prefix("- [ ] ")
+                .or_else(|| trimmed.strip_prefix("- [x] "))
+                .or_else(|| trimmed.strip_prefix("- "))
+                .or_else(|| trimmed.strip_prefix("* "))
+                .or_else(|| trimmed.strip_prefix("1. "))
+                .or_else(|| trimmed.strip_prefix("2. "))
+                .or_else(|| trimmed.strip_prefix("3. "))
+                .or_else(|| trimmed.strip_prefix("4. "))
+                .or_else(|| trimmed.strip_prefix("5. "))?;
+            let value = stripped.trim();
+            if value.is_empty() {
+                None
+            } else {
+                Some(value.to_string())
+            }
+        }
+
+        let mut in_acceptance_section = false;
+        let mut criteria = Vec::new();
+
+        for line in body.lines() {
+            let trimmed = line.trim();
+            let lower = trimmed.to_ascii_lowercase();
+
+            if trimmed.starts_with('#') {
+                in_acceptance_section = lower.contains("acceptance criteria");
+                continue;
+            }
+
+            if in_acceptance_section {
+                if let Some(item) = normalize_bullet(trimmed) {
+                    criteria.push(item);
+                    continue;
+                }
+
+                if !trimmed.is_empty() {
+                    in_acceptance_section = false;
+                }
+            }
+        }
+
+        if criteria.is_empty() {
+            for line in body.lines() {
+                if let Some(item) = normalize_bullet(line) {
+                    criteria.push(item);
+                }
+            }
+        }
+
+        criteria.dedup();
+        criteria
+    }
+
+    async fn fetch_issue(&self, owner: &str, repo: &str, number: u64) -> Result<GithubIssue> {
+        let mut headers = HeaderMap::new();
+        headers.insert(USER_AGENT, HeaderValue::from_static("agentflow/forge"));
+        headers.insert(
+            ACCEPT,
+            HeaderValue::from_static("application/vnd.github+json"),
+        );
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {}", self.github_token))?,
+        );
+
+        let client = reqwest::Client::builder()
+            .default_headers(headers)
+            .build()?;
+
+        let response = client
+            .get(format!(
+                "https://api.github.com/repos/{owner}/{repo}/issues/{number}"
+            ))
+            .send()
+            .await?;
+
+        let response = response.error_for_status()?;
+        Ok(response.json::<GithubIssue>().await?)
+    }
+
+    async fn build_ticket(&self, ticket_id: &str, issue_url: Option<&str>) -> Ticket {
+        let mut ticket = Ticket {
+            id: ticket_id.to_string(),
+            issue_number: 0,
+            title: format!("Ticket {}", ticket_id),
+            body: issue_url.unwrap_or_default().to_string(),
+            url: issue_url.unwrap_or_default().to_string(),
+            touched_files: vec![],
+            acceptance_criteria: vec![],
+        };
+
+        let Some(issue_url) = issue_url else {
+            return ticket;
+        };
+
+        if let Some((owner, repo, number)) = Self::parse_github_issue_url(issue_url) {
+            ticket.issue_number = number;
+
+            match self.fetch_issue(&owner, &repo, number).await {
+                Ok(issue) => {
+                    ticket.issue_number = issue.number;
+                    ticket.title = issue.title;
+                    ticket.body = issue.body;
+                    ticket.url = issue.html_url;
+                    ticket.acceptance_criteria = Self::extract_acceptance_criteria(&ticket.body);
+                }
+                Err(error) => {
+                    warn!(
+                        ticket = ticket_id,
+                        issue_url,
+                        error = %error,
+                        "Failed to fetch GitHub issue details; falling back to minimal ticket"
+                    );
+                }
+            }
+        } else {
+            warn!(
+                ticket = ticket_id,
+                issue_url, "Could not parse GitHub issue URL; falling back to minimal ticket"
+            );
+        }
+
+        ticket
     }
 }
 
@@ -380,6 +541,13 @@ impl BatchNode for ForgePairNode {
             })
             .map(|s| json!(s))
             .collect();
+
+        // Store the worker IDs we're about to process so we can handle failures
+        let worker_ids: Vec<String> = active_workers
+            .iter()
+            .filter_map(|v| v["id"].as_str().map(|s| s.to_string()))
+            .collect();
+        store.set("_forge_batch_workers", json!(worker_ids)).await;
 
         Ok(active_workers)
     }
@@ -406,23 +574,10 @@ impl BatchNode for ForgePairNode {
             "Starting FORGE-SENTINEL pair lifecycle"
         );
 
-        // Create ticket object for pair harness
-        let ticket = Ticket {
-            id: ticket_id.clone(),
-            issue_number: 0, // Will be extracted from URL or fetched
-            title: format!("Ticket {}", ticket_id),
-            body: issue_url.clone().unwrap_or_default(),
-            url: issue_url.clone().unwrap_or_default(),
-            touched_files: vec![], // Will be determined by FORGE
-            acceptance_criteria: vec![],
-        };
+        let ticket = self.build_ticket(&ticket_id, issue_url.as_deref()).await;
 
         // Create pair configuration (filesystem-based state, no Redis)
-        let config = PairConfig::new(
-            &worker_id,
-            &self.workspace_root,
-            &self.github_token,
-        );
+        let config = PairConfig::new(&worker_id, &self.workspace_root, &self.github_token);
 
         // Run the pair lifecycle in a blocking task
         // (ForgeSentinelPair uses sync mpsc channels internally)
@@ -500,8 +655,17 @@ impl BatchNode for ForgePairNode {
         let mut command_gate: HashMap<String, Value> =
             store.get_typed(KEY_COMMAND_GATE).await.unwrap_or_default();
 
+        // Get the list of workers we tried to process in this batch
+        let batch_workers: Vec<String> = store
+            .get("_forge_batch_workers")
+            .await
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default();
+
+        // Track which workers had successful results
+        let mut successful_workers: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         let mut all_success = true;
-        let worktree_mgr = WorktreeManager::new(&self.workspace_root);
 
         for res_opt in &results {
             let res = match res_opt {
@@ -515,6 +679,10 @@ impl BatchNode for ForgePairNode {
             let worker_id = res["worker_id"].as_str().unwrap_or("");
             let ticket_id = res["ticket_id"].as_str().unwrap_or("");
             let outcome = res["outcome"].as_str().unwrap_or("failed");
+
+            if !worker_id.is_empty() {
+                successful_workers.insert(worker_id.to_string());
+            }
 
             if let Some(slot) = slots.get_mut(worker_id) {
                 match outcome {
@@ -561,6 +729,20 @@ impl BatchNode for ForgePairNode {
             }
         }
 
+        // Reset any workers that were in the batch but didn't get a successful result
+        // This handles the case where exec_one returns an Err
+        for worker_id in &batch_workers {
+            if !successful_workers.contains(worker_id) {
+                if let Some(slot) = slots.get_mut(worker_id) {
+                    warn!(
+                        worker = worker_id,
+                        "Resetting worker to Idle due to execution failure"
+                    );
+                    slot.status = WorkerStatus::Idle;
+                }
+            }
+        }
+
         store.set(KEY_WORKER_SLOTS, json!(slots)).await;
         store.set(KEY_COMMAND_GATE, json!(command_gate)).await;
 
@@ -577,5 +759,68 @@ impl BatchNode for ForgePairNode {
         } else {
             Ok(Action::new(ACTION_FAILED))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ForgePairNode;
+
+    #[test]
+    fn parse_github_issue_url_extracts_owner_repo_and_number() {
+        let parsed = ForgePairNode::parse_github_issue_url(
+            "https://github.com/The-AgenticFlow/template-counterapp/issues/4",
+        )
+        .unwrap();
+
+        assert_eq!(parsed.0, "The-AgenticFlow");
+        assert_eq!(parsed.1, "template-counterapp");
+        assert_eq!(parsed.2, 4);
+    }
+
+    #[test]
+    fn extract_acceptance_criteria_prefers_dedicated_section() {
+        let body = r#"
+# Counter UI Frontend
+
+## Acceptance Criteria
+- Render the current count value
+- Increment and decrement controls update the count
+- Styling matches the provided design
+
+## Notes
+- Mobile responsive
+"#;
+
+        let criteria = ForgePairNode::extract_acceptance_criteria(body);
+        assert_eq!(
+            criteria,
+            vec![
+                "Render the current count value",
+                "Increment and decrement controls update the count",
+                "Styling matches the provided design",
+            ]
+        );
+    }
+
+    #[test]
+    fn extract_acceptance_criteria_falls_back_to_markdown_tasks() {
+        let body = r#"
+Implement the counter experience.
+
+- [ ] Add increment action
+- [ ] Add decrement action
+- [ ] Add reset action
+"#;
+
+        let criteria = ForgePairNode::extract_acceptance_criteria(body);
+        assert_eq!(
+            criteria,
+            vec![
+                "Add increment action",
+                "Add decrement action",
+                "Add reset action",
+            ]
+        );
     }
 }

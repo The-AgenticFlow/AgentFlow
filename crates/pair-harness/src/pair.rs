@@ -7,19 +7,19 @@
 //! - The harness uses inotify for zero-polling event detection
 
 use anyhow::{Context, Result};
-use std::path::PathBuf;
+use serde_json::Value;
 use std::time::{Duration, Instant};
 use tokio::process::Child;
-use tracing::{info, warn, error};
+use tracing::{debug, error, info, warn};
 
-use crate::types::{FsEvent, Ticket, PairConfig, PairOutcome, StatusJson};
-use crate::worktree::WorktreeManager;
 use crate::isolation::FileLockManager;
 use crate::process::{ProcessManager, SentinelMode};
-use crate::watcher::SharedDirWatcher;
-use crate::reset::ResetManager;
-use crate::watchdog::Watchdog;
 use crate::provision::Provisioner;
+use crate::reset::ResetManager;
+use crate::types::{FsEvent, PairConfig, PairOutcome, StatusJson, Ticket};
+use crate::watchdog::Watchdog;
+use crate::watcher::SharedDirWatcher;
+use crate::worktree::WorktreeManager;
 
 const SENTINEL_TIMEOUT_SECS: u64 = 120;
 const FORGE_STARTUP_TIMEOUT_SECS: u64 = 300; // 5 minutes to write PLAN.md
@@ -27,6 +27,7 @@ const FORGE_STARTUP_TIMEOUT_SECS: u64 = 300; // 5 minutes to write PLAN.md
 struct SentinelTracker {
     mode: SentinelMode,
     spawn_time: Instant,
+    child: Child,
 }
 
 /// The main FORGE-SENTINEL pair lifecycle manager.
@@ -40,6 +41,9 @@ pub struct ForgeSentinelPair {
     start_time: Instant,
     sentinel_tracker: Option<SentinelTracker>,
     forge_spawn_time: Instant,
+    ticket_id: String,
+    plan_approved: bool,
+    final_approved: bool,
 }
 
 impl ForgeSentinelPair {
@@ -62,6 +66,9 @@ impl ForgeSentinelPair {
             start_time: Instant::now(),
             sentinel_tracker: None,
             forge_spawn_time: Instant::now(),
+            ticket_id: String::new(),
+            plan_approved: false,
+            final_approved: false,
         }
     }
 
@@ -82,6 +89,29 @@ impl ForgeSentinelPair {
         );
 
         self.start_time = Instant::now();
+        self.ticket_id = ticket.id.clone();
+
+        // Check if this is a resume with existing approved plan
+        let contract_path = self.config.shared.join("CONTRACT.md");
+        if contract_path.exists() {
+            if let Ok(content) = tokio::fs::read_to_string(&contract_path).await {
+                if content.contains("status: AGREED") || content.contains("status: \"AGREED\"") {
+                    self.plan_approved = true;
+                    info!("Resuming with approved plan - skipping plan review phase");
+                }
+            }
+        }
+
+        // Check if this is a resume with existing final approval
+        let final_review_path = self.config.shared.join("final-review.md");
+        if final_review_path.exists() {
+            if let Ok(content) = tokio::fs::read_to_string(&final_review_path).await {
+                if content.contains("APPROVED") {
+                    self.final_approved = true;
+                    info!("Resuming with final approval - FORGE should create PR");
+                }
+            }
+        }
 
         // 1. Provision worktree
         self.provision_worktree(ticket).await?;
@@ -127,27 +157,53 @@ impl ForgeSentinelPair {
         watcher: &mut SharedDirWatcher,
     ) -> Result<PairOutcome> {
         loop {
+            // Check if SENTINEL has already exited.
+            if let Some(tracker) = &mut self.sentinel_tracker {
+                match tracker.child.try_wait() {
+                    Ok(Some(status)) => {
+                        let mode = tracker.mode.clone();
+                        if status.success() {
+                            self.materialize_sentinel_artifact(&mode).await?;
+                        } else {
+                            warn!(
+                                mode = ?mode,
+                                exit_code = ?status.code(),
+                                "SENTINEL exited with error before producing a watched artifact"
+                            );
+                        }
+                        self.sentinel_tracker = None;
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        warn!(mode = ?tracker.mode, error = %e, "Failed to poll SENTINEL status");
+                        self.sentinel_tracker = None;
+                    }
+                }
+            }
+
             // Check for SENTINEL timeout
-            if let Some(tracker) = &self.sentinel_tracker {
+            if let Some(tracker) = &mut self.sentinel_tracker {
                 if tracker.spawn_time.elapsed().as_secs() > SENTINEL_TIMEOUT_SECS {
                     warn!(
                         mode = ?tracker.mode,
                         "SENTINEL timed out after {}s",
                         SENTINEL_TIMEOUT_SECS
                     );
+                    let _ = self.process.kill(&mut tracker.child).await;
                     self.sentinel_tracker = None;
                 }
             }
 
             // Check for FORGE startup timeout (no PLAN.md written)
             let plan_path = self.config.shared.join("PLAN.md");
-            if !plan_path.exists() 
-                && self.forge_spawn_time.elapsed().as_secs() > FORGE_STARTUP_TIMEOUT_SECS {
+            if !plan_path.exists()
+                && self.forge_spawn_time.elapsed().as_secs() > FORGE_STARTUP_TIMEOUT_SECS
+            {
                 error!(
                     "FORGE startup timeout - no PLAN.md after {}s",
                     FORGE_STARTUP_TIMEOUT_SECS
                 );
-                
+
                 // Check if FORGE is still running
                 if self.process.is_running(forge).await {
                     warn!("Killing stuck FORGE process and respawning");
@@ -163,9 +219,12 @@ impl ForgeSentinelPair {
             if let Some(evt) = event {
                 match evt {
                     FsEvent::PlanWritten => {
-                        if self.sentinel_tracker.is_none() {
+                        // Only spawn SENTINEL for plan review if plan hasn't been approved yet
+                        if !self.plan_approved && self.sentinel_tracker.is_none() {
                             info!("PLAN.md written - spawning SENTINEL for plan review");
                             self.spawn_sentinel_for_plan().await?;
+                        } else if self.plan_approved {
+                            debug!("PLAN.md written but plan already approved - ignoring");
                         } else {
                             warn!("SENTINEL already active - skipping duplicate spawn");
                         }
@@ -175,7 +234,11 @@ impl ForgeSentinelPair {
                         self.sentinel_tracker = None;
                         let status = self.read_contract_status().await?;
                         if status == "AGREED" {
-                            info!("Contract agreed - FORGE can begin implementation");
+                            self.plan_approved = true;
+                            info!("Contract agreed - respawning FORGE to begin implementation");
+                            self.process.kill(forge).await?;
+                            *forge = self.spawn_forge_resume().await?;
+                            self.reset.increment_reset();
                         } else {
                             info!("Contract has issues - FORGE must revise plan");
                         }
@@ -183,21 +246,41 @@ impl ForgeSentinelPair {
 
                     FsEvent::WorklogUpdated => {
                         let segment_n = self.extract_latest_segment().await?;
-                        info!("Segment {} complete - spawning SENTINEL for eval", segment_n);
-                        self.spawn_sentinel_for_segment(segment_n).await?;
+                        
+                        // Check if all segments are complete and approved
+                        if self.all_segments_approved().await? {
+                            info!("All segments complete - spawning SENTINEL for final review");
+                            self.spawn_sentinel_for_final().await?;
+                        } else {
+                            info!(
+                                "Segment {} complete - spawning SENTINEL for eval",
+                                segment_n
+                            );
+                            self.spawn_sentinel_for_segment(segment_n).await?;
+                        }
                         self.watchdog.reset();
                     }
 
                     FsEvent::SegmentEvalWritten(n) => {
                         self.sentinel_tracker = None;
                         info!("Segment {} evaluation complete", n);
+                        
+                        // Check if this was the last segment - if so, spawn final review
+                        if self.all_segments_approved().await? {
+                            info!("All segments approved - spawning SENTINEL for final review");
+                            self.spawn_sentinel_for_final().await?;
+                        }
                     }
 
                     FsEvent::FinalReviewWritten => {
                         self.sentinel_tracker = None;
                         let verdict = self.read_final_review_verdict().await?;
                         if verdict == "APPROVED" {
-                            info!("Final review APPROVED - FORGE can open PR");
+                            self.final_approved = true;
+                            info!("Final review APPROVED - respawning FORGE to create PR");
+                            self.process.kill(forge).await?;
+                            *forge = self.spawn_forge_for_pr().await?;
+                            self.reset.increment_reset();
                         } else {
                             info!("Final review REJECTED - FORGE must fix issues");
                         }
@@ -249,8 +332,9 @@ impl ForgeSentinelPair {
                         let waiting_for_sentinel = self.waiting_for_sentinel_output().await;
                         if waiting_for_sentinel {
                             warn!("FORGE exited while waiting for SENTINEL output - spawning SENTINEL");
-                            if self.config.shared.join("PLAN.md").exists() 
-                                && !self.config.shared.join("CONTRACT.md").exists() {
+                            if self.config.shared.join("PLAN.md").exists()
+                                && !self.config.shared.join("CONTRACT.md").exists()
+                            {
                                 self.spawn_sentinel_for_plan().await?;
                             }
                             tokio::time::sleep(Duration::from_secs(5)).await;
@@ -286,7 +370,8 @@ impl ForgeSentinelPair {
 
     /// Provision the worktree for this pair.
     async fn provision_worktree(&self, ticket: &Ticket) -> Result<()> {
-        self.worktree.create_worktree(&self.config.pair_id, &ticket.id)
+        self.worktree
+            .create_worktree(&self.config.pair_id, &ticket.id)
             .context("Failed to create worktree")?;
         Ok(())
     }
@@ -296,18 +381,21 @@ impl ForgeSentinelPair {
         // Use project_root where .sprintless/plugin exists
         let provisioner = Provisioner::new(&self.config.project_root);
 
-        provisioner.provision_pair(
-            &self.config.pair_id,
-            &self.config.worktree,
-            &self.config.shared,
-            &self.config.github_token,
-            self.config.redis_url.as_deref(),
-        ).await
+        provisioner
+            .provision_pair(
+                &self.config.pair_id,
+                &self.config.worktree,
+                &self.config.shared,
+                &self.config.github_token,
+                self.config.redis_url.as_deref(),
+            )
+            .await
     }
 
     /// Seed initial file locks for the ticket.
     async fn seed_locks(&self, ticket: &Ticket) -> Result<()> {
-        self.locks.seed_locks(&ticket.touched_files, &self.config.pair_id)?;
+        self.locks
+            .seed_locks(&ticket.touched_files, &self.config.pair_id)?;
         Ok(())
     }
 
@@ -334,38 +422,59 @@ impl ForgeSentinelPair {
     /// Spawn FORGE process.
     async fn spawn_forge(&mut self) -> Result<Child> {
         self.forge_spawn_time = Instant::now();
-        self.process.spawn_forge(
-            &self.config.pair_id,
-            "", // ticket_id is in the environment already
-            &self.config.worktree,
-            &self.config.shared,
-        ).await
+        self.process
+            .spawn_forge(
+                &self.config.pair_id,
+                &self.ticket_id,
+                &self.config.worktree,
+                &self.config.shared,
+            )
+            .await
     }
 
     /// Spawn FORGE process in resume mode.
     async fn spawn_forge_resume(&mut self) -> Result<Child> {
         self.forge_spawn_time = Instant::now();
-        self.process.spawn_forge_resume(
-            &self.config.pair_id,
-            "",
-            &self.config.worktree,
-            &self.config.shared,
-        ).await
+        self.process
+            .spawn_forge_resume(
+                &self.config.pair_id,
+                &self.ticket_id,
+                &self.config.worktree,
+                &self.config.shared,
+            )
+            .await
+    }
+
+    /// Spawn FORGE process for PR creation after final approval.
+    async fn spawn_forge_for_pr(&mut self) -> Result<Child> {
+        self.forge_spawn_time = Instant::now();
+        self.process
+            .spawn_forge_for_pr(
+                &self.config.pair_id,
+                &self.ticket_id,
+                &self.config.worktree,
+                &self.config.shared,
+            )
+            .await
     }
 
     /// Spawn SENTINEL for plan review.
     async fn spawn_sentinel_for_plan(&mut self) -> Result<()> {
-        let _child = self.process.spawn_sentinel(
-            &self.config.pair_id,
-            "",
-            SentinelMode::PlanReview,
-            &self.config.worktree,
-            &self.config.shared,
-        ).await?;
+        let child = self
+            .process
+            .spawn_sentinel(
+                &self.config.pair_id,
+                &self.ticket_id,
+                SentinelMode::PlanReview,
+                &self.config.worktree,
+                &self.config.shared,
+            )
+            .await?;
 
         self.sentinel_tracker = Some(SentinelTracker {
             mode: SentinelMode::PlanReview,
             spawn_time: Instant::now(),
+            child,
         });
 
         Ok(())
@@ -373,20 +482,88 @@ impl ForgeSentinelPair {
 
     /// Spawn SENTINEL for segment evaluation.
     async fn spawn_sentinel_for_segment(&mut self, segment: u32) -> Result<()> {
-        let _child = self.process.spawn_sentinel(
-            &self.config.pair_id,
-            "",
-            SentinelMode::SegmentEval(segment),
-            &self.config.worktree,
-            &self.config.shared,
-        ).await?;
+        let child = self
+            .process
+            .spawn_sentinel(
+                &self.config.pair_id,
+                &self.ticket_id,
+                SentinelMode::SegmentEval(segment),
+                &self.config.worktree,
+                &self.config.shared,
+            )
+            .await?;
 
         self.sentinel_tracker = Some(SentinelTracker {
             mode: SentinelMode::SegmentEval(segment),
             spawn_time: Instant::now(),
+            child,
         });
 
         Ok(())
+    }
+
+    /// Spawn SENTINEL for final review.
+    async fn spawn_sentinel_for_final(&mut self) -> Result<()> {
+        // Don't spawn if final review already done
+        if self.config.shared.join("final-review.md").exists() {
+            debug!("Final review already exists - skipping spawn");
+            return Ok(());
+        }
+
+        info!("Spawning SENTINEL for final review");
+        let child = self
+            .process
+            .spawn_sentinel(
+                &self.config.pair_id,
+                &self.ticket_id,
+                SentinelMode::FinalReview,
+                &self.config.worktree,
+                &self.config.shared,
+            )
+            .await?;
+
+        self.sentinel_tracker = Some(SentinelTracker {
+            mode: SentinelMode::FinalReview,
+            spawn_time: Instant::now(),
+            child,
+        });
+
+        Ok(())
+    }
+
+    /// Check if all segments from PLAN.md are approved.
+    async fn all_segments_approved(&self) -> Result<bool> {
+        let plan_path = self.config.shared.join("PLAN.md");
+        if !plan_path.exists() {
+            return Ok(false);
+        }
+
+        let content = tokio::fs::read_to_string(&plan_path).await?;
+
+        // Count segments in PLAN.md
+        let total_segments = content
+            .lines()
+            .filter(|line| line.starts_with("## Segment") || line.starts_with("### Segment"))
+            .count();
+
+        if total_segments == 0 {
+            // If no segments defined, check if WORKLOG.md exists (implementation done)
+            return Ok(self.config.shared.join("WORKLOG.md").exists());
+        }
+
+        // Count approved segment evaluations
+        let mut approved_count = 0;
+        for n in 1..=total_segments as u32 {
+            let eval_path = self.config.shared.join(format!("segment-{}-eval.md", n));
+            if eval_path.exists() {
+                let eval_content = tokio::fs::read_to_string(&eval_path).await?;
+                if eval_content.contains("APPROVED") {
+                    approved_count += 1;
+                }
+            }
+        }
+
+        Ok(approved_count >= total_segments as u32)
     }
 
     /// Read CONTRACT.md status.
@@ -478,7 +655,8 @@ impl ForgeSentinelPair {
                     })
                 } else {
                     Ok(PairOutcome::Blocked {
-                        reason: "Work complete but PR not created - needs push/PR creation".to_string(),
+                        reason: "Work complete but PR not created - needs push/PR creation"
+                            .to_string(),
                         blockers: vec![],
                     })
                 }
@@ -486,7 +664,8 @@ impl ForgeSentinelPair {
             "IMPLEMENTATION_COMPLETE" => {
                 // Implementation done but not pushed/PR created - treat as blocked
                 Ok(PairOutcome::Blocked {
-                    reason: "Implementation complete but PR not created - needs push/PR creation".to_string(),
+                    reason: "Implementation complete but PR not created - needs push/PR creation"
+                        .to_string(),
                     blockers: vec![],
                 })
             }
@@ -509,7 +688,7 @@ impl ForgeSentinelPair {
     async fn has_progress_files(&self) -> bool {
         let plan_path = self.config.shared.join("PLAN.md");
         let worklog_path = self.config.shared.join("WORKLOG.md");
-        
+
         plan_path.exists() || worklog_path.exists()
     }
 
@@ -518,25 +697,118 @@ impl ForgeSentinelPair {
         let plan_path = self.config.shared.join("PLAN.md");
         let contract_path = self.config.shared.join("CONTRACT.md");
         let worklog_path = self.config.shared.join("WORKLOG.md");
-        
+
         // Waiting for plan review
         if plan_path.exists() && !contract_path.exists() {
             return true;
         }
-        
+
         // Waiting for segment eval (WORKLOG exists but no corresponding eval)
         if worklog_path.exists() {
             if let Ok(segment) = self.extract_latest_segment().await {
                 if segment > 0 {
-                    let eval_path = self.config.shared.join(format!("segment-{}-eval.md", segment));
+                    let eval_path = self
+                        .config
+                        .shared
+                        .join(format!("segment-{}-eval.md", segment));
                     if !eval_path.exists() {
                         return true;
                     }
                 }
             }
         }
-        
+
         false
+    }
+
+    async fn materialize_sentinel_artifact(&self, mode: &SentinelMode) -> Result<()> {
+        match mode {
+            SentinelMode::PlanReview => {
+                let output_path = self.config.shared.join("CONTRACT.md");
+                if output_path.exists() {
+                    return Ok(());
+                }
+
+                if let Some(content) = self.read_sentinel_result_payload(mode).await? {
+                    tokio::fs::write(&output_path, content)
+                        .await
+                        .context("Failed to write CONTRACT.md from SENTINEL stdout")?;
+                    info!(path = %output_path.display(), "Materialized CONTRACT.md from SENTINEL stdout");
+                }
+            }
+            SentinelMode::SegmentEval(segment) => {
+                let output_path = self
+                    .config
+                    .shared
+                    .join(format!("segment-{}-eval.md", segment));
+                if output_path.exists() {
+                    return Ok(());
+                }
+
+                if let Some(content) = self.read_sentinel_result_payload(mode).await? {
+                    tokio::fs::write(&output_path, content)
+                        .await
+                        .context("Failed to write segment eval from SENTINEL stdout")?;
+                    info!(path = %output_path.display(), "Materialized segment eval from SENTINEL stdout");
+                }
+            }
+            SentinelMode::FinalReview => {
+                let output_path = self.config.shared.join("final-review.md");
+                if output_path.exists() {
+                    return Ok(());
+                }
+
+                if let Some(content) = self.read_sentinel_result_payload(mode).await? {
+                    tokio::fs::write(&output_path, content)
+                        .await
+                        .context("Failed to write final-review.md from SENTINEL stdout")?;
+                    info!(path = %output_path.display(), "Materialized final-review.md from SENTINEL stdout");
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn read_sentinel_result_payload(&self, mode: &SentinelMode) -> Result<Option<String>> {
+        let log_path = self
+            .config
+            .shared
+            .join("logs")
+            .join(format!("sentinel-{}-stdout.log", format!("{:?}", mode)));
+
+        if !log_path.exists() {
+            return Ok(None);
+        }
+
+        let content = tokio::fs::read_to_string(&log_path)
+            .await
+            .context("Failed to read SENTINEL stdout log")?;
+        let last_line = content.lines().rev().find(|line| !line.trim().is_empty());
+
+        let Some(last_line) = last_line else {
+            return Ok(None);
+        };
+
+        let value: Value = serde_json::from_str(last_line)
+            .context("Failed to parse SENTINEL stdout JSON result")?;
+        let result_text = value
+            .get("result")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        if result_text.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Self::extract_result_block(result_text).or_else(|| Some(result_text.to_string())))
+    }
+
+    fn extract_result_block(result_text: &str) -> Option<String> {
+        let start = result_text.find("<result>")?;
+        let end = result_text.rfind("</result>")?;
+        let inner = &result_text[start + "<result>".len()..end];
+        Some(inner.trim().to_string())
     }
 
     /// Cleanup after pair completion.
@@ -555,14 +827,11 @@ impl ForgeSentinelPair {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn test_pair_config_creation() {
-        let config = PairConfig::new(
-            "pair-1",
-            std::path::Path::new("/project"),
-            "ghp_test",
-        );
+        let config = PairConfig::new("pair-1", std::path::Path::new("/project"), "ghp_test");
 
         assert_eq!(config.pair_id, "pair-1");
         assert!(config.worktree.ends_with("worktrees/pair-1"));
@@ -582,5 +851,35 @@ mod tests {
         assert_eq!(config.pair_id, "pair-1");
         assert!(config.redis_url.is_some());
         assert_eq!(config.redis_url.as_deref(), Some("redis://localhost"));
+    }
+
+    #[test]
+    fn test_extract_result_block() {
+        let text = "<result>\nstatus: AGREED\nsummary: ok\n</result>";
+        let extracted = ForgeSentinelPair::extract_result_block(text).unwrap();
+        assert_eq!(extracted, "status: AGREED\nsummary: ok");
+    }
+
+    #[tokio::test]
+    async fn test_read_sentinel_result_payload_from_stdout_log() {
+        let dir = tempdir().unwrap();
+        let config = PairConfig::new("pair-1", dir.path(), "ghp_test");
+        let pair = ForgeSentinelPair::new(config.clone());
+
+        let logs_dir = config.shared.join("logs");
+        std::fs::create_dir_all(&logs_dir).unwrap();
+        std::fs::write(
+            logs_dir.join("sentinel-PlanReview-stdout.log"),
+            "{\"result\":\"<result>\\nstatus: AGREED\\nsummary: ok\\n</result>\"}\n",
+        )
+        .unwrap();
+
+        let payload = pair
+            .read_sentinel_result_payload(&SentinelMode::PlanReview)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(payload, "status: AGREED\nsummary: ok");
     }
 }

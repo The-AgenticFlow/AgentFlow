@@ -5,11 +5,11 @@
 //! within the configured timeout.
 
 use anyhow::{Context, Result};
-use std::path::PathBuf;
-use std::fs;
-use std::time::{Duration, Instant};
 use chrono::{DateTime, Utc};
-use tracing::{info, warn, debug};
+use std::fs;
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+use tracing::{debug, info, warn};
 
 /// Watchdog for detecting stalled pairs.
 pub struct Watchdog {
@@ -40,7 +40,8 @@ impl Watchdog {
         self.refresh_last_update()?;
 
         let now = Utc::now();
-        let elapsed = self.last_update
+        let elapsed = self
+            .last_update
             .map(|last| (now - last).num_seconds() as u64)
             .unwrap_or(0);
 
@@ -83,16 +84,21 @@ impl Watchdog {
             return Ok(());
         }
 
-        let metadata = fs::metadata(&self.worklog_path)
-            .context("Failed to read WORKLOG.md metadata")?;
+        let metadata =
+            fs::metadata(&self.worklog_path).context("Failed to read WORKLOG.md metadata")?;
 
-        let modified: std::time::SystemTime = metadata.modified()
+        let modified: std::time::SystemTime = metadata
+            .modified()
             .context("Failed to get WORKLOG.md modification time")?;
 
         let modified_datetime: DateTime<Utc> = modified.into();
 
         // Only update if it's newer than what we know
-        if self.last_update.map(|l| modified_datetime > l).unwrap_or(true) {
+        if self
+            .last_update
+            .map(|l| modified_datetime > l)
+            .unwrap_or(true)
+        {
             self.last_update = Some(modified_datetime);
             debug!(
                 last_update = %modified_datetime.to_rfc3339(),
@@ -116,14 +122,17 @@ impl Watchdog {
     }
 
     /// Check for segment loop (same segment evaluated too many times).
-    pub fn check_segment_loop(&self, shared_dir: &PathBuf, segment: u32, max_iterations: u32) -> Result<bool> {
+    pub fn check_segment_loop(
+        &self,
+        shared_dir: &PathBuf,
+        segment: u32,
+        max_iterations: u32,
+    ) -> Result<bool> {
         let mut eval_count = 0;
 
         // Count how many eval files exist for this segment
         // (segment-N-eval.md files with CHANGES_REQUESTED)
-        for entry in fs::read_dir(shared_dir)
-            .context("Failed to read shared directory")?
-        {
+        for entry in fs::read_dir(shared_dir).context("Failed to read shared directory")? {
             let entry = entry?;
             let filename = entry.file_name().to_string_lossy().to_string();
 
@@ -154,9 +163,7 @@ impl Watchdog {
 #[derive(Debug, Clone)]
 pub enum WatchdogStatus {
     /// Pair is active and making progress
-    Active {
-        last_update: Option<DateTime<Utc>>,
-    },
+    Active { last_update: Option<DateTime<Utc>> },
     /// Pair is approaching stall threshold
     Warning {
         last_update: Option<DateTime<Utc>>,
@@ -184,20 +191,20 @@ impl WatchdogStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
     use std::fs;
     use std::thread;
+    use tempfile::tempdir;
 
     #[test]
     fn test_watchdog_active() {
         let dir = tempdir().unwrap();
         let shared = dir.path().to_path_buf();
-        
+
         // Create WORKLOG.md
         fs::write(shared.join("WORKLOG.md"), "# Worklog\n").unwrap();
-        
+
         let mut watchdog = Watchdog::new(shared, 1200); // 20 minutes
-        
+
         let status = watchdog.check_stalled().unwrap();
         assert!(!status.is_stalled());
     }
@@ -206,22 +213,22 @@ mod tests {
     fn test_watchdog_stalled() {
         let dir = tempdir().unwrap();
         let shared = dir.path().to_path_buf();
-        
+
         // Create WORKLOG.md with old timestamp (simulated by not creating it)
         // Actually, we need to create it and then wait, or mock the time
-        
+
         let mut watchdog = Watchdog::new(shared.clone(), 1); // 1 second timeout
-        
+
         // No WORKLOG.md exists - should not be stalled yet
         let status = watchdog.check_stalled().unwrap();
         assert!(!status.is_stalled());
-        
+
         // Create WORKLOG.md
         fs::write(shared.join("WORKLOG.md"), "# Worklog\n").unwrap();
-        
+
         // Wait for timeout
         thread::sleep(Duration::from_millis(1100));
-        
+
         // Now check - should be stalled
         let status = watchdog.check_stalled().unwrap();
         assert!(status.is_stalled());
@@ -231,12 +238,12 @@ mod tests {
     fn test_watchdog_reset() {
         let dir = tempdir().unwrap();
         let shared = dir.path().to_path_buf();
-        
+
         let mut watchdog = Watchdog::new(shared, 1);
-        
+
         // Reset the watchdog
         watchdog.reset();
-        
+
         // Should be active
         let status = watchdog.check_stalled().unwrap();
         assert!(!status.is_stalled());

@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tempfile::TempDir;
 
-use pair_harness::{ForgeSentinelPair, Ticket, PairConfig, PairOutcome, FileLockManager, FsEvent};
+use pair_harness::{FileLockManager, ForgeSentinelPair, FsEvent, PairConfig, PairOutcome, Ticket};
 
 /// Test configuration for e2e tests
 struct TestConfig {
@@ -28,14 +28,14 @@ impl TestConfig {
         let main_path = temp_dir.path().join("main");
         let worktrees_path = temp_dir.path().join("worktrees");
         let sprintless_path = temp_dir.path().join(".sprintless");
-        
+
         // Create directory structure
         std::fs::create_dir_all(&main_path)?;
         std::fs::create_dir_all(&worktrees_path)?;
         std::fs::create_dir_all(sprintless_path.join("pairs"))?;
         std::fs::create_dir_all(sprintless_path.join("locks"))?;
         std::fs::create_dir_all(sprintless_path.join("plugin"))?;
-        
+
         Ok(Self {
             temp_dir,
             main_path,
@@ -43,16 +43,11 @@ impl TestConfig {
             sprintless_path,
         })
     }
-    
+
     fn pair_config(&self, pair_id: &str) -> PairConfig {
-        PairConfig::new(
-            pair_id,
-            self.temp_dir.path(),
-            "redis://localhost:6379",
-            "test_token",
-        )
+        PairConfig::new(pair_id, self.temp_dir.path(), "test_token")
     }
-    
+
     fn test_ticket() -> Ticket {
         Ticket {
             id: "T-42".to_string(),
@@ -83,27 +78,34 @@ async fn test_pair_lifecycle_from_assignment_to_pr() {
     // 2. Redis server running
     // 3. Claude CLI installed
     // 4. GitHub API access (or mock)
-    
+
     let config = TestConfig::new().expect("Failed to create test config");
     let pair_config = config.pair_config("pair-1");
     let ticket = TestConfig::test_ticket();
-    
+
     // Create pair harness
     let mut pair = ForgeSentinelPair::new(pair_config);
-    
+
     // Run the pair lifecycle
     let result = pair.run(&ticket).await;
-    
+
     // Verify outcome
     match result {
-        Ok(PairOutcome::PrOpened { pr_url, pr_number, branch }) => {
+        Ok(PairOutcome::PrOpened {
+            pr_url,
+            pr_number,
+            branch,
+        }) => {
             println!("PR opened: {} (#{})", pr_url, pr_number);
             assert!(branch.starts_with("forge-pair-1/"));
         }
         Ok(PairOutcome::Blocked { reason, blockers }) => {
             panic!("Pair blocked: {} ({} blockers)", reason, blockers.len());
         }
-        Ok(PairOutcome::FuelExhausted { reason, reset_count }) => {
+        Ok(PairOutcome::FuelExhausted {
+            reason,
+            reset_count,
+        }) => {
             panic!("Pair fuel exhausted: {} ({} resets)", reason, reset_count);
         }
         Err(e) => {
@@ -117,13 +119,13 @@ async fn test_file_locking_mechanism() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let locks_dir = temp_dir.path().join("locks");
     std::fs::create_dir_all(&locks_dir).expect("Failed to create locks dir");
-    
+
     let manager = FileLockManager::new(&locks_dir);
-    
+
     // Test acquiring lock
     let file_path = PathBuf::from("src/routes/auth.ts");
     let result = manager.try_acquire(&file_path, "pair-1");
-    
+
     match result {
         Ok(pair_harness::isolation::LockResult::Acquired) => {
             println!("Lock acquired successfully");
@@ -138,7 +140,7 @@ async fn test_file_locking_mechanism() {
             panic!("Failed to acquire lock: {:?}", e);
         }
     }
-    
+
     // Test that another pair cannot acquire the same lock
     let result2 = manager.try_acquire(&file_path, "pair-2");
     match result2 {
@@ -150,9 +152,11 @@ async fn test_file_locking_mechanism() {
             panic!("Lock should be owned by pair-1");
         }
     }
-    
+
     // Test releasing locks
-    let released = manager.release_all_for_pair("pair-1").expect("Failed to release locks");
+    let released = manager
+        .release_all_for_pair("pair-1")
+        .expect("Failed to release locks");
     assert_eq!(released.len(), 1);
     println!("Released {} locks", released.len());
 }
@@ -160,10 +164,10 @@ async fn test_file_locking_mechanism() {
 #[tokio::test]
 async fn test_worktree_provisioning() {
     use pair_harness::WorktreeManager;
-    
+
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let main_path = temp_dir.path().join("main");
-    
+
     // Initialize a git repo in main
     std::fs::create_dir_all(&main_path).expect("Failed to create main dir");
     std::process::Command::new("git")
@@ -171,9 +175,10 @@ async fn test_worktree_provisioning() {
         .current_dir(&main_path)
         .output()
         .expect("Failed to init git repo");
-    
+
     // Create initial commit
-    std::fs::write(main_path.join("README.md"), "# Test Project\n").expect("Failed to write README");
+    std::fs::write(main_path.join("README.md"), "# Test Project\n")
+        .expect("Failed to write README");
     std::process::Command::new("git")
         .args(&["add", "README.md"])
         .current_dir(&main_path)
@@ -184,16 +189,16 @@ async fn test_worktree_provisioning() {
         .current_dir(&main_path)
         .output()
         .expect("Failed to commit");
-    
+
     let manager = WorktreeManager::new(main_path.clone());
-    
+
     // Create worktree
     let result = manager.create_worktree("pair-1", "T-42");
     match result {
         Ok(worktree_path) => {
             assert!(worktree_path.exists());
             println!("Worktree created at: {:?}", worktree_path);
-            
+
             // Verify branch was created
             let output = std::process::Command::new("git")
                 .args(&["branch", "--list", "forge-pair-1/T-42"])
@@ -213,11 +218,11 @@ async fn test_worktree_provisioning() {
 #[tokio::test]
 async fn test_watcher_event_classification() {
     use pair_harness::SharedDirWatcher;
-    
+
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let shared_dir = temp_dir.path().join("shared");
     std::fs::create_dir_all(&shared_dir).expect("Failed to create shared dir");
-    
+
     // Create watcher
     let watcher_result = SharedDirWatcher::new(&shared_dir);
     match watcher_result {
@@ -237,11 +242,11 @@ async fn test_watcher_event_classification() {
 #[tokio::test]
 async fn test_context_reset_and_handoff() {
     use pair_harness::ResetManager;
-    
+
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let shared_dir = temp_dir.path().join("shared");
     std::fs::create_dir_all(&shared_dir).expect("Failed to create shared dir");
-    
+
     // Create a mock WORKLOG.md
     let worklog = r#"# WORKLOG
 
@@ -259,18 +264,18 @@ async fn test_context_reset_and_handoff() {
 - Status: APPROVED
 "#;
     std::fs::write(shared_dir.join("WORKLOG.md"), worklog).expect("Failed to write WORKLOG");
-    
+
     let manager = ResetManager::new(shared_dir.clone(), 10);
-    
+
     // Synthesize handoff
     let result = manager.synthesize_handoff();
     result.await.expect("Failed to synthesize handoff");
-    
+
     // Verify handoff was created
     let handoff_path = shared_dir.join("HANDOFF.md");
     assert!(handoff_path.exists());
     println!("Handoff synthesized at: {:?}", handoff_path);
-    
+
     // Verify handoff content
     let content = std::fs::read_to_string(&handoff_path).expect("Failed to read handoff");
     assert!(content.contains("## Completed Work"));
@@ -281,16 +286,17 @@ async fn test_context_reset_and_handoff() {
 #[tokio::test]
 async fn test_watchdog_stall_detection() {
     use pair_harness::Watchdog;
-    
+
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let shared_dir = temp_dir.path().join("shared");
     std::fs::create_dir_all(&shared_dir).expect("Failed to create shared dir");
-    
+
     // Create WORKLOG.md (the file watchdog actually monitors)
-    std::fs::write(shared_dir.join("WORKLOG.md"), "# Worklog\n\n- Started task").expect("Failed to write WORKLOG");
-    
+    std::fs::write(shared_dir.join("WORKLOG.md"), "# Worklog\n\n- Started task")
+        .expect("Failed to write WORKLOG");
+
     let mut watchdog = Watchdog::new(shared_dir, 60);
-    
+
     // Check for stall (should not be stalled initially)
     let status = watchdog.check_stalled().expect("Failed to check watchdog");
     assert!(!status.is_stalled());
@@ -301,35 +307,35 @@ async fn test_watchdog_stall_detection() {
 #[allow(dead_code)]
 fn setup_mock_git_repo(path: &PathBuf) -> anyhow::Result<()> {
     use std::process::Command;
-    
+
     // Initialize repo
     Command::new("git")
         .args(&["init"])
         .current_dir(path)
         .output()?;
-    
+
     // Set user config
     Command::new("git")
         .args(&["config", "user.email", "test@example.com"])
         .current_dir(path)
         .output()?;
-    
+
     Command::new("git")
         .args(&["config", "user.name", "Test User"])
         .current_dir(path)
         .output()?;
-    
+
     // Create initial commit
     std::fs::write(path.join(".gitkeep"), "")?;
     Command::new("git")
         .args(&["add", ".gitkeep"])
         .current_dir(path)
         .output()?;
-    
+
     Command::new("git")
         .args(&["commit", "-m", "Initial commit"])
         .current_dir(path)
         .output()?;
-    
+
     Ok(())
 }

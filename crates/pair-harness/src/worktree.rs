@@ -1,10 +1,10 @@
 // crates/pair-harness/src/worktree.rs
 //! Git worktree management for pair isolation.
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use tracing::{info, warn, debug};
+use tracing::{debug, info, warn};
 
 /// Manages Git worktrees for pair isolation.
 pub struct WorktreeManager {
@@ -73,7 +73,7 @@ impl WorktreeManager {
                     .current_dir(&self.project_root)
                     .output()
                     .context("Failed to run git worktree add from existing branch")?;
-                
+
                 if !output.status.success() {
                     return Err(anyhow!(
                         "Failed to create worktree from existing branch: {}",
@@ -190,14 +190,20 @@ impl WorktreeManager {
     }
 
     /// Check for divergence from main and optionally rebase.
-    pub fn check_divergence(&self, worktree_path: &Path, threshold: u32) -> Result<DivergenceStatus> {
+    pub fn check_divergence(
+        &self,
+        worktree_path: &Path,
+        threshold: u32,
+    ) -> Result<DivergenceStatus> {
         let behind = self.count_commits_behind(worktree_path)?;
-        
+
         debug!(path = %worktree_path.display(), behind, "Divergence check");
 
         if behind > threshold {
             info!(behind, threshold, "Branch is behind main, rebase needed");
-            return Ok(DivergenceStatus::NeedsRebase { commits_behind: behind });
+            return Ok(DivergenceStatus::NeedsRebase {
+                commits_behind: behind,
+            });
         }
 
         Ok(DivergenceStatus::UpToDate)
@@ -215,7 +221,10 @@ impl WorktreeManager {
             .context("Failed to fetch origin/main")?;
 
         if !output.status.success() {
-            return Err(anyhow!("Failed to fetch: {}", String::from_utf8_lossy(&output.stderr)));
+            return Err(anyhow!(
+                "Failed to fetch: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
         }
 
         // Rebase
@@ -263,7 +272,10 @@ impl WorktreeManager {
             .context("Failed to get current branch")?;
 
         if !output.status.success() {
-            return Err(anyhow!("Failed to get branch: {}", String::from_utf8_lossy(&output.stderr)));
+            return Err(anyhow!(
+                "Failed to get branch: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
         }
 
         Ok(String::from_utf8(output.stdout)?.trim().to_string())
@@ -310,7 +322,12 @@ impl WorktreeManager {
 
     /// Generate branch name for a pair/ticket.
     pub fn branch_name(pair_id: &str, ticket_id: &str) -> String {
-        format!("forge-{}/{}", pair_id, ticket_id)
+        // Handle both "forge-1" and "pair-1" style pair IDs
+        if pair_id.starts_with("forge-") || pair_id.starts_with("pair-") {
+            format!("{}/{}", pair_id, ticket_id)
+        } else {
+            format!("forge-{}/{}", pair_id, ticket_id)
+        }
     }
 }
 

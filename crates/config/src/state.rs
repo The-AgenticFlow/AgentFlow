@@ -20,10 +20,23 @@ pub struct WorkerSlot {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WorkerStatus {
     Idle,
-    Assigned { ticket_id: String, issue_url: Option<String> },
-    Working  { ticket_id: String, issue_url: Option<String> },
-    Done     { ticket_id: String, outcome: String },
-    Suspended { ticket_id: String, reason: String, issue_url: Option<String> },
+    Assigned {
+        ticket_id: String,
+        issue_url: Option<String>,
+    },
+    Working {
+        ticket_id: String,
+        issue_url: Option<String>,
+    },
+    Done {
+        ticket_id: String,
+        outcome: String,
+    },
+    Suspended {
+        ticket_id: String,
+        reason: String,
+        issue_url: Option<String>,
+    },
 }
 
 pub const KEY_TICKETS: &str = "tickets";

@@ -8,12 +8,21 @@
 
 CMD="${CLAUDE_TOOL_INPUT_COMMAND}"
 
-# Block direct git push - must use create_pr MCP tool
+# Block direct git push to non-forge branches - must use MCP tools for PR creation
 if echo "$CMD" | grep -qE '^git push|^git push '; then
-  echo "BLOCKED: Direct git push not allowed."
+  # Allow pushing to the pair's own branch
+  BRANCH_PATTERN="forge-${SPRINTLESS_PAIR_ID}"
+  if echo "$CMD" | grep -q "$BRANCH_PATTERN"; then
+    # Allow pushing own branch
+    exit 0
+  fi
+  echo "BLOCKED: Cannot push to branches other than your own."
   echo ""
-  echo "When ready to push, use the /status command which"
-  echo "will verify the done contract and push via MCP tool."
+  echo "Your branch: forge-${SPRINTLESS_PAIR_ID}/${SPRINTLESS_TICKET_ID}"
+  echo ""
+  echo "After pushing, create a PR using GitHub MCP tools:"
+  echo "  1. Use create_pull_request from github MCP server"
+  echo "  2. Write STATUS.json with PR_OPENED status and PR URL"
   exit 2
 fi
 

@@ -10,10 +10,10 @@ use std::path::Path;
 /// A single agent entry from registry.json.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RegistryEntry {
-    pub id:        String,
-    pub cli:       String,    // "claude" | "gemini" | "codex"
-    pub active:    bool,
-    pub instances: u32,       // registry.json is sole source — .agent.md has no instances field
+    pub id: String,
+    pub cli: String, // "claude" | "gemini" | "codex"
+    pub active: bool,
+    pub instances: u32, // registry.json is sole source — .agent.md has no instances field
 }
 
 /// The full registry — a thin wrapper around the team list.

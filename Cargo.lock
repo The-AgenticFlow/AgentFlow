@@ -25,6 +25,7 @@ dependencies = [
  "config",
  "pair-harness",
  "pocketflow-core",
+ "reqwest",
  "serde",
  "serde_json",
  "tempfile",

@@ -1,14 +1,14 @@
 // crates/pair-harness/src/process.rs
 //! Process management for FORGE and SENTINEL agents.
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
+use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
-use tokio::process::{Command, Child, ChildStdout, ChildStderr};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tracing::{info, warn, debug, error};
-use serde_json::json;
+use tokio::process::{Child, ChildStderr, ChildStdout, Command};
+use tracing::{debug, error, info, warn};
 
 /// Mode for SENTINEL spawning.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,9 +45,8 @@ pub struct ProcessManager {
 impl ProcessManager {
     /// Create a new process manager without Redis (uses filesystem state).
     pub fn new(github_token: impl Into<String>) -> Self {
-        let claude_path = std::env::var("CLAUDE_PATH")
-            .unwrap_or_else(|_| "claude".to_string());
-        
+        let claude_path = std::env::var("CLAUDE_PATH").unwrap_or_else(|_| "claude".to_string());
+
         Self {
             claude_path: PathBuf::from(claude_path),
             github_token: github_token.into(),
@@ -57,9 +56,8 @@ impl ProcessManager {
 
     /// Create a process manager with Redis backend.
     pub fn with_redis(github_token: impl Into<String>, redis_url: impl Into<String>) -> Self {
-        let claude_path = std::env::var("CLAUDE_PATH")
-            .unwrap_or_else(|_| "claude".to_string());
-        
+        let claude_path = std::env::var("CLAUDE_PATH").unwrap_or_else(|_| "claude".to_string());
+
         Self {
             claude_path: PathBuf::from(claude_path),
             github_token: github_token.into(),
@@ -82,29 +80,38 @@ impl ProcessManager {
             "Spawning FORGE process"
         );
 
-        // Ensure the sentinel working directory exists
-        let sentinel_dir = shared.join("sentinel");
-        tokio::fs::create_dir_all(&sentinel_dir)
-            .await
-            .context("Failed to create sentinel directory")?;
-
         // Build the initial prompt for FORGE
         let initial_prompt = self.build_forge_prompt(shared);
+        let settings_path = worktree.join(".claude").join("settings.json");
 
         let mut cmd = Command::new(&self.claude_path);
-        cmd.args([
-                "--permission-mode", "auto",
-                "--print",
-                &initial_prompt,
-            ])
+        cmd.arg("--bare")
+            .arg("--print")
+            .arg("--dangerously-skip-permissions")
+            .arg("--settings")
+            .arg(&settings_path)
+            .arg("--add-dir")
+            .arg(shared)
             .env("SPRINTLESS_PAIR_ID", pair_id)
             .env("SPRINTLESS_TICKET_ID", ticket_id)
             .env("SPRINTLESS_SEGMENT", "")
-            .env("SPRINTLESS_WORKTREE", worktree.to_string_lossy().to_string())
+            .env(
+                "SPRINTLESS_WORKTREE",
+                worktree.to_string_lossy().to_string(),
+            )
             .env("SPRINTLESS_SHARED", shared.to_string_lossy().to_string())
             .env("SPRINTLESS_GITHUB_TOKEN", &self.github_token)
+            // Pass all LLM provider environment variables for fallback support
+            .env("LLM_PROVIDER", std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "fallback".to_string()))
+            .env("LLM_FALLBACK", std::env::var("LLM_FALLBACK").unwrap_or_default())
             .env("ANTHROPIC_API_KEY", std::env::var("ANTHROPIC_API_KEY").unwrap_or_default())
+            .env("ANTHROPIC_MODEL", std::env::var("ANTHROPIC_MODEL").unwrap_or_default())
+            .env("OPENAI_API_KEY", std::env::var("OPENAI_API_KEY").unwrap_or_default())
+            .env("OPENAI_MODEL", std::env::var("OPENAI_MODEL").unwrap_or_default())
+            .env("GEMINI_API_KEY", std::env::var("GEMINI_API_KEY").unwrap_or_default())
+            .env("GEMINI_MODEL", std::env::var("GEMINI_MODEL").unwrap_or_default())
             .current_dir(worktree)
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
@@ -112,16 +119,29 @@ impl ProcessManager {
         if let Some(redis_url) = &self.redis_url {
             cmd.env("SPRINTLESS_REDIS_URL", redis_url);
         } else {
-            cmd.env("SPRINTLESS_STATE_FILE", shared.join("state.json").to_string_lossy().to_string());
+            cmd.env(
+                "SPRINTLESS_STATE_FILE",
+                shared.join("state.json").to_string_lossy().to_string(),
+            );
         }
 
-        let mut child = cmd.spawn()
-            .context("Failed to spawn FORGE process")?;
+        let mut child = cmd.spawn().context("Failed to spawn FORGE process")?;
+
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(initial_prompt.as_bytes())
+                .await
+                .context("Failed to write FORGE prompt to stdin")?;
+            stdin
+                .shutdown()
+                .await
+                .context("Failed to close FORGE stdin")?;
+        }
 
         // Capture and log stdout/stderr in background
         let log_dir = shared.join("logs");
         tokio::fs::create_dir_all(&log_dir).await?;
-        
+
         if let Some(stdout) = child.stdout.take() {
             let stdout_log = log_dir.join("forge-stdout.log");
             let pair_id_clone = pair_id.to_string();
@@ -129,7 +149,7 @@ impl ProcessManager {
                 Self::stream_to_file(stdout, stdout_log, &pair_id_clone, "FORGE-OUT").await;
             });
         }
-        
+
         if let Some(stderr) = child.stderr.take() {
             let stderr_log = log_dir.join("forge-stderr.log");
             let pair_id_clone = pair_id.to_string();
@@ -160,6 +180,102 @@ impl ProcessManager {
         self.spawn_forge(pair_id, ticket_id, worktree, shared).await
     }
 
+    /// Spawn a FORGE process for PR creation after final SENTINEL approval.
+    pub async fn spawn_forge_for_pr(
+        &self,
+        pair_id: &str,
+        ticket_id: &str,
+        worktree: &Path,
+        shared: &Path,
+    ) -> Result<Child> {
+        info!(
+            pair = pair_id,
+            ticket = ticket_id,
+            "Spawning FORGE process (PR creation mode)"
+        );
+
+        // Build prompt for PR creation
+        let initial_prompt = self.build_forge_pr_prompt(shared);
+        let settings_path = worktree.join(".claude").join("settings.json");
+
+        let mut cmd = Command::new(&self.claude_path);
+        cmd.arg("--bare")
+            .arg("--print")
+            .arg("--dangerously-skip-permissions")
+            .arg("--settings")
+            .arg(&settings_path)
+            .arg("--add-dir")
+            .arg(shared)
+            .env("SPRINTLESS_PAIR_ID", pair_id)
+            .env("SPRINTLESS_TICKET_ID", ticket_id)
+            .env("SPRINTLESS_SEGMENT", "")
+            .env(
+                "SPRINTLESS_WORKTREE",
+                worktree.to_string_lossy().to_string(),
+            )
+            .env("SPRINTLESS_SHARED", shared.to_string_lossy().to_string())
+            .env("SPRINTLESS_GITHUB_TOKEN", &self.github_token)
+            // Pass all LLM provider environment variables for fallback support
+            .env("LLM_PROVIDER", std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "fallback".to_string()))
+            .env("LLM_FALLBACK", std::env::var("LLM_FALLBACK").unwrap_or_default())
+            .env("ANTHROPIC_API_KEY", std::env::var("ANTHROPIC_API_KEY").unwrap_or_default())
+            .env("ANTHROPIC_MODEL", std::env::var("ANTHROPIC_MODEL").unwrap_or_default())
+            .env("OPENAI_API_KEY", std::env::var("OPENAI_API_KEY").unwrap_or_default())
+            .env("OPENAI_MODEL", std::env::var("OPENAI_MODEL").unwrap_or_default())
+            .env("GEMINI_API_KEY", std::env::var("GEMINI_API_KEY").unwrap_or_default())
+            .env("GEMINI_MODEL", std::env::var("GEMINI_MODEL").unwrap_or_default())
+            .current_dir(worktree)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        // Set Redis URL if provided, otherwise use filesystem-based state
+        if let Some(redis_url) = &self.redis_url {
+            cmd.env("SPRINTLESS_REDIS_URL", redis_url);
+        } else {
+            cmd.env(
+                "SPRINTLESS_STATE_FILE",
+                shared.join("state.json").to_string_lossy().to_string(),
+            );
+        }
+
+        let mut child = cmd.spawn().context("Failed to spawn FORGE process (PR mode)")?;
+
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(initial_prompt.as_bytes())
+                .await
+                .context("Failed to write FORGE PR prompt to stdin")?;
+            stdin
+                .shutdown()
+                .await
+                .context("Failed to close FORGE stdin")?;
+        }
+
+        // Capture and log stdout/stderr in background
+        let log_dir = shared.join("logs");
+        tokio::fs::create_dir_all(&log_dir).await?;
+
+        if let Some(stdout) = child.stdout.take() {
+            let stdout_log = log_dir.join("forge-stdout.log");
+            let pair_id_clone = pair_id.to_string();
+            tokio::spawn(async move {
+                Self::stream_to_file(stdout, stdout_log, &pair_id_clone, "FORGE-OUT").await;
+            });
+        }
+
+        if let Some(stderr) = child.stderr.take() {
+            let stderr_log = log_dir.join("forge-stderr.log");
+            let pair_id_clone = pair_id.to_string();
+            tokio::spawn(async move {
+                Self::stream_to_file(stderr, stderr_log, &pair_id_clone, "FORGE-ERR").await;
+            });
+        }
+
+        info!(pair = pair_id, pid = ?child.id(), "FORGE process (PR mode) spawned");
+        Ok(child)
+    }
+
     /// Spawn a SENTINEL process (ephemeral, for single evaluation).
     pub async fn spawn_sentinel(
         &self,
@@ -170,7 +286,7 @@ impl ProcessManager {
         shared: &Path,
     ) -> Result<Child> {
         let segment = mode.segment_value();
-        
+
         info!(
             pair = pair_id,
             ticket = ticket_id,
@@ -179,29 +295,41 @@ impl ProcessManager {
             "Spawning SENTINEL process (ephemeral)"
         );
 
-        // Ensure the sentinel working directory exists
-        let sentinel_dir = shared.join("sentinel");
-        tokio::fs::create_dir_all(&sentinel_dir)
-            .await
-            .context("Failed to create sentinel directory")?;
-
         // Build the initial prompt for SENTINEL based on mode
         let initial_prompt = self.build_sentinel_prompt(shared, &mode);
+        let settings_path = shared.join(".claude").join("settings.json");
 
         let mut cmd = Command::new(&self.claude_path);
-        cmd.args([
-                "--permission-mode", "auto",
-                "--print",
-                &initial_prompt,
-            ])
+        cmd.arg("--bare")
+            .arg("--print")
+            .arg("--output-format")
+            .arg("json")
+            .arg("--dangerously-skip-permissions")
+            .arg("--settings")
+            .arg(&settings_path)
+            .arg("--add-dir")
+            .arg(worktree)
+            .args(["--no-session-persistence"])
             .env("SPRINTLESS_PAIR_ID", pair_id)
             .env("SPRINTLESS_TICKET_ID", ticket_id)
             .env("SPRINTLESS_SEGMENT", &segment)
-            .env("SPRINTLESS_WORKTREE", worktree.to_string_lossy().to_string())
+            .env(
+                "SPRINTLESS_WORKTREE",
+                worktree.to_string_lossy().to_string(),
+            )
             .env("SPRINTLESS_SHARED", shared.to_string_lossy().to_string())
             .env("SPRINTLESS_GITHUB_TOKEN", &self.github_token)
+            // Pass all LLM provider environment variables for fallback support
+            .env("LLM_PROVIDER", std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "fallback".to_string()))
+            .env("LLM_FALLBACK", std::env::var("LLM_FALLBACK").unwrap_or_default())
             .env("ANTHROPIC_API_KEY", std::env::var("ANTHROPIC_API_KEY").unwrap_or_default())
-            .current_dir(&sentinel_dir)
+            .env("ANTHROPIC_MODEL", std::env::var("ANTHROPIC_MODEL").unwrap_or_default())
+            .env("OPENAI_API_KEY", std::env::var("OPENAI_API_KEY").unwrap_or_default())
+            .env("OPENAI_MODEL", std::env::var("OPENAI_MODEL").unwrap_or_default())
+            .env("GEMINI_API_KEY", std::env::var("GEMINI_API_KEY").unwrap_or_default())
+            .env("GEMINI_MODEL", std::env::var("GEMINI_MODEL").unwrap_or_default())
+            .current_dir(shared)
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
@@ -209,16 +337,29 @@ impl ProcessManager {
         if let Some(redis_url) = &self.redis_url {
             cmd.env("SPRINTLESS_REDIS_URL", redis_url);
         } else {
-            cmd.env("SPRINTLESS_STATE_FILE", shared.join("state.json").to_string_lossy().to_string());
+            cmd.env(
+                "SPRINTLESS_STATE_FILE",
+                shared.join("state.json").to_string_lossy().to_string(),
+            );
         }
 
-        let mut child = cmd.spawn()
-            .context("Failed to spawn SENTINEL process")?;
+        let mut child = cmd.spawn().context("Failed to spawn SENTINEL process")?;
+
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(initial_prompt.as_bytes())
+                .await
+                .context("Failed to write SENTINEL prompt to stdin")?;
+            stdin
+                .shutdown()
+                .await
+                .context("Failed to close SENTINEL stdin")?;
+        }
 
         // Capture and log stdout/stderr in background
         let log_dir = shared.join("logs");
         tokio::fs::create_dir_all(&log_dir).await?;
-        
+
         let mode_str = format!("{:?}", mode);
         if let Some(stdout) = child.stdout.take() {
             let stdout_log = log_dir.join(format!("sentinel-{}-stdout.log", mode_str));
@@ -227,7 +368,7 @@ impl ProcessManager {
                 Self::stream_to_file(stdout, stdout_log, &pair_id_clone, "SENTINEL-OUT").await;
             });
         }
-        
+
         if let Some(stderr) = child.stderr.take() {
             let stderr_log = log_dir.join(format!("sentinel-{}-stderr.log", mode_str));
             let pair_id_clone = pair_id.to_string();
@@ -263,7 +404,10 @@ impl ProcessManager {
             }
             Err(_) => {
                 warn!("Process timed out, killing");
-                child.kill().await.context("Failed to kill timed-out process")?;
+                child
+                    .kill()
+                    .await
+                    .context("Failed to kill timed-out process")?;
                 Ok(ProcessOutcome::Timeout)
             }
         }
@@ -287,87 +431,257 @@ impl ProcessManager {
         let handoff_path = shared.join("HANDOFF.md");
         let ticket_path = shared.join("TICKET.md");
         let task_path = shared.join("TASK.md");
+        let contract_path = shared.join("CONTRACT.md");
+        let plan_path = shared.join("PLAN.md");
+        let shared_path = shared.display();
 
         if handoff_path.exists() {
             // Resume mode - read handoff and continue
             let handoff = std::fs::read_to_string(&handoff_path)
                 .unwrap_or_else(|_| "Could not read HANDOFF.md".to_string());
-            
+
             format!(
                 "You are FORGE, an autonomous coding agent. You are resuming work after a context reset.\n\n\
+                IMPORTANT - Directory Structure:\n\
+                - CURRENT DIRECTORY (worktree): Write ALL source code, tests, package.json here\n\
+                - SHARED DIRECTORY ({}): Read/write PLAN.md, WORKLOG.md, STATUS.json here\n\n\
                 Read the handoff document and continue from the exact next step:\n\n\
                 --- HANDOFF.md ---\n{}\n\n\
                 Continue exactly where the previous session left off. Do not repeat work already done.",
-                handoff
+                shared_path, handoff
             )
+        } else if contract_path.exists() {
+            // Check contract status for plan revision
+            let contract = std::fs::read_to_string(&contract_path)
+                .unwrap_or_else(|_| "Could not read CONTRACT.md".to_string());
+
+            if contract.contains("status: ISSUES") || contract.contains("status: \"ISSUES\"") {
+                // Plan was rejected - need to revise
+                let plan = std::fs::read_to_string(&plan_path)
+                    .unwrap_or_else(|_| "No PLAN.md found".to_string());
+                let ticket = std::fs::read_to_string(&ticket_path)
+                    .unwrap_or_else(|_| "No TICKET.md found".to_string());
+
+                format!(
+                    "You are FORGE. Your plan was REJECTED. Rewrite {}/PLAN.md now.\n\n\
+                    --- TICKET.md ---\n{}\n\n\
+                    --- Current PLAN.md ---\n{}\n\n\
+                    --- REJECTION ---\n{}\n\n\
+                    IMPORTANT - Directory Structure:\n\
+                    - CURRENT DIRECTORY (worktree): Source code goes here\n\
+                    - SHARED DIRECTORY ({}): PLAN.md, WORKLOG.md, STATUS.json go here\n\n\
+                    Use GitHub MCP to fetch the issue. Read codebase in current directory. \
+                    Write {}/PLAN.md with:\n\
+                    - ## Understanding: What we're building\n\
+                    - ## Segments: Specific files in CURRENT DIRECTORY like 'src/counter.ts'\n\
+                    - ## Files Changed: Every file you'll touch (all in current directory)\n\
+                    - ## Risks: What could go wrong",
+                    shared_path, ticket, plan, contract, shared_path, shared_path
+                )
+            } else if contract.contains("status: AGREED") || contract.contains("status: \"AGREED\"")
+            {
+                // Contract agreed - continue implementation
+                let worklog_path = shared.join("WORKLOG.md");
+                let worklog = if worklog_path.exists() {
+                    std::fs::read_to_string(&worklog_path)
+                        .unwrap_or_else(|_| "No WORKLOG.md found".to_string())
+                } else {
+                    "No WORKLOG.md yet - start implementation".to_string()
+                };
+
+                format!(
+                    "You are FORGE, an autonomous coding agent. Your plan was approved.\n\n\
+                    --- CONTRACT.md ---\n{}\n\n\
+                    --- WORKLOG.md ---\n{}\n\n\
+                    IMPORTANT - Directory Structure:\n\
+                    - CURRENT DIRECTORY (worktree): Write ALL source code, tests, package.json here\n\
+                    - SHARED DIRECTORY ({}): Write WORKLOG.md, STATUS.json here\n\n\
+                    IMPLEMENTATION WORKFLOW (one segment at a time):\n\
+                    1. Implement ONE segment from PLAN.md\n\
+                    2. Write tests for that segment\n\
+                    3. Update {}/WORKLOG.md with segment progress\n\
+                    4. WAIT for SENTINEL review - SENTINEL will evaluate your segment\n\
+                    5. If APPROVED, continue to next segment\n\
+                    6. If CHANGES_REQUESTED, fix issues and update WORKLOG.md\n\
+                    7. Repeat until all segments complete\n\
+                    8. When ALL segments APPROVED, SENTINEL does final review\n\
+                    9. After final APPROVAL, create PR\n\n\
+                    You have full permissions. Install deps with 'npm install'. \
+                    Commit after each segment. Document progress in {}/WORKLOG.md.",
+                    contract, worklog, shared_path, shared_path, shared_path
+                )
+            } else {
+                // Unknown contract state - treat as new session
+                self.new_session_prompt(&ticket_path, &task_path, shared)
+            }
         } else {
             // New session - read ticket and task
-            let ticket = std::fs::read_to_string(&ticket_path)
-                .unwrap_or_else(|_| "No TICKET.md found".to_string());
-            let task = std::fs::read_to_string(&task_path)
-                .unwrap_or_else(|_| "No TASK.md found".to_string());
-            let shared_path = shared.display();
-
-            format!(
-                "You are FORGE, an autonomous coding agent. Start working on the assigned ticket.\n\n\
-                --- TICKET.md ---\n{}\n\n\
-                --- TASK.md ---\n{}\n\n\
-                SHARED DIRECTORY: {}\n\n\
-                INSTRUCTIONS:\n\
-                1. First, create a detailed implementation plan. Write it to {}/PLAN.md\n\
-                2. Wait for SENTINEL to review your plan and write {}/CONTRACT.md\n\
-                3. Once CONTRACT.md shows status AGREED, begin implementation\n\
-                4. As you work, document your progress in {}/WORKLOG.md (one segment at a time)\n\
-                5. When complete, open a PR and write {}/STATUS.json with the result\n\n\
-                Start by reading the repository structure and creating PLAN.md.",
-                ticket, task, shared_path, shared_path, shared_path, shared_path, shared_path
-            )
+            self.new_session_prompt(&ticket_path, &task_path, shared)
         }
+    }
+
+    /// Build the prompt for a new session.
+    fn new_session_prompt(&self, ticket_path: &Path, task_path: &Path, shared: &Path) -> String {
+        let ticket = std::fs::read_to_string(ticket_path)
+            .unwrap_or_else(|_| "No TICKET.md found".to_string());
+        let task =
+            std::fs::read_to_string(task_path).unwrap_or_else(|_| "No TASK.md found".to_string());
+        let shared_path = shared.display();
+
+        format!(
+            "You are FORGE. Write a detailed implementation plan to {}/PLAN.md.\n\n\
+            --- TICKET.md ---\n{}\n\n\
+            --- TASK.md ---\n{}\n\n\
+            IMPORTANT - Directory Structure:\n\
+            - CURRENT DIRECTORY (worktree): Write ALL source code, tests, package.json here\n\
+            - SHARED DIRECTORY ({}): Write PLAN.md, WORKLOG.md, STATUS.json here\n\n\
+            STEPS (do these NOW):\n\
+            1. Read {}/TICKET.md and {}/TASK.md from the shared directory\n\
+            2. Read the codebase in current directory: README.md, package.json/Cargo.toml, src/\n\
+            3. Write PLAN.md to shared directory with:\n\
+               - ## Understanding: What you're building\n\
+               - ## Segments: 1-3 files each, specific file paths in CURRENT DIRECTORY\n\
+               - ## Files Changed: List every file you'll touch (all in current directory)\n\
+               - ## Risks: What could go wrong\n\n\
+             Write PLAN.md to shared directory now. Do NOT write any code yet - only the plan.",
+            shared_path, ticket, task, shared_path, shared_path, shared_path
+        )
+    }
+
+    /// Build the prompt for PR creation after final SENTINEL approval.
+    fn build_forge_pr_prompt(&self, shared: &Path) -> String {
+        let shared_path = shared.display();
+        let final_review_path = shared.join("final-review.md");
+        let final_review = std::fs::read_to_string(&final_review_path)
+            .unwrap_or_else(|_| "No final-review.md found".to_string());
+        let contract_path = shared.join("CONTRACT.md");
+        let contract = std::fs::read_to_string(&contract_path)
+            .unwrap_or_else(|_| "No CONTRACT.md found".to_string());
+        let worklog_path = shared.join("WORKLOG.md");
+        let worklog = std::fs::read_to_string(&worklog_path)
+            .unwrap_or_else(|_| "No WORKLOG.md found".to_string());
+
+        format!(
+            "You are FORGE. SENTINEL has APPROVED and CERTIFIED your implementation. Create the PR.\n\n\
+            --- FINAL REVIEW (SENTINEL CERTIFIED) ---\n{}\n\n\
+            --- CONTRACT.md ---\n{}\n\n\
+            --- WORKLOG.md ---\n{}\n\n\
+            IMPORTANT: SENTINEL has reviewed and certified this code.\n\
+            The final-review.md contains SENTINEL's signature and certification.\n\n\
+            DIRECTORY STRUCTURE:\n\
+            - CURRENT DIRECTORY (worktree): Source code is here\n\
+            - SHARED DIRECTORY ({}): Write STATUS.json here\n\n\
+            PR CREATION STEPS:\n\
+            1. Ensure all changes committed: 'git status' then commit if needed\n\
+            2. Push branch: 'git push -u origin HEAD'\n\
+            3. Create PR using GitHub MCP create_pull_request:\n\
+               - title: from CONTRACT summary\n\
+               - body: include SENTINEL's PR description and CERTIFICATION\n\
+               - head: current branch\n\
+               - base: 'main'\n\
+            4. Write {}/STATUS.json:\n\
+               {{\n\
+                 \"status\": \"PR_OPENED\",\n\
+                 \"pr_url\": \"<pr url>\",\n\
+                 \"pr_number\": <number>,\n\
+                 \"branch\": \"<branch>\",\n\
+                 \"sentinel_certified\": true,\n\
+                 \"certification\": \"Reviewed and approved by SENTINEL\"\n\
+               }}\n\n\
+            Include SENTINEL's certification in PR body. This proves code quality.",
+            final_review, contract, worklog, shared_path, shared_path
+        )
     }
 
     /// Build the initial prompt for SENTINEL based on mode.
     fn build_sentinel_prompt(&self, shared: &Path, mode: &SentinelMode) -> String {
+        let shared_path = shared.display();
+
         match mode {
             SentinelMode::PlanReview => {
                 let plan_path = shared.join("PLAN.md");
                 let plan = std::fs::read_to_string(&plan_path)
                     .unwrap_or_else(|_| "No PLAN.md found".to_string());
-                
+                let ticket_path = shared.join("TICKET.md");
+                let ticket = std::fs::read_to_string(&ticket_path)
+                    .unwrap_or_else(|_| "No TICKET.md found".to_string());
+
                 format!(
-                    "You are SENTINEL, an autonomous code reviewer. Review the following plan.\n\n\
+                    "You are SENTINEL. Review this plan. Write ONLY to {}/CONTRACT.md.\n\n\
+                    --- TICKET.md ---\n{}\n\n\
                     --- PLAN.md ---\n{}\n\n\
-                    Evaluate the plan for completeness, feasibility, and alignment with the ticket requirements. \
-                    Write CONTRACT.md with your evaluation. Set status to AGREED if the plan is good, \
-                    or ISSUES if it needs revision with specific feedback.",
-                    plan
+                    Check the plan has these sections:\n\
+                    - ## Understanding (explains what we're building)\n\
+                    - ## Segments (each with Files and Definition of Done)\n\
+                    - ## Files Changed (specific file paths)\n\
+                    - ## Risks (identified risks)\n\n\
+                    APPROVE if all sections exist and are specific (real file paths, real criteria).\n\
+                    REJECT if generic/placeholder content (e.g. '[Task 1 description]').\n\n\
+                    Write CONTRACT.md now:\n\
+                    ---\n\
+                    status: AGREED | ISSUES\n\
+                    summary: <one line>\n\
+                    definition_of_done:\n\
+                    - <criterion from plan>\n\
+                    objections:\n\
+                    - <specific issue or 'None'>",
+                    shared_path, ticket, plan
                 )
             }
             SentinelMode::SegmentEval(n) => {
                 let worklog_path = shared.join("WORKLOG.md");
                 let worklog = std::fs::read_to_string(&worklog_path)
                     .unwrap_or_else(|_| "No WORKLOG.md found".to_string());
-                
+                let contract_path = shared.join("CONTRACT.md");
+                let contract = std::fs::read_to_string(&contract_path)
+                    .unwrap_or_else(|_| "No CONTRACT.md found".to_string());
+
                 format!(
-                    "You are SENTINEL, an autonomous code reviewer. Evaluate segment {}.\n\n\
+                    "You are SENTINEL. Evaluate segment {}.\n\n\
+                    --- CONTRACT.md ---\n{}\n\n\
                     --- WORKLOG.md ---\n{}\n\n\
-                    Review the implementation in segment {} for correctness, test coverage, and code quality. \
-                    Write segment-{}-eval.md with your evaluation. Approve if the segment meets standards, \
-                    or request changes with specific feedback.",
-                    n, worklog, n, n
+                    SHARED: {}\n\n\
+                    EVALUATE:\n\
+                    1. Run tests: 'npm test' or 'cargo test'\n\
+                    2. Check CONTRACT criteria all met\n\
+                    3. Check test coverage - new code has tests\n\
+                    4. Check standards - follows CODING.md\n\
+                    5. Check for regressions - existing tests pass\n\n\
+                    Write {}/segment-{}-eval.md:\n\
+                    - ## Verdict: APPROVED | CHANGES_REQUESTED\n\
+                    - ## Specific feedback: issues with file:line format\n\
+                    - APPROVED = certified for this segment\n\
+                    - CHANGES_REQUESTED = FORGE fixes and re-submits",
+                    n, contract, worklog, shared_path, shared_path, n
                 )
             }
             SentinelMode::FinalReview => {
                 let worklog_path = shared.join("WORKLOG.md");
                 let worklog = std::fs::read_to_string(&worklog_path)
                     .unwrap_or_else(|_| "No WORKLOG.md found".to_string());
-                
+                let contract_path = shared.join("CONTRACT.md");
+                let contract = std::fs::read_to_string(&contract_path)
+                    .unwrap_or_else(|_| "No CONTRACT.md found".to_string());
+
                 format!(
-                    "You are SENTINEL, an autonomous code reviewer. Perform final review.\n\n\
+                    "You are SENTINEL. FINAL REVIEW.\n\n\
+                    --- CONTRACT.md ---\n{}\n\n\
                     --- WORKLOG.md ---\n{}\n\n\
-                    Review the complete implementation. Check that all acceptance criteria are met. \
-                    Write final-review.md with your verdict. Set verdict to APPROVED if ready to merge, \
-                    or REJECTED with specific issues that must be fixed.",
-                    worklog
+                    SHARED: {}\n\n\
+                    FINAL CHECKLIST:\n\
+                    1. All segment-eval.md files show APPROVED\n\
+                    2. All CONTRACT criteria verified\n\
+                    3. All tests passing\n\
+                    4. No regressions\n\n\
+                    Write {}/final-review.md:\n\
+                    - ## Verdict: APPROVED | REJECTED\n\
+                    - ## Summary: what was implemented\n\
+                    - ## PR description: for PR body (if APPROVED)\n\
+                    - ## Certification: 'Code certified by SENTINEL - meets all acceptance criteria'\n\
+                    - ## Signature: 'Reviewed and approved by SENTINEL on [date]'\n\n\
+                    If APPROVED, FORGE creates PR with your description.\n\
+                    If REJECTED, list issues FORGE must fix.",
+                    contract, worklog, shared_path, shared_path
                 )
             }
         }
@@ -470,13 +784,10 @@ impl ForgeProcessBuilder {
         } else {
             ProcessManager::new(self.github_token)
         };
-        
-        let mut child = manager.spawn_forge(
-            &self.pair_id,
-            &self.ticket_id,
-            &self.worktree,
-            &self.shared,
-        ).await?;
+
+        let mut child = manager
+            .spawn_forge(&self.pair_id, &self.ticket_id, &self.worktree, &self.shared)
+            .await?;
 
         // Add extra environment variables
         // Note: This doesn't work after spawn, so we need to handle this differently
@@ -489,11 +800,45 @@ impl ForgeProcessBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     #[test]
     fn test_sentinel_mode_segment_value() {
         assert_eq!(SentinelMode::PlanReview.segment_value(), "");
         assert_eq!(SentinelMode::SegmentEval(3).segment_value(), "3");
         assert_eq!(SentinelMode::FinalReview.segment_value(), "final");
+    }
+
+    #[test]
+    fn test_plan_review_prompt_uses_shared_absolute_paths() {
+        let manager = ProcessManager::new("ghp_test");
+        let prompt =
+            manager.build_sentinel_prompt(Path::new("/tmp/shared"), &SentinelMode::PlanReview);
+
+        assert!(prompt.contains("--- TICKET.md ---"));
+        assert!(prompt.contains("Write ONLY to /tmp/shared/CONTRACT.md"));
+        assert!(prompt.contains("status: AGREED | ISSUES"));
+        assert!(prompt.contains("REJECT if generic/placeholder content"));
+        assert!(prompt.contains("definition_of_done:"));
+    }
+
+    #[test]
+    fn test_segment_eval_prompt_uses_shared_absolute_paths() {
+        let manager = ProcessManager::new("ghp_test");
+        let prompt =
+            manager.build_sentinel_prompt(Path::new("/tmp/shared"), &SentinelMode::SegmentEval(3));
+
+        assert!(prompt.contains("Read acceptance criteria from /tmp/shared/CONTRACT.md"));
+        assert!(prompt.contains("Write your evaluation to /tmp/shared/segment-3-eval.md"));
+    }
+
+    #[test]
+    fn test_final_review_prompt_uses_shared_absolute_paths() {
+        let manager = ProcessManager::new("ghp_test");
+        let prompt =
+            manager.build_sentinel_prompt(Path::new("/tmp/shared"), &SentinelMode::FinalReview);
+
+        assert!(prompt.contains("Read segment evaluations from /tmp/shared/segment-*-eval.md"));
+        assert!(prompt.contains("Write your verdict to /tmp/shared/final-review.md"));
     }
 }

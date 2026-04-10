@@ -100,6 +100,7 @@ GitHub Issues
 
 - **[TUTORIAL.md](TUTORIAL.md)** - Complete tutorial with logs, file structure, and troubleshooting
 - **[DEMO.md](DEMO.md)** - Quick step-by-step demo guide
+- **[docs/setup-claude-cli.md](docs/setup-claude-cli.md)** - Claude CLI setup and troubleshooting
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** - Development guidelines
 - **[docs/forge-sentinel-arch.md](docs/forge-sentinel-arch.md)** - Architecture details
 
@@ -107,8 +108,8 @@ GitHub Issues
 
 - Rust 1.70+
 - Node.js 18+ (for GitHub MCP server)
-- Claude Code CLI
-- API keys: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` (or Anthropic), `GITHUB_PERSONAL_ACCESS_TOKEN`
+- **Claude Code CLI** - [Setup Guide](docs/setup-claude-cli.md)
+- API keys: `ANTHROPIC_API_KEY`, plus one orchestrator key for `OPENAI_API_KEY`, `GEMINI_API_KEY`, or `ANTHROPIC_API_KEY`, and `GITHUB_PERSONAL_ACCESS_TOKEN`
 
 ## License
 

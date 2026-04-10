@@ -15,23 +15,23 @@ use crate::{Action, Node, SharedStore};
 type Routes = HashMap<String, String>; // action → node_name
 
 struct FlowNode {
-    node:   Arc<dyn Node>,
+    node: Arc<dyn Node>,
     routes: Routes,
 }
 
 // ── Flow ─────────────────────────────────────────────────────────────────
 
 pub struct Flow {
-    start:       String,
-    nodes:       HashMap<String, FlowNode>,
-    max_steps:   usize, // safety cap to avoid infinite loops in production
+    start: String,
+    nodes: HashMap<String, FlowNode>,
+    max_steps: usize, // safety cap to avoid infinite loops in production
 }
 
 impl Flow {
     pub fn new(start: impl Into<String>) -> Self {
         Self {
-            start:     start.into(),
-            nodes:     HashMap::new(),
+            start: start.into(),
+            nodes: HashMap::new(),
             max_steps: 10_000,
         }
     }
@@ -67,7 +67,10 @@ impl Flow {
 
         self.nodes.insert(
             name.into(),
-            FlowNode { node, routes: route_map },
+            FlowNode {
+                node,
+                routes: route_map,
+            },
         );
         self
     }
@@ -76,7 +79,7 @@ impl Flow {
     /// the step limit is reached. Returns the final Action.
     pub async fn run(&self, store: &SharedStore) -> Result<Action> {
         let mut current = self.start.clone();
-        let mut steps   = 0usize;
+        let mut steps = 0usize;
 
         loop {
             if steps >= self.max_steps {
@@ -87,9 +90,10 @@ impl Flow {
                 );
             }
 
-            let flow_node = self.nodes.get(&current).ok_or_else(|| {
-                anyhow::anyhow!("Flow: unknown node '{}'", current)
-            })?;
+            let flow_node = self
+                .nodes
+                .get(&current)
+                .ok_or_else(|| anyhow::anyhow!("Flow: unknown node '{}'", current))?;
 
             info!(step = steps, node = %current, "flow step");
 
@@ -131,11 +135,15 @@ mod tests {
 
     // ── Counter node: increments a store counter, stops at 3 ────────────
 
-    struct CounterNode { target: u64 }
+    struct CounterNode {
+        target: u64,
+    }
 
     #[async_trait]
     impl Node for CounterNode {
-        fn name(&self) -> &str { "counter" }
+        fn name(&self) -> &str {
+            "counter"
+        }
 
         async fn prep(&self, store: &SharedStore) -> Result<Value> {
             let n: u64 = store.get_typed("count").await.unwrap_or(0);
@@ -161,10 +169,9 @@ mod tests {
     #[tokio::test]
     async fn test_flow_loops_then_stops() {
         let store = SharedStore::new_in_memory();
-        let node  = Arc::new(CounterNode { target: 3 });
+        let node = Arc::new(CounterNode { target: 3 });
 
-        let flow = Flow::new("counter")
-            .add_node("counter", node, vec![("loop", "counter")]);
+        let flow = Flow::new("counter").add_node("counter", node, vec![("loop", "counter")]);
 
         let action = flow.run(&store).await.unwrap();
         assert_eq!(action.as_str(), crate::node::STOP_SIGNAL);
@@ -182,9 +189,15 @@ mod tests {
         struct NodeA;
         #[async_trait]
         impl Node for NodeA {
-            fn name(&self) -> &str { "a" }
-            async fn prep(&self, _: &SharedStore) -> Result<Value> { Ok(Value::Null) }
-            async fn exec(&self, _: Value)        -> Result<Value> { Ok(Value::Null) }
+            fn name(&self) -> &str {
+                "a"
+            }
+            async fn prep(&self, _: &SharedStore) -> Result<Value> {
+                Ok(Value::Null)
+            }
+            async fn exec(&self, _: Value) -> Result<Value> {
+                Ok(Value::Null)
+            }
             async fn post(&self, _: &SharedStore, _: Value) -> Result<Action> {
                 Ok(Action::new("go_b"))
             }
@@ -193,9 +206,15 @@ mod tests {
         struct NodeB;
         #[async_trait]
         impl Node for NodeB {
-            fn name(&self) -> &str { "b" }
-            async fn prep(&self, _: &SharedStore) -> Result<Value> { Ok(Value::Null) }
-            async fn exec(&self, _: Value)        -> Result<Value> { Ok(Value::Null) }
+            fn name(&self) -> &str {
+                "b"
+            }
+            async fn prep(&self, _: &SharedStore) -> Result<Value> {
+                Ok(Value::Null)
+            }
+            async fn exec(&self, _: Value) -> Result<Value> {
+                Ok(Value::Null)
+            }
             async fn post(&self, _: &SharedStore, _: Value) -> Result<Action> {
                 B_VISITED.store(true, Ordering::SeqCst);
                 Ok(Action::new(crate::node::STOP_SIGNAL))
@@ -203,7 +222,7 @@ mod tests {
         }
 
         let store = SharedStore::new_in_memory();
-        let flow  = Flow::new("a")
+        let flow = Flow::new("a")
             .add_node("a", Arc::new(NodeA), vec![("go_b", "b")])
             .add_node("b", Arc::new(NodeB), vec![]);
 

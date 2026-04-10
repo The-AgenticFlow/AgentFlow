@@ -44,6 +44,7 @@ You'll need:
 |-----|---------|--------------|
 | `ANTHROPIC_API_KEY` | Powers Claude Code (FORGE agent) | https://console.anthropic.com/ |
 | `OPENAI_API_KEY` | Powers NEXUS orchestrator | https://platform.openai.com/api-keys |
+| `GEMINI_API_KEY` | Powers NEXUS orchestrator when using Gemini | https://aistudio.google.com/app/apikey |
 | `GITHUB_PERSONAL_ACCESS_TOKEN` | GitHub operations (issues, PRs) | https://github.com/settings/tokens |
 
 For the GitHub token, ensure these scopes:
@@ -75,6 +76,12 @@ nano .env  # or use your preferred editor
 # LLM Provider for NEXUS orchestrator
 LLM_PROVIDER=openai
 OPENAI_API_KEY=sk-proj-xxxxxxxxxxxxx
+OPENAI_MODEL=gpt-4o-mini
+
+# Alternative: Use Gemini for NEXUS
+# LLM_PROVIDER=gemini
+# GEMINI_API_KEY=AIzaSyxxxxxxxxxxxxx
+# GEMINI_MODEL=gemini-2.5-flash
 
 # Alternative: Use Anthropic for NEXUS as well
 # LLM_PROVIDER=anthropic
@@ -90,7 +97,7 @@ GITHUB_PERSONAL_ACCESS_TOKEN=ghp_xxxxxxxxxxxxx
 GITHUB_REPOSITORY=your-username/test-calculator
 ```
 
-**⚠️ Important**: If you're using the same Anthropic key for both NEXUS and FORGE, set `LLM_PROVIDER=anthropic` and ensure `ANTHROPIC_API_KEY` is set.
+**⚠️ Important**: NEXUS can now use `openai`, `gemini`, or `anthropic`. FORGE still requires `ANTHROPIC_API_KEY` for Claude Code.
 
 ### 4. Verify Your Setup
 

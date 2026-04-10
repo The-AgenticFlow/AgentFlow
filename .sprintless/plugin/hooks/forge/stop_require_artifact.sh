@@ -18,6 +18,8 @@ try:
     required = ['status','pair','ticket_id','files_changed']
     missing = [k for k in required if k not in s]
     valid_statuses = ['PR_OPENED','BLOCKED','FUEL_EXHAUSTED']
+    # Note: IMPLEMENTATION_COMPLETE and COMPLETED are NOT valid terminal statuses
+    # FORGE must push and create PR (PR_OPENED) or explicitly block
     if missing:
         print(f'missing: {missing}')
         sys.exit(1)

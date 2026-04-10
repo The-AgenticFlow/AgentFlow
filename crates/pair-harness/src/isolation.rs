@@ -4,14 +4,14 @@
 //! This module implements dynamic file ownership locking to prevent
 //! conflicts when multiple pairs might touch the same files.
 
-use anyhow::{Context, Result, anyhow};
-use sha2::{Sha256, Digest};
+use crate::types::FileLock;
+use anyhow::{anyhow, Context, Result};
+use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
-use tracing::{info, warn, debug};
-use crate::types::FileLock;
+use tracing::{debug, info, warn};
 
 /// Manages file locks for pair isolation.
 pub struct FileLockManager {
@@ -29,8 +29,7 @@ impl FileLockManager {
 
     /// Initialize the locks directory.
     pub fn init(&self) -> Result<()> {
-        fs::create_dir_all(&self.locks_dir)
-            .context("Failed to create locks directory")?;
+        fs::create_dir_all(&self.locks_dir).context("Failed to create locks directory")?;
         Ok(())
     }
 
@@ -54,8 +53,7 @@ impl FileLockManager {
         );
 
         // Create or open the lock file
-        let file = File::create(&lock_file)
-            .context("Failed to create lock file")?;
+        let file = File::create(&lock_file).context("Failed to create lock file")?;
 
         // Try to acquire exclusive lock (non-blocking)
         // Using flock via fcntl (F_SETLK) for atomic acquisition
@@ -115,9 +113,7 @@ impl FileLockManager {
                     acquired_at: "unknown".to_string(),
                 })
             }
-            Err(e) => {
-                Err(anyhow!("Failed to acquire lock: {}", e))
-            }
+            Err(e) => Err(anyhow!("Failed to acquire lock: {}", e)),
         }
     }
 
@@ -144,8 +140,7 @@ impl FileLockManager {
         }
 
         // Remove the JSON file
-        fs::remove_file(&json_file)
-            .context("Failed to remove lock JSON")?;
+        fs::remove_file(&json_file).context("Failed to remove lock JSON")?;
 
         // The .lock file will be released when the process exits
         // (flock is automatically released on file close)
@@ -160,9 +155,7 @@ impl FileLockManager {
 
         let mut released = Vec::new();
 
-        for entry in fs::read_dir(&self.locks_dir)
-            .context("Failed to read locks directory")?
-        {
+        for entry in fs::read_dir(&self.locks_dir).context("Failed to read locks directory")? {
             let entry = entry?;
             let path = entry.path();
 
@@ -170,9 +163,7 @@ impl FileLockManager {
                 if let Ok(lock) = self.read_lock_json(&path) {
                     if lock.pair == pair_id {
                         let file = lock.file.clone();
-                        let lock_hash = path.file_stem()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("");
+                        let lock_hash = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
 
                         // Remove JSON
                         let _ = fs::remove_file(&path);
@@ -188,7 +179,11 @@ impl FileLockManager {
         }
 
         if !released.is_empty() {
-            info!(pair = pair_id, count = released.len(), "Released all locks for pair");
+            info!(
+                pair = pair_id,
+                count = released.len(),
+                "Released all locks for pair"
+            );
         }
 
         Ok(released)
@@ -240,7 +235,11 @@ impl FileLockManager {
             }
         }
 
-        info!(pair = pair_id, count = locked.len(), "Seeded initial file locks");
+        info!(
+            pair = pair_id,
+            count = locked.len(),
+            "Seeded initial file locks"
+        );
         Ok(locked)
     }
 
@@ -255,25 +254,21 @@ impl FileLockManager {
 
     /// Read lock JSON metadata.
     fn read_lock_json(&self, path: &Path) -> Result<FileLock> {
-        let content = fs::read_to_string(path)
-            .context("Failed to read lock JSON")?;
-        let lock: FileLock = serde_json::from_str(&content)
-            .context("Failed to parse lock JSON")?;
+        let content = fs::read_to_string(path).context("Failed to read lock JSON")?;
+        let lock: FileLock = serde_json::from_str(&content).context("Failed to parse lock JSON")?;
         Ok(lock)
     }
 
     /// Write lock JSON metadata.
     fn write_lock_json(&self, path: &Path, lock: &FileLock) -> Result<()> {
-        let content = serde_json::to_string_pretty(lock)
-            .context("Failed to serialize lock JSON")?;
-        
+        let content =
+            serde_json::to_string_pretty(lock).context("Failed to serialize lock JSON")?;
+
         // Atomic write: write to temp, then rename
         let temp_path = path.with_extension("json.tmp");
-        fs::write(&temp_path, content)
-            .context("Failed to write lock JSON")?;
-        fs::rename(&temp_path, path)
-            .context("Failed to rename lock JSON")?;
-        
+        fs::write(&temp_path, content).context("Failed to write lock JSON")?;
+        fs::rename(&temp_path, path).context("Failed to rename lock JSON")?;
+
         Ok(())
     }
 }
@@ -286,10 +281,7 @@ pub enum LockResult {
     /// Lock is already owned by this pair
     AlreadyOwned,
     /// Lock is held by another pair
-    Blocked {
-        owner: String,
-        acquired_at: String,
-    },
+    Blocked { owner: String, acquired_at: String },
 }
 
 /// State returned by flock operation.
@@ -303,8 +295,8 @@ enum LockState {
 /// This uses fcntl(F_SETLK) which is non-blocking.
 #[cfg(unix)]
 fn flock_exclusive_nonblocking(file: &File) -> std::io::Result<LockState> {
-    use std::os::unix::io::AsRawFd;
     use libc::{flock, LOCK_EX, LOCK_NB, LOCK_UN};
+    use std::os::unix::io::AsRawFd;
 
     let fd = file.as_raw_fd();
     let result = unsafe { flock(fd, LOCK_EX | LOCK_NB) };
@@ -337,7 +329,7 @@ mod tests {
     fn test_hash_path_consistency() {
         let dir = tempdir().unwrap();
         let manager = FileLockManager::new(dir.path());
-        
+
         let path1 = Path::new("src/auth/login.ts");
         let path2 = Path::new("src/auth/login.ts");
         let path3 = Path::new("src/auth/logout.ts");
@@ -350,9 +342,9 @@ mod tests {
     fn test_lock_acquisition() {
         let dir = tempdir().unwrap();
         let manager = FileLockManager::new(dir.path());
-        
+
         let file = Path::new("src/test.ts");
-        
+
         // First acquisition should succeed
         let result = manager.try_acquire(file, "pair-1").unwrap();
         assert!(matches!(result, LockResult::Acquired));
@@ -370,12 +362,12 @@ mod tests {
     fn test_lock_release() {
         let dir = tempdir().unwrap();
         let manager = FileLockManager::new(dir.path());
-        
+
         let file = Path::new("src/test.ts");
-        
+
         manager.try_acquire(file, "pair-1").unwrap();
         manager.release(file, "pair-1").unwrap();
-        
+
         // After release, another pair can acquire
         let result = manager.try_acquire(file, "pair-2").unwrap();
         assert!(matches!(result, LockResult::Acquired));
@@ -385,14 +377,20 @@ mod tests {
     fn test_release_all_for_pair() {
         let dir = tempdir().unwrap();
         let manager = FileLockManager::new(dir.path());
-        
-        manager.try_acquire(Path::new("src/a.ts"), "pair-1").unwrap();
-        manager.try_acquire(Path::new("src/b.ts"), "pair-1").unwrap();
-        manager.try_acquire(Path::new("src/c.ts"), "pair-2").unwrap();
-        
+
+        manager
+            .try_acquire(Path::new("src/a.ts"), "pair-1")
+            .unwrap();
+        manager
+            .try_acquire(Path::new("src/b.ts"), "pair-1")
+            .unwrap();
+        manager
+            .try_acquire(Path::new("src/c.ts"), "pair-2")
+            .unwrap();
+
         let released = manager.release_all_for_pair("pair-1").unwrap();
         assert_eq!(released.len(), 2);
-        
+
         // pair-2's lock should still exist
         let owner = manager.get_owner(Path::new("src/c.ts")).unwrap();
         assert!(owner.is_some());
