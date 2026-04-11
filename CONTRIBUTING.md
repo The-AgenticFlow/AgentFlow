@@ -5,12 +5,37 @@ This guide explains how to set up your environment, run the project in different
 ## 🛠️ Prerequisites
 
 1. **Rust**: [Install Rust](https://rustup.rs/) (latest stable).
-2. **Python 3**: Required for running mock servers.
-3. **Claude Code CLI** (Optional but recommended for Forge):
+2. **Node.js**: Required for Claude Code CLI and MCP servers (v18+).
+3. **Python 3**: Required for running mock servers.
+4. **Claude Code CLI** (Required for Forge workers):
+   The FORGE agent spawns Claude Code processes to implement code. Without this binary,
+   Forge workers will fail with `Failed to spawn FORGE process`.
+
    ```bash
+   # Install Claude Code CLI globally
    npm install -g @anthropic-ai/claude-code
+
+   # Authenticate (required on first run)
    claude auth login
+
+   # Verify installation
+   claude --version
    ```
+
+   Then set `CLAUDE_PATH` in your `.env` to the absolute path:
+   ```bash
+   # Find the path
+   which claude
+
+   # Set it in .env (example output)
+   CLAUDE_PATH=/home/user/.nvm/versions/node/v24.14.1/bin/claude
+   ```
+
+   **Troubleshooting**: If you see `Failed to spawn FORGE process` in logs, the most
+   common cause is that the `claude` binary cannot be found. Verify:
+   - `claude --version` works from the same terminal you run `cargo` from
+   - `CLAUDE_PATH` in `.env` points to an existing, executable binary
+   - The binary has execute permissions (`chmod +x <path>` on Linux/macOS)
 
 ## ⚙️ Environment Setup
 
@@ -27,6 +52,8 @@ This guide explains how to set up your environment, run the project in different
    - `GITHUB_REPOSITORY`: The target repository (e.g., `owner/repo`).
 
 ## 🚀 Running the Project
+
+**New contributors**: Read the **[live flow walkthrough](docs/demo.md)** first — it explains what you will see in the logs at each stage and where files end up on disk.
 
 ### Option A: Local Mock Demo (Safe, No API Keys Needed)
 This uses local mock servers for the LLM and MCP, and a mock Claude script for Forge.

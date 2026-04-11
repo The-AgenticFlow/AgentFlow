@@ -28,13 +28,12 @@ cargo run --bin real_test
 - ✅ Troubleshooting common issues
 - ✅ How to inspect generated code and PRs
 
-### 🚀 Quick Demo
-**[DEMO.md](DEMO.md)** - Quick reference guide with:
-- Prerequisites and setup
-- Creating a target repository with issues
-- Running the autonomous team
-- Monitoring progress
-- Example: Building a calculator from zero
+### 🚀 Live Flow Walkthrough
+**[docs/demo.md](docs/demo.md)** - Step-by-step walkthrough of a live orchestration run with:
+- What each log line means as NEXUS discovers issues and assigns work
+- How the FORGE-SENTINEL pair communicates through the shared directory
+- Where to find generated plans, evaluations, and code changes on disk
+- Troubleshooting table for common failures
 
 ## The Team
 
@@ -99,7 +98,7 @@ GitHub Issues
 ## Documentation
 
 - **[TUTORIAL.md](TUTORIAL.md)** - Complete tutorial with logs, file structure, and troubleshooting
-- **[DEMO.md](DEMO.md)** - Quick step-by-step demo guide
+- **[docs/demo.md](docs/demo.md)** - Live flow walkthrough: logs, file locations, and troubleshooting
 - **[docs/setup-claude-cli.md](docs/setup-claude-cli.md)** - Claude CLI setup and troubleshooting
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** - Development guidelines
 - **[docs/forge-sentinel-arch.md](docs/forge-sentinel-arch.md)** - Architecture details
