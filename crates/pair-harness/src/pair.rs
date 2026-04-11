@@ -245,15 +245,12 @@ impl ForgeSentinelPair {
                     }
 
                     FsEvent::WorklogUpdated => {
-                        let segment_n = self.extract_latest_segment().await?;
-                        
-                        // Check if all segments are complete and approved
                         if self.all_segments_approved().await? {
                             info!("All segments complete - spawning SENTINEL for final review");
                             self.spawn_sentinel_for_final().await?;
-                        } else {
+                        } else if let Some(segment_n) = self.next_segment_to_eval().await? {
                             info!(
-                                "Segment {} complete - spawning SENTINEL for eval",
+                                "Spawning SENTINEL for segment {} eval",
                                 segment_n
                             );
                             self.spawn_sentinel_for_segment(segment_n).await?;
@@ -288,8 +285,9 @@ impl ForgeSentinelPair {
 
                     FsEvent::StatusJsonWritten => {
                         self.sentinel_tracker = None;
-                        let status = self.read_status().await?;
-                        return Ok(status);
+                        if let Some(status) = self.read_status().await? {
+                            return Ok(status);
+                        }
                     }
 
                     FsEvent::HandoffWritten => {
@@ -312,45 +310,130 @@ impl ForgeSentinelPair {
 
             // Check if FORGE has exited
             if !self.process.is_running(forge).await {
+                // Drain any pending watcher events first - FORGE may have written
+                // files just before exiting and the events may not have been
+                // processed yet in the event-handling section above.
+                while let Some(evt) = watcher.try_recv() {
+                    match evt {
+                        FsEvent::PlanWritten => {
+                            if !self.plan_approved && self.sentinel_tracker.is_none() {
+                                info!("PLAN.md written (drained after FORGE exit) - spawning SENTINEL for plan review");
+                                self.spawn_sentinel_for_plan().await?;
+                            }
+                        }
+                        FsEvent::ContractWritten => {
+                            self.sentinel_tracker = None;
+                            let status = self.read_contract_status().await?;
+                            if status == "AGREED" {
+                                self.plan_approved = true;
+                                info!("Contract agreed (drained after FORGE exit) - respawning FORGE to begin implementation");
+                                self.process.kill(forge).await?;
+                                *forge = self.spawn_forge_resume().await?;
+                                self.reset.increment_reset();
+                            }
+                        }
+                        FsEvent::WorklogUpdated => {
+                            if self.all_segments_approved().await? {
+                                self.spawn_sentinel_for_final().await?;
+                            } else if let Some(segment_n) = self.next_segment_to_eval().await? {
+                                self.spawn_sentinel_for_segment(segment_n).await?;
+                            }
+                            self.watchdog.reset();
+                        }
+                        FsEvent::SegmentEvalWritten(n) => {
+                            self.sentinel_tracker = None;
+                            info!("Segment {} evaluation complete (drained)", n);
+                            if self.all_segments_approved().await? {
+                                self.spawn_sentinel_for_final().await?;
+                            }
+                        }
+                        FsEvent::FinalReviewWritten => {
+                            self.sentinel_tracker = None;
+                            let verdict = self.read_final_review_verdict().await?;
+                            if verdict == "APPROVED" {
+                                self.final_approved = true;
+                                info!("Final review APPROVED (drained) - respawning FORGE to create PR");
+                                *forge = self.spawn_forge_for_pr().await?;
+                                self.reset.increment_reset();
+                            }
+                        }
+                        FsEvent::StatusJsonWritten => {
+                            if let Some(status) = self.read_status().await? {
+                                return Ok(status);
+                            }
+                        }
+                        FsEvent::HandoffWritten => {
+                            self.sentinel_tracker = None;
+                        }
+                    }
+                }
+
+                // After draining events, re-evaluate state based on filesystem
                 if self.reset.has_handoff() {
-                    // Clean handoff - respawn
                     info!("FORGE exited with handoff - respawning");
                     *forge = self.spawn_forge_resume().await?;
                     self.reset.increment_reset();
                 } else if self.config.shared.join("STATUS.json").exists() {
-                    // Terminal state - read and return
-                    let status = self.read_status().await?;
-                    return Ok(status);
+                    if let Some(status) = self.read_status().await? {
+                        return Ok(status);
+                    }
                 } else if self.has_progress_files().await {
-                    // FORGE made progress - check if SENTINEL is active
+                    // FORGE made progress - determine what SENTINEL action is needed
                     if self.sentinel_tracker.is_some() {
-                        // SENTINEL is working - wait for it
                         info!("FORGE exited but SENTINEL is active - waiting for completion");
                         tokio::time::sleep(Duration::from_secs(5)).await;
                     } else {
-                        // No active SENTINEL - check if we're waiting for one
-                        let waiting_for_sentinel = self.waiting_for_sentinel_output().await;
-                        if waiting_for_sentinel {
-                            warn!("FORGE exited while waiting for SENTINEL output - spawning SENTINEL");
-                            if self.config.shared.join("PLAN.md").exists()
-                                && !self.config.shared.join("CONTRACT.md").exists()
-                            {
-                                self.spawn_sentinel_for_plan().await?;
+                        // Check the lifecycle phase and spawn SENTINEL if needed
+                        let plan_exists = self.config.shared.join("PLAN.md").exists();
+                        let contract_exists = self.config.shared.join("CONTRACT.md").exists();
+                        let worklog_exists = self.config.shared.join("WORKLOG.md").exists();
+                        let final_review_exists = self.config.shared.join("final-review.md").exists();
+
+                        if plan_exists && !contract_exists && !self.plan_approved {
+                            // Plan written but not reviewed - spawn SENTINEL
+                            info!("FORGE exited after writing PLAN.md - spawning SENTINEL for plan review");
+                            self.spawn_sentinel_for_plan().await?;
+                        } else if contract_exists && self.plan_approved && !worklog_exists {
+                            // Contract agreed but no implementation yet - respawn FORGE to implement
+                            info!("FORGE exited, contract agreed - respawning FORGE to begin implementation");
+                            *forge = self.spawn_forge_resume().await?;
+                            self.reset.increment_reset();
+                        } else if worklog_exists {
+                            // Implementation in progress - check segment status
+                            if self.all_segments_approved().await? {
+                                if !final_review_exists {
+                                    info!("FORGE exited, all segments approved - spawning SENTINEL for final review");
+                                    self.spawn_sentinel_for_final().await?;
+                                }
+                            } else if let Some(segment_n) = self.next_segment_to_eval().await? {
+                                info!("FORGE exited - spawning SENTINEL for segment {} eval", segment_n);
+                                self.spawn_sentinel_for_segment(segment_n).await?;
+                            } else {
+                                info!("FORGE exited with partial worklog - respawning to continue implementation");
+                                *forge = self.spawn_forge_resume().await?;
+                                self.reset.increment_reset();
                             }
-                            tokio::time::sleep(Duration::from_secs(5)).await;
                         } else {
-                            // Normal respawn
+                            // No clear state - respawn
                             info!("FORGE exited after making progress - respawning to continue");
                             *forge = self.spawn_forge_resume().await?;
                             self.reset.increment_reset();
                         }
                     }
                 } else {
-                    // Unclean exit - synthesize handoff and respawn
-                    warn!("FORGE exited unexpectedly - synthesizing handoff");
-                    self.reset.synthesize_handoff().await?;
-                    *forge = self.spawn_forge_resume().await?;
-                    self.reset.increment_reset();
+                    // No progress files - check if FORGE just started and may not have had time
+                    let forge_uptime = self.forge_spawn_time.elapsed().as_secs();
+                    if forge_uptime < 30 {
+                        // Very quick exit - likely a startup error, retry
+                        warn!("FORGE exited quickly ({}s) without progress - retrying spawn", forge_uptime);
+                        *forge = self.spawn_forge().await?;
+                    } else {
+                        // Ran for a while but produced nothing - synthesize handoff and respawn
+                        warn!("FORGE exited unexpectedly after {}s without progress - synthesizing handoff", forge_uptime);
+                        self.reset.synthesize_handoff().await?;
+                        *forge = self.spawn_forge_resume().await?;
+                        self.reset.increment_reset();
+                    }
                 }
             }
 
@@ -592,14 +675,13 @@ impl ForgeSentinelPair {
 
         let content = tokio::fs::read_to_string(&path).await?;
 
-        // Find the last "## Segment N" header
         let mut latest = 0;
         for line in content.lines() {
-            if line.starts_with("## Segment") {
+            if line.starts_with("## Segment") || line.starts_with("### Segment") {
                 if let Some(n) = line
                     .split_whitespace()
                     .nth(2)
-                    .and_then(|s| s.parse::<u32>().ok())
+                    .and_then(|s| s.trim_end_matches(':').parse::<u32>().ok())
                 {
                     latest = n;
                 }
@@ -607,6 +689,39 @@ impl ForgeSentinelPair {
         }
 
         Ok(latest)
+    }
+
+    /// Find the next segment number that needs SENTINEL evaluation.
+    /// Returns None if no segments need evaluation or if WORKLOG.md doesn't exist.
+    async fn next_segment_to_eval(&self) -> Result<Option<u32>> {
+        let worklog_path = self.config.shared.join("WORKLOG.md");
+        if !worklog_path.exists() {
+            return Ok(None);
+        }
+
+        let content = tokio::fs::read_to_string(&worklog_path).await?;
+
+        let mut segments_in_worklog: Vec<u32> = Vec::new();
+        for line in content.lines() {
+            if line.starts_with("## Segment") || line.starts_with("### Segment") {
+                if let Some(n) = line
+                    .split_whitespace()
+                    .nth(2)
+                    .and_then(|s| s.trim_end_matches(':').parse::<u32>().ok())
+                {
+                    segments_in_worklog.push(n);
+                }
+            }
+        }
+
+        for n in &segments_in_worklog {
+            let eval_path = self.config.shared.join(format!("segment-{}-eval.md", n));
+            if !eval_path.exists() {
+                return Ok(Some(*n));
+            }
+        }
+
+        Ok(None)
     }
 
     /// Read final-review.md verdict.
@@ -627,61 +742,60 @@ impl ForgeSentinelPair {
     }
 
     /// Read STATUS.json and convert to PairOutcome.
-    async fn read_status(&self) -> Result<PairOutcome> {
+    /// Returns `Ok(None)` if the file exists but is empty (race: inotify fires before flush).
+    async fn read_status(&self) -> Result<Option<PairOutcome>> {
         let path = self.config.shared.join("STATUS.json");
         if !path.exists() {
-            return Ok(PairOutcome::FuelExhausted {
-                reason: "No STATUS.json written".to_string(),
-                reset_count: self.reset.reset_count(),
-            });
+            return Ok(None);
         }
 
         let content = tokio::fs::read_to_string(&path).await?;
+
+        if content.trim().is_empty() {
+            return Ok(None);
+        }
+
         let status: StatusJson = serde_json::from_str(&content)?;
 
-        match status.status.as_str() {
-            "PR_OPENED" => Ok(PairOutcome::PrOpened {
+        Ok(Some(match status.status.as_str() {
+            "PR_OPENED" => PairOutcome::PrOpened {
                 pr_url: status.pr_url.clone().unwrap_or_default(),
                 pr_number: status.pr_number.unwrap_or(0),
                 branch: status.branch.clone().unwrap_or_default(),
-            }),
+            },
             "COMPLETED" | "complete" | "completed" => {
-                // These statuses require a PR URL to be considered successful
                 if status.pr_url.is_some() && !status.pr_url.as_ref().unwrap().is_empty() {
-                    Ok(PairOutcome::PrOpened {
+                    PairOutcome::PrOpened {
                         pr_url: status.pr_url.clone().unwrap_or_default(),
                         pr_number: status.pr_number.unwrap_or(0),
                         branch: status.branch.clone().unwrap_or_default(),
-                    })
+                    }
                 } else {
-                    Ok(PairOutcome::Blocked {
+                    PairOutcome::Blocked {
                         reason: "Work complete but PR not created - needs push/PR creation"
                             .to_string(),
                         blockers: vec![],
-                    })
+                    }
                 }
             }
-            "IMPLEMENTATION_COMPLETE" => {
-                // Implementation done but not pushed/PR created - treat as blocked
-                Ok(PairOutcome::Blocked {
-                    reason: "Implementation complete but PR not created - needs push/PR creation"
-                        .to_string(),
-                    blockers: vec![],
-                })
-            }
-            "BLOCKED" => Ok(PairOutcome::Blocked {
+            "IMPLEMENTATION_COMPLETE" => PairOutcome::Blocked {
+                reason: "Implementation complete but PR not created - needs push/PR creation"
+                    .to_string(),
+                blockers: vec![],
+            },
+            "BLOCKED" => PairOutcome::Blocked {
                 reason: "See blockers".to_string(),
                 blockers: status.blockers,
-            }),
-            "FUEL_EXHAUSTED" => Ok(PairOutcome::FuelExhausted {
+            },
+            "FUEL_EXHAUSTED" => PairOutcome::FuelExhausted {
                 reason: "Fuel exhausted".to_string(),
                 reset_count: status.context_resets,
-            }),
-            _ => Ok(PairOutcome::FuelExhausted {
+            },
+            _ => PairOutcome::FuelExhausted {
                 reason: format!("Unknown status: {}", status.status),
                 reset_count: self.reset.reset_count(),
-            }),
-        }
+            },
+        }))
     }
 
     /// Check if FORGE has made progress (PLAN.md or WORKLOG.md exists).
@@ -693,6 +807,7 @@ impl ForgeSentinelPair {
     }
 
     /// Check if we're waiting for SENTINEL output (plan reviewed but no contract).
+    #[allow(dead_code)]
     async fn waiting_for_sentinel_output(&self) -> bool {
         let plan_path = self.config.shared.join("PLAN.md");
         let contract_path = self.config.shared.join("CONTRACT.md");
@@ -784,14 +899,28 @@ impl ForgeSentinelPair {
         let content = tokio::fs::read_to_string(&log_path)
             .await
             .context("Failed to read SENTINEL stdout log")?;
+
+        if content.trim().is_empty() {
+            return Ok(None);
+        }
+
         let last_line = content.lines().rev().find(|line| !line.trim().is_empty());
 
         let Some(last_line) = last_line else {
             return Ok(None);
         };
 
-        let value: Value = serde_json::from_str(last_line)
-            .context("Failed to parse SENTINEL stdout JSON result")?;
+        let value: Value = match serde_json::from_str(last_line) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(
+                    mode = ?mode,
+                    error = %e,
+                    "Failed to parse SENTINEL stdout JSON - SENTINEL may not have produced structured output"
+                );
+                return Ok(None);
+            }
+        };
         let result_text = value
             .get("result")
             .and_then(Value::as_str)
