@@ -11,12 +11,12 @@ use std::path::Path;
 /// Parsed identity block from .agent.md YAML frontmatter.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AgentDef {
-    pub id:     String,
-    pub role:   String,
-    pub cli:    String,
+    pub id: String,
+    pub role: String,
+    pub cli: String,
     pub active: bool,
-    pub github: String,      // GitHub bot username
-    pub slack:  String,      // Slack handle e.g. "@forge"
+    pub github: String, // GitHub bot username
+    pub slack: String,  // Slack handle e.g. "@forge"
     /// Capabilities / persona text (the Markdown body after the frontmatter).
     pub persona: String,
     pub permissions: AgentPermissions,
@@ -25,7 +25,7 @@ pub struct AgentDef {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct AgentPermissions {
     pub allow: Vec<String>,
-    pub deny:  Vec<String>,
+    pub deny: Vec<String>,
 }
 
 impl AgentDef {
@@ -45,23 +45,32 @@ impl AgentDef {
             bail!("Agent .md file missing YAML frontmatter (expected --- delimiters)");
         }
         let frontmatter = parts[1].trim();
-        let body        = parts[2].trim().to_string();
+        let body = parts[2].trim().to_string();
 
         // Parse the YAML frontmatter as a loose map first
-        let raw: serde_yaml::Value = serde_yaml::from_str(frontmatter)
-            .context("Failed to parse YAML frontmatter")?;
+        let raw: serde_yaml::Value =
+            serde_yaml::from_str(frontmatter).context("Failed to parse YAML frontmatter")?;
 
-        let id     = raw["id"]    .as_str().unwrap_or("").to_string();
-        let role   = raw["role"]  .as_str().unwrap_or("").to_string();
-        let cli    = raw["cli"]   .as_str().unwrap_or("claude").to_string();
+        let id = raw["id"].as_str().unwrap_or("").to_string();
+        let role = raw["role"].as_str().unwrap_or("").to_string();
+        let cli = raw["cli"].as_str().unwrap_or("claude").to_string();
         let active = raw["active"].as_bool().unwrap_or(true);
         let github = raw["github"].as_str().unwrap_or("").to_string();
-        let slack  = raw["slack"] .as_str().unwrap_or("").to_string();
+        let slack = raw["slack"].as_str().unwrap_or("").to_string();
 
         // Parse permissions block from body (simple line scan)
         let permissions = parse_permissions(&body);
 
-        Ok(AgentDef { id, role, cli, active, github, slack, persona: body, permissions })
+        Ok(AgentDef {
+            id,
+            role,
+            cli,
+            active,
+            github,
+            slack,
+            persona: body,
+            permissions,
+        })
     }
 }
 
@@ -70,7 +79,7 @@ impl AgentDef {
 /// `deny: [WebFetch, Slack]`
 fn parse_permissions(body: &str) -> AgentPermissions {
     let mut allow = vec![];
-    let mut deny  = vec![];
+    let mut deny = vec![];
 
     for line in body.lines() {
         let trimmed = line.trim();

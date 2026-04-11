@@ -1,47 +1,115 @@
-# 🤖 Autonomous AI Dev Team
-<img width="2975" height="1571" alt="image" src="https://github.com/user-attachments/assets/9b0a4517-16fb-4939-b129-a43cb6a57cd6" />
+# AgentFlow - Autonomous AI Development Team
 
-An autonomous software development team composed of five AI agents working in a unified Rust/Tokio flow.
+An autonomous software development team composed of AI agents working in a unified Rust/Tokio flow. The team can take GitHub issues and turn them into working code with pull requests - all autonomously.
 
-## 🚀 Quick Start
+## Quick Start
 
-1. **Clone & Setup**:
-   ```bash
-   git clone <repo-url>
-   cd AgentFlow
-   cp .env.example .env
-   # Edit .env with your keys (OPENAI_API_KEY, GITHUB_PERSONAL_ACCESS_TOKEN)
-   ```
+```bash
+# 1. Clone and setup
+git clone https://github.com/The-AgenticFlow/AgentFlow.git
+cd AgentFlow
+cp .env.example .env
+# Edit .env with your API keys
 
-2. **Run the Mock Demo** (No real keys required if using mock servers):
-   ```bash
-   # Start mock servers in separate terminals if needed
-   # python3 scripts/mock_llm.py
-   # python3 scripts/mock_mcp.py
-   cargo run -p agent-team --bin demo
-   ```
+# 2. Verify setup (optional but recommended)
+./scripts/check_setup.sh
 
-3. **Run Real-World Orchestration**:
-   ```bash
-   cargo run -p agent-team --bin real_test
-   ```
+# 3. Run the orchestration
+cargo run --bin real_test
+```
 
-## 🏗️ The Team
-- **NEXUS** (Orchestrator): Scrum Master & Tech Lead. Assigns tickets and approves dangerous commands.
-- **FORGE** (Builder): Pragmatic Senior Engineer. Writes code, tests, and pushes PRs via GitHub MCP.
-- **SENTINEL** (Reviewer): Paranoid security auditor. Reviews PRs and ensures all logic is tested.
-- **VESSEL** (DevOps): Methodical deployment expert. Manages CI/CD and rollbacks.
-- **LORE** (Writer): Chronicler & Documenter. Writes ADRs and maintains the project history.
+## Getting Started
 
-## 📂 Project Structure
-- `crates/agent-nexus`: Orchestration logic and ticket assignment.
-- `crates/agent-forge`: Code execution via Claude Code CLI.
-- `crates/agent-client`: Multi-provider LLM client (OpenAI/Anthropic) + MCP integration.
-- `binary/src/bin/real_test.rs`: Live orchestration entry point.
-- `binary/src/bin/demo.rs`: Mocked E2E demonstration.
+### 📖 Complete Tutorial
+**NEW: [TUTORIAL.md](TUTORIAL.md)** - Detailed walkthrough with:
+- ✅ Step-by-step setup from zero
+- ✅ Expected logs and outputs at each step
+- ✅ File structure and locations explained
+- ✅ Troubleshooting common issues
+- ✅ How to inspect generated code and PRs
 
-## 📖 Learn More
-- [CONTRIBUTING.md](file:///home/christian/sandbox/Soft-Dev/CONTRIBUTING.md): Detailed setup, testing, and contribution workflow.
-- [FINAL_DESIGN.md](file:///home/christian/sandbox/Soft-Dev/docs/FINAL_DESIGN.md): Technical specification of the PocketFlow architecture.
+### 🚀 Live Flow Walkthrough
+**[docs/demo.md](docs/demo.md)** - Step-by-step walkthrough of a live orchestration run with:
+- What each log line means as NEXUS discovers issues and assigns work
+- How the FORGE-SENTINEL pair communicates through the shared directory
+- Where to find generated plans, evaluations, and code changes on disk
+- Troubleshooting table for common failures
 
-<img width="1068" height="378" alt="image" src="https://github.com/user-attachments/assets/d37c29d5-4465-43fe-ac6b-c257fd8413a4" />
+## The Team
+
+| Agent | Role | Description |
+|-------|------|-------------|
+| **NEXUS** | Orchestrator | Scrum Master & Tech Lead. Assigns tickets, approves dangerous commands. |
+| **FORGE** | Builder | Senior Engineer. Writes code, tests, opens PRs via Claude Code. |
+| **SENTINEL** | Reviewer | Security auditor. Reviews PRs, ensures all logic is tested. |
+| **VESSEL** | DevOps | Deployment expert. Manages CI/CD and rollbacks. |
+| **LORE** | Writer | Documenter. Writes ADRs, maintains project history. |
+
+## Architecture
+
+```
+AgentFlow/
+|-- .agent/agents/           # Agent personas (nexus.agent.md, forge.agent.md)
+|-- crates/
+|   |-- agent-nexus/         # Orchestrator node
+|   |-- agent-forge/         # Builder node (spawns Claude Code)
+|   |-- agent-client/        # LLM client + MCP integration
+|   |-- pair-harness/        # Worktree management, process spawning
+|   |-- pocketflow-core/     # Flow engine, shared store, routing
+|
+|-- binary/src/bin/
+    |-- real_test.rs         # Live orchestration entry point
+    |-- demo.rs              # Mocked demonstration
+```
+
+## How It Works
+
+```
+GitHub Issues
+     |
+     v
+  +-------+     +-------+     +-------+
+  | NEXUS |---->| FORGE |---->|  PR   |
+  +-------+     +-------+     +-------+
+     |               |
+     |               v
+     |          Claude Code
+     |               |
+     v               v
+  Routing        STATUS.json
+  Logic
+```
+
+1. **NEXUS** discovers open GitHub issues and assigns them to available workers
+2. **FORGE** spawns Claude Code to implement the solution in an isolated worktree
+3. Claude Code writes code, tests, and creates `STATUS.json` with the result
+4. **NEXUS** reviews results and assigns more work or handles blocked workers
+
+## Key Files
+
+| File | Purpose |
+|------|---------|
+| [`.agent/agents/nexus.agent.md`](.agent/agents/nexus.agent.md) | Orchestrator persona and workflow |
+| [`.agent/agents/forge.agent.md`](.agent/agents/forge.agent.md) | Builder persona and instructions |
+| [`.agent/registry.json`](.agent/registry.json) | Worker slot definitions |
+| [`binary/src/bin/real_test.rs`](binary/src/bin/real_test.rs) | Main entry point |
+| [`crates/agent-forge/src/lib.rs`](crates/agent-forge/src/lib.rs) | Forge node implementation |
+
+## Documentation
+
+- **[TUTORIAL.md](TUTORIAL.md)** - Complete tutorial with logs, file structure, and troubleshooting
+- **[docs/demo.md](docs/demo.md)** - Live flow walkthrough: logs, file locations, and troubleshooting
+- **[docs/setup-claude-cli.md](docs/setup-claude-cli.md)** - Claude CLI setup and troubleshooting
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** - Development guidelines
+- **[docs/forge-sentinel-arch.md](docs/forge-sentinel-arch.md)** - Architecture details
+
+## Requirements
+
+- Rust 1.70+
+- Node.js 18+ (for GitHub MCP server)
+- **Claude Code CLI** - [Setup Guide](docs/setup-claude-cli.md)
+- API keys: `ANTHROPIC_API_KEY`, plus one orchestrator key for `OPENAI_API_KEY`, `GEMINI_API_KEY`, or `ANTHROPIC_API_KEY`, and `GITHUB_PERSONAL_ACCESS_TOKEN`
+
+## License
+
+MIT

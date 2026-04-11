@@ -13,6 +13,7 @@ config          = { path = "../crates/config" }
 github          = { path = "../crates/github" }
 agent-nexus     = { path = "../crates/agent-nexus" }
 agent-forge     = { path = "../crates/agent-forge" }
+pair-harness    = { path = "../crates/pair-harness" }
 
 anyhow      = { workspace = true }
 serde       = { workspace = true }

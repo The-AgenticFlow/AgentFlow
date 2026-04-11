@@ -1,0 +1,26 @@
+{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${SPRINTLESS_GITHUB_TOKEN}"
+      }
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "${SPRINTLESS_WORKTREE}"
+      ]
+    },
+    "shell": {
+      "command": "shell-mcp-server",
+      "args": [
+        "--allowlist",
+        ".agent/tooling/run-tests.sh,cargo clippy,cargo test,npx eslint,npx jest,ruff check"
+      ]
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "sprintless",
+  "version": "3.0.0",
+  "description": "Autonomous agent pair tooling for Sprintless FORGE-SENTINEL architecture",
+  "skills": {
+    "forge": [
+      "skills/forge-coding.md",
+      "skills/forge-planning.md"
+    ],
+    "sentinel": [
+      "skills/sentinel-review.md",
+      "skills/sentinel-criteria.md"
+    ]
+  },
+  "hooks": {
+    "forge": "hooks/forge/",
+    "sentinel": "hooks/sentinel/"
+  },
+  "commands": "commands/"
+}

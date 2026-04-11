@@ -94,5 +94,10 @@ coverage/
 # Rust build artifacts
 /target/
 
-# Worker runtime data
-forge/
+# Worker runtime data (top-level forge/ directory only)
+/forge/
+
+# Sprintless runtime data (but keep plugin)
+.sprintless/locks/
+.sprintless/pairs/
+!.sprintless/plugin/

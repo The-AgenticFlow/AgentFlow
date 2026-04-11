@@ -6,12 +6,14 @@ edition = "2021"
 [dependencies]
 pocketflow-core = { path = "../pocketflow-core" }
 config = { path = "../config" }
+pair-harness = { path = "../pair-harness" }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+reqwest = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -2,7 +2,7 @@ use agent_forge::ForgeNode;
 use agent_nexus::NexusNode;
 use anyhow::Result;
 use config::{
-    Ticket, WorkerSlot, ACTION_EMPTY, ACTION_FAILED, ACTION_NO_WORK, ACTION_PR_OPENED,
+    Ticket, TicketStatus, WorkerSlot, ACTION_EMPTY, ACTION_FAILED, ACTION_NO_WORK, ACTION_PR_OPENED,
     ACTION_WORK_ASSIGNED, KEY_TICKETS, KEY_WORKER_SLOTS,
 };
 use dotenvy;
@@ -14,7 +14,11 @@ use tracing_subscriber::FmtSubscriber;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    dotenvy::dotenv().ok();
+    match dotenvy::dotenv() {
+        Ok(path) => eprintln!("Loaded environment from {}", path.display()),
+        Err(dotenvy::Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err.into()),
+    }
     // 1. Setup logging
     let subscriber = FmtSubscriber::builder()
         .with_max_level(Level::INFO)
@@ -48,6 +52,9 @@ async fn main() -> Result<()> {
         body: "We need a JWT middleware in src/auth.rs".to_string(),
         priority: 1,
         branch: None,
+        status: TicketStatus::Open,
+        issue_url: None,
+        attempts: 0,
     };
     store
         .set(KEY_TICKETS, serde_json::json!(vec![ticket]))
@@ -58,7 +65,7 @@ async fn main() -> Result<()> {
         ".agent/agents/nexus.agent.md",
         ".agent/registry.json",
     ));
-    let forge = Arc::new(ForgeNode::new("."));
+    let forge = Arc::new(ForgeNode::new(".", ".agent/agents/forge.agent.md"));
 
     // 5. Build Flow
     let flow = Flow::new("nexus")
