@@ -126,7 +126,7 @@ impl BatchNode for ForgeNode {
         // Create worktree for this worker
         let worktree_path = worktree_mgr
             .create_worktree(&worker_id, &ticket_id)
-            .map_err(|e| anyhow!("Failed to create worktree: {}", e))?;
+            .map_err(|e| anyhow!("Failed to create worktree: {:#}", e))?;
 
         info!(worker = worker_id, ticket = ticket_id, path = ?worktree_path, "Worktree created");
 
@@ -180,7 +180,7 @@ impl BatchNode for ForgeNode {
             .stdout(log_file)
             .stderr(log_file_err)
             .spawn()
-            .map_err(|e| anyhow!("Failed to spawn Claude Code: {}", e))?;
+            .map_err(|e| anyhow!("Failed to spawn Claude Code: {:#}", e))?;
 
         // Write prompt to stdin
         if let Some(mut stdin) = child.stdin.take() {
@@ -188,7 +188,7 @@ impl BatchNode for ForgeNode {
             stdin
                 .write_all(prompt.as_bytes())
                 .await
-                .map_err(|e| anyhow!("Failed to write prompt to stdin: {}", e))?;
+                .map_err(|e| anyhow!("Failed to write prompt to stdin: {:#}", e))?;
         }
 
         // MONITORING: Since we redirected stdout/stderr to a file, we can't easily
@@ -633,7 +633,7 @@ impl BatchNode for ForgePairNode {
         let outcome = pair
             .run(&ticket)
             .await
-            .map_err(|e| anyhow!("Pair lifecycle failed: {}", e))?;
+            .map_err(|e| anyhow!("Pair lifecycle failed: {:#}", e))?;
 
         match outcome {
             PairOutcome::PrOpened {

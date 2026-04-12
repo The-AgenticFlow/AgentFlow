@@ -218,13 +218,13 @@ When done, exit. This is an ephemeral process."#,
             .stdout(log_file)
             .stderr(log_file_err)
             .spawn()
-            .map_err(|e| anyhow!("Failed to spawn SENTINEL: {}", e))?;
+            .map_err(|e| anyhow!("Failed to spawn SENTINEL: {:#}", e))?;
 
         // Write prompt to stdin
         if let Some(mut stdin) = child.stdin.take() {
             use tokio::io::AsyncWriteExt;
             stdin.write_all(prompt.as_bytes()).await
-                .map_err(|e| anyhow!("Failed to write prompt to stdin: {}", e))?;
+                .map_err(|e| anyhow!("Failed to write prompt to stdin: {:#}", e))?;
         }
 
         // Wait with timeout (10 minutes for evaluation)
