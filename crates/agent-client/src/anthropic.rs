@@ -161,21 +161,39 @@ impl LlmClient for AnthropicClient {
             "← Anthropic response"
         );
 
-        // Parse the first content block
         let content = &raw["content"];
-        let block = content.get(0).context("Anthropic returned empty content")?;
+        let blocks = content
+            .as_array()
+            .context("Anthropic returned no content array")?;
 
-        match block["type"].as_str() {
-            Some("tool_use") => Ok(LlmResponse::ToolCall {
-                id: block["id"].as_str().unwrap_or("").to_string(),
-                name: block["name"].as_str().unwrap_or("").to_string(),
-                args: block["input"].clone(),
-            }),
-            Some("text") => Ok(LlmResponse::Text(
-                block["text"].as_str().unwrap_or("").to_string(),
-            )),
-            other => bail!("Unknown Anthropic content block type: {:?}", other),
+        let stop_reason = raw["stop_reason"].as_str().unwrap_or("");
+
+        if stop_reason == "tool_use" {
+            for block in blocks {
+                if block["type"].as_str() == Some("tool_use") {
+                    return Ok(LlmResponse::ToolCall {
+                        id: block["id"].as_str().unwrap_or("").to_string(),
+                        name: block["name"].as_str().unwrap_or("").to_string(),
+                        args: block["input"].clone(),
+                    });
+                }
+            }
+            bail!("Anthropic stop_reason was tool_use but no tool_use block found");
         }
+
+        let text = blocks
+            .iter()
+            .filter_map(|b| {
+                if b["type"].as_str() == Some("text") {
+                    b["text"].as_str()
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        Ok(LlmResponse::Text(text))
     }
 
     fn model(&self) -> &str {
