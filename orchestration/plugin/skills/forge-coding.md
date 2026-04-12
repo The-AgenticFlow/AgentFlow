@@ -17,16 +17,16 @@ Quality comes from the pair loop, not from you alone.
 
 ## Coding standards
 
-- All standards are in `sprintless/agent/standards/CODING.md` (if it exists)
-- All architecture patterns are in `sprintless/agent/arch/patterns.md` (if it exists)
-- API contracts are in `sprintless/agent/arch/api-contracts.md` (if it exists)
+- All standards are in `orchestration/agent/standards/CODING.md` (if it exists)
+- All architecture patterns are in `orchestration/agent/arch/patterns.md` (if it exists)
+- API contracts are in `orchestration/agent/arch/api-contracts.md` (if it exists)
 - **READ these before implementing. They are not optional.**
 
 ## Testing discipline
 
 - Every new function needs a test
 - Every changed file needs updated tests
-- Run tests after every segment: `sprintless/agent/tooling/run-tests.sh`
+- Run tests after every segment: `orchestration/agent/tooling/run-tests.sh`
 - Do not submit a segment with failing tests
 
 ## Error handling

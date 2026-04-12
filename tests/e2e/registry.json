@@ -2,7 +2,7 @@
   "project": {
     "name": "test-project",
     "repo": "test-org/test-project",
-    "description": "Test project for Sprintless E2E testing"
+    "description": "Test project for AgentFlow E2E testing"
   },
   "pairs": [
     {
@@ -61,8 +61,8 @@
   ],
   "harness_config": {
     "claude_path": "claude",
-    "plugin_path": "sprintless/plugin",
+    "plugin_path": "orchestration/plugin",
     "worktrees_base": "worktrees",
-    "sprintless_dir": "sprintless"
+    "orchestration_dir": "orchestration"
   }
 }

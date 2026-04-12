@@ -57,7 +57,7 @@ async fn test_forge_dangerous_command_suspends() -> Result<()> {
     std::env::set_var("PATH", new_path);
 
     // 3. Run ForgeNode with persona path
-    let persona_path = repo_root.join("sprintless/agent/agents/forge.agent.md");
+    let persona_path = repo_root.join("orchestration/agent/agents/forge.agent.md");
     let forge = ForgeNode::new(&repo_root, &persona_path);
 
     // Prep

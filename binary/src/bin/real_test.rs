@@ -55,11 +55,11 @@ async fn main() -> Result<()> {
     // NEXUS: Orchestrator that assigns work
     // ForgePairNode: Event-driven FORGE-SENTINEL pair with full review lifecycle
     let persona_path = orchestrator_dir
-        .join("sprintless")
+        .join("orchestration")
         .join("agent")
         .join("agents")
         .join("nexus.agent.md");
-    let registry_path = orchestrator_dir.join("sprintless").join("agent").join("registry.json");
+    let registry_path = orchestrator_dir.join("orchestration").join("agent").join("registry.json");
 
     let nexus = Arc::new(NexusNode::new(persona_path, registry_path));
     let forge_pair = Arc::new(ForgePairNode::new(&workspace_dir, &github_token));

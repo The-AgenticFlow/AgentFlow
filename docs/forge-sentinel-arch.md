@@ -14,7 +14,7 @@
 **Changes from v1:**
 - Multi-pair isolation via Git worktrees
 - FORGE works directly from project directory on own branch
-- Sprintless plugin: MCP tools, skills, hooks, commands
+- Orchestration plugin: MCP tools, skills, hooks, commands
 - External merge gate reviewer removed — pair SENTINEL is sufficient
 - VESSEL owns the final CI gate and merge
 
@@ -26,7 +26,7 @@
 2. [Multi-Pair Isolation Model](#2-multi-pair-isolation-model)
 3. [Git Worktree Architecture](#3-git-worktree-architecture)
 4. [Working Directory Layout](#4-working-directory-layout)
-5. [The Sprintless Plugin](#5-the-sprintless-plugin)
+5. [The Orchestration Plugin](#5-the-orchestration-plugin)
 6. [MCP Tools](#6-mcp-tools)
 7. [Skills](#7-skills)
 8. [Hooks](#8-hooks)
@@ -52,7 +52,7 @@
 
 **Ephemeral Evaluation** — SENTINEL is not a long-running process. It is spawned fresh for every evaluation, ensuring zero context drift and 100% focus on the specific segment.
 
-**Plugin-first capability** — FORGE's autonomous capability comes from the Sprintless plugin: MCP tools for external operations, skills for knowledge, hooks for enforcement, commands for structured procedures.
+**Plugin-first capability** — FORGE's autonomous capability comes from the Orchestration plugin: MCP tools for external operations, skills for knowledge, hooks for enforcement, commands for structured procedures.
 
 VESSEL owns the merge — after the pair opens a PR, VESSEL checks CI and merges. This is a mechanical gate, not an agent review.
 
@@ -91,7 +91,7 @@ Auto mode (`defaultMode: "auto"`) allows the agent to execute pre-approved opera
       "Bash(git status:*)",
       "Bash(git diff:*)",
       "Bash(git log:*)",
-      "Bash(sprintless/agent/tooling/run-tests.sh:*)",
+      "Bash(orchestration/agent/tooling/run-tests.sh:*)",
       "Bash(cargo clippy:*)",
       "Bash(cargo test:*)",
       "Bash(npx eslint:*)",
@@ -129,7 +129,7 @@ Auto mode (`defaultMode: "auto"`) allows the agent to execute pre-approved opera
       "Read",
       "Glob",
       "Grep",
-      "Bash(sprintless/agent/tooling/run-tests.sh:*)",
+      "Bash(orchestration/agent/tooling/run-tests.sh:*)",
       "Bash(npx eslint:*)",
       "Bash(ruff check:*)",
       "Bash(cargo clippy:*)"
@@ -146,7 +146,7 @@ Auto mode (`defaultMode: "auto"`) allows the agent to execute pre-approved opera
 }
 ```
 
-**Location:** `sprintless/pairs/pair-N/sentinel/.claude/settings.json` (per pair)
+**Location:** `orchestration/pairs/pair-N/sentinel/.claude/settings.json` (per pair)
 
 **Key constraints:**
 - SENTINEL is **read-only** for source files (can only write to `shared/`)
@@ -217,16 +217,16 @@ new code, runs tests — all within its own worktree. It never touches
 NEXUS locks files identified in the ticket's `touched_files[]` before assignment. However, development often reveals new dependencies.
 
 **The Dynamic Lock Protocol:**
-1.  **Initial Lock:** NEXUS locks files explicitly listed in the ticket by writing to `sprintless/locks/${file_hash}.json`.
+1.  **Initial Lock:** NEXUS locks files explicitly listed in the ticket by writing to `orchestration/locks/${file_hash}.json`.
 2.  **Discovery:** When FORGE attempts to write to a file *not* in its lock map, the `pre_write_check.sh` hook intercepts **before** the write executes.
-3.  **Atomic Lock Attempt:** The hook uses `flock` (filesystem-level lock) on `sprintless/locks/${file_hash}.lock` to ensure atomic lock acquisition, then checks the `.json` file.
+3.  **Atomic Lock Attempt:** The hook uses `flock` (filesystem-level lock) on `orchestration/locks/${file_hash}.lock` to ensure atomic lock acquisition, then checks the `.json` file.
 4.  **Resolution:**
     *   **Success:** Lock file doesn't exist or belongs to this pair. FORGE proceeds with the write. Lock JSON is written: `{pair: "pair-1", file: "src/auth.ts", acquired: "2025-03-24T10:00:00Z"}`.
     *   **Failure:** Lock file exists and belongs to another pair. The write is blocked with exit code 2. FORGE is notified exactly which pair owns the file and must either find an alternative implementation path or set status to `BLOCKED`.
 
 This ensures safety even when the scope expands beyond the initial ticket estimate. The atomic nature of `flock` prevents race conditions even if two pairs attempt to lock the same file simultaneously.
 
-**Lock storage:** `sprintless/locks/` directory contains:
+**Lock storage:** `orchestration/locks/` directory contains:
 - `${sha256(filepath)}.lock` — filesystem lock (used by `flock`)
 - `${sha256(filepath)}.json` — metadata `{pair, file, acquired_at}`
 
@@ -337,7 +337,7 @@ the ticket is flagged as BLOCKED with reason REBASE_CONFLICT.
 │   ├── pair-2/                     ← FORGE-2's working tree (branch: forge-2/T-47)
 │   └── pair-N/                     ← idle (on main branch)
 │
-└── sprintless/
+└── orchestration/
     ├── pairs/
     │   ├── pair-1/
     │   │   └── shared/             ← FORGE-1 ↔ SENTINEL-1 communication
@@ -354,7 +354,7 @@ the ticket is flagged as BLOCKED with reason REBASE_CONFLICT.
     │   └── pair-2/
     │       └── shared/ ...
     │
-    └── plugin/                     ← Sprintless plugin (loaded by all agents)
+    └── plugin/                     ← Orchestration plugin (loaded by all agents)
         ├── mcp/
         ├── skills/
         ├── hooks/
@@ -363,7 +363,7 @@ the ticket is flagged as BLOCKED with reason REBASE_CONFLICT.
 
 **Key separation:**
 - `worktrees/pair-N/` — the codebase FORGE works in (Git-managed)
-- `sprintless/pairs/pair-N/shared/` — the communication channel (not in Git)
+- `orchestration/pairs/pair-N/shared/` — the communication channel (not in Git)
 
 The `shared/` directory is explicitly in `.gitignore`. It is runtime
 state, not project state. LORE reads from it for documentation but
@@ -371,10 +371,10 @@ it is never committed.
 
 ---
 
-## 5. The Sprintless Plugin
+## 5. The Orchestration Plugin
 
-The Sprintless plugin is a Claude Code plugin that ships with the
-Sprintless system. It is loaded into every FORGE and SENTINEL instance
+The Orchestration plugin is a Claude Code plugin that ships with the
+AgentFlow system. It is loaded into every FORGE and SENTINEL instance
 at session start via the `.claude/` directory in the worktree.
 
 ### What a Claude Code plugin provides
@@ -388,7 +388,7 @@ Claude Code's plugin system allows a directory to define:
 ### Plugin directory structure
 
 ```
-sprintless/plugin/
+orchestration/plugin/
 │
 ├── plugin.json                     ← plugin manifest
 │
@@ -428,9 +428,9 @@ sprintless/plugin/
 
 ```json
 {
-  "name": "sprintless",
+  "name": "orchestration",
   "version": "3.0.0",
-  "description": "Autonomous agent pair tooling for Sprintless",
+  "description": "Autonomous agent pair tooling for AgentFlow",
   "skills": {
     "forge": ["skills/forge-coding.md", "skills/forge-planning.md"],
     "sentinel": ["skills/sentinel-review.md", "skills/sentinel-criteria.md"]
@@ -443,7 +443,7 @@ sprintless/plugin/
 }
 ```
 
-**Note:** MCP configuration is NOT in `plugin.json` because it must be pair-specific. Instead, the harness generates `worktrees/pair-N/.claude/mcp.json` and `sprintless/pairs/pair-N/sentinel/.claude/mcp.json` from the `mcp/mcp.json.template` with environment variables filled in.
+**Note:** MCP configuration is NOT in `plugin.json` because it must be pair-specific. Instead, the harness generates `worktrees/pair-N/.claude/mcp.json` and `orchestration/pairs/pair-N/sentinel/.claude/mcp.json` from the `mcp/mcp.json.template` with environment variables filled in.
 
 ### How the harness provisions the plugin
 
@@ -452,17 +452,17 @@ When the harness provisions a pair slot:
 ```rust
 // pair-harness/src/provision.rs
 pub fn setup_pair_plugin(pair_id: &str, config: &PairConfig) -> Result<()> {
-    let plugin_source = Path::new("/project/sprintless/plugin");
+    let plugin_source = Path::new("/project/orchestration/plugin");
     
     // 1. Symlink plugin to FORGE .claude directory
     let forge_plugins = config.worktree.join(".claude/plugins");
     fs::create_dir_all(&forge_plugins)?;
-    symlink(plugin_source, forge_plugins.join("sprintless"))?;
+    symlink(plugin_source, forge_plugins.join("orchestration"))?;
     
     // 2. Symlink plugin to SENTINEL .claude directory
     let sentinel_plugins = config.shared.join("sentinel/.claude/plugins");
     fs::create_dir_all(&sentinel_plugins)?;
-    symlink(plugin_source, sentinel_plugins.join("sprintless"))?;
+    symlink(plugin_source, sentinel_plugins.join("orchestration"))?;
     
     // 3. Generate FORGE settings.json (auto mode permissions)
     create_forge_settings(&config.worktree)?;
@@ -481,7 +481,7 @@ pub fn setup_pair_plugin(pair_id: &str, config: &PairConfig) -> Result<()> {
 ```
 
 When FORGE or SENTINEL spawns, Claude Code automatically:
-1. Loads the symlinked plugin from `.claude/plugins/sprintless/`
+1. Loads the symlinked plugin from `.claude/plugins/orchestration/`
 2. Reads `settings.json` for permission mode
 3. Reads `mcp.json` for MCP server configuration
 4. Injects skills based on agent role (forge vs sentinel)
@@ -494,7 +494,7 @@ All plugin components (skills, hooks, commands, MCP) are bundled together and lo
 
 ## 6. MCP Tools
 
-The Sprintless system uses **existing battle-tested MCP servers** rather than a custom implementation. The harness generates a per-pair `mcp.json` configuration that scopes each server to the correct worktree, Redis instance, and GitHub credentials.
+The orchestration system uses **existing battle-tested MCP servers** rather than a custom implementation. The harness generates a per-pair `mcp.json` configuration that scopes each server to the correct worktree, Redis instance, and GitHub credentials.
 
 ### Why Existing Servers Over Custom
 
@@ -527,14 +527,14 @@ Each pair's `mcp.json` is generated dynamically by the harness with environment-
       "command": "shell-mcp-server",
       "args": [
         "--allowlist",
-        "sprintless/agent/tooling/run-tests.sh,cargo clippy,cargo test,npx eslint,npx jest,ruff check"
+        "orchestration/agent/tooling/run-tests.sh,cargo clippy,cargo test,npx eslint,npx jest,ruff check"
       ]
     }
   }
 }
 ```
 
-**Location:** `worktrees/pair-N/.claude/mcp.json` (FORGE) and `sprintless/pairs/pair-N/sentinel/.claude/mcp.json` (SENTINEL)
+**Location:** `worktrees/pair-N/.claude/mcp.json` (FORGE) and `orchestration/pairs/pair-N/sentinel/.claude/mcp.json` (SENTINEL)
 
 **Environment variable substitution:** The harness replaces `${VAR}` placeholders with actual values before writing the config.
 
@@ -579,16 +579,16 @@ execute_command
   command: string  (must match allowlist pattern)
   
 run_tests
-  # Shorthand for: execute_command("sprintless/agent/tooling/run-tests.sh")
+  # Shorthand for: execute_command("orchestration/agent/tooling/run-tests.sh")
   
 run_linter
   files: string[]  (optional)
   # Executes appropriate linter based on project type
 ```
 
-### Custom Sprintless Tools (Optional Extension)
+### Custom Orchestration Tools (Optional Extension)
 
-If needed, a minimal Sprintless-specific MCP server can provide domain operations not covered by existing servers:
+If needed, a minimal orchestration-specific MCP server can provide domain operations not covered by existing servers:
 
 ```
 commit_segment
@@ -635,9 +635,9 @@ Quality comes from the pair loop, not from you alone.
    Tool: search_codebase
 
 ## Coding standards
-- All standards are in sprintless/agent/standards/CODING.md
-- All architecture patterns are in sprintless/agent/arch/patterns.md
-- API contracts are in sprintless/agent/arch/api-contracts.md
+- All standards are in orchestration/agent/standards/CODING.md
+- All architecture patterns are in orchestration/agent/arch/patterns.md
+- API contracts are in orchestration/agent/arch/api-contracts.md
 - READ these before implementing. They are not optional.
 
 ## Testing discipline
@@ -669,7 +669,7 @@ Use the /plan command to structure it correctly.
 
 ## What a good plan contains
 - Your understanding of the ticket in your own words
-- Technical approach that follows sprintless/agent/arch/patterns.md
+- Technical approach that follows orchestration/agent/arch/patterns.md
 - Explicit segment breakdown — each segment is independently testable
 - Definition of done per segment — specific and verifiable
 - List of files you will create or modify
@@ -712,7 +712,7 @@ Your feedback must be actionable — FORGE must know exactly what to fix.
 ## Reviewing a plan (PLAN.md)
 Check:
 1. Does the plan address all acceptance criteria in TICKET.md?
-2. Does the technical approach follow sprintless/agent/arch/patterns.md?
+2. Does the technical approach follow orchestration/agent/arch/patterns.md?
 3. Are all relevant files identified?
 4. Is the definition of done specific and testable?
 5. Is there an explicit out-of-scope list?
@@ -761,9 +761,9 @@ and one for the primary error path?
 FAIL: any changed file with no tests, any new function with no test
 
 ### 3. Standards compliance
-Does the implementation follow sprintless/agent/standards/CODING.md?
-Does it use the patterns in sprintless/agent/arch/patterns.md?
-Does it respect the API contracts in sprintless/agent/arch/api-contracts.md?
+Does the implementation follow orchestration/agent/standards/CODING.md?
+Does it use the patterns in orchestration/agent/arch/patterns.md?
+Does it respect the API contracts in orchestration/agent/arch/api-contracts.md?
 FAIL: any violation of the team's written standards
 
 ### 4. Code quality
@@ -799,7 +799,7 @@ SHARED="${SPRINTLESS_SHARED}"
 
 # Log session start to shared event log
 echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] forge-${PAIR_ID} session_start ticket=${TICKET_ID}" \
-  >> sprintless/events.log
+  >> orchestration/events.log
 
 # Check if this is a resume (HANDOFF.md exists)
 if [ -f "${SHARED}/HANDOFF.md" ]; then
@@ -821,11 +821,11 @@ fi
 
 FILE="${CLAUDE_TOOL_INPUT_FILE_PATH}"
 PAIR_ID="${SPRINTLESS_PAIR_ID}"
-LOCKS_DIR="sprintless/locks"
+LOCKS_DIR="orchestration/locks"
 
 # Skip lock check for shared/ artifacts — those are pair-scoped already
 case "$FILE" in
-  *sprintless/pairs/*/shared/*)
+  *orchestration/pairs/*/shared/*)
     exit 0
     ;;
 esac
@@ -878,7 +878,7 @@ exit 0
 
 ```bash
 # In pair-harness/src/cleanup.rs
-for lock in sprintless/locks/*.json; do
+for lock in orchestration/locks/*.json; do
   OWNER=$(jq -r '.pair' "$lock")
   if [ "$OWNER" = "$PAIR_ID" ]; then
     rm "$lock" "${lock%.json}.lock"
@@ -898,7 +898,7 @@ WORKTREE="${SPRINTLESS_WORKTREE}"
 
 # For shared/ artifacts, ensure atomic write was used (.tmp + rename pattern)
 case "$FILE" in
-  *sprintless/pairs/*/shared/*)
+  *orchestration/pairs/*/shared/*)
     # Verify file was written atomically (should never see .tmp files at this point)
     if [[ "$FILE" == *.tmp ]]; then
       echo "ERROR: Temporary file leaked to filesystem: ${FILE}"
@@ -1087,7 +1087,7 @@ PAIR_ID="${SPRINTLESS_PAIR_ID}"
 
 # Log SENTINEL spawn to shared event log
 echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] sentinel-${PAIR_ID} spawned segment=${SEGMENT:-plan_review}" \
-  >> sprintless/events.log
+  >> orchestration/events.log
 
 if [ -z "$SEGMENT" ]; then
   echo "═══════════════════════════════════════════════════════"
@@ -1097,7 +1097,7 @@ if [ -z "$SEGMENT" ]; then
   echo "Your task:"
   echo "  1. Read ${SHARED}/PLAN.md"
   echo "  2. Read ${SHARED}/TICKET.md"
-  echo "  3. Read sprintless/agent/arch/patterns.md and sprintless/agent/standards/CODING.md"
+  echo "  3. Read orchestration/agent/arch/patterns.md and orchestration/agent/standards/CODING.md"
   echo "  4. Evaluate the plan against acceptance criteria"
   echo "  5. Write ${SHARED}/CONTRACT.md with status AGREED or ISSUES"
   echo ""
@@ -1113,7 +1113,7 @@ else
   echo "  1. Read ${SHARED}/WORKLOG.md — find segment ${SEGMENT} entry"
   echo "  2. Read ${SHARED}/CONTRACT.md — these are the acceptance criteria"
   echo "  3. Read files changed in segment ${SEGMENT}"
-  echo "  4. Run tests: execute_command('sprintless/agent/tooling/run-tests.sh')"
+  echo "  4. Run tests: execute_command('orchestration/agent/tooling/run-tests.sh')"
   echo "  5. Run linter on changed files"
   echo "  6. Evaluate against the five criteria (see sentinel-criteria.md skill)"
   echo "  7. Write ${SHARED}/segment-${SEGMENT}-eval.md with verdict"
@@ -1137,7 +1137,7 @@ FILE="${CLAUDE_TOOL_INPUT_FILE_PATH}"
 
 # For shared/ artifacts, ensure atomic write
 case "$FILE" in
-  *sprintless/pairs/*/shared/*)
+  *orchestration/pairs/*/shared/*)
     # Write to .tmp first, then the agent should rename
     if [[ "$FILE" != *.tmp ]]; then
       # Verify the final file exists (atomic rename completed)
@@ -1497,7 +1497,7 @@ SENTINEL session starts
 Hook: session_start.sh (shows "PLAN REVIEW MODE")
         │
         ▼
-Read PLAN.md + TICKET.md + sprintless/agent/standards/
+Read PLAN.md + TICKET.md + orchestration/agent/standards/
         │
    Plan review
    ┌────┴────┐
@@ -1549,7 +1549,7 @@ Read CONTRACT.md acceptance criteria
 Read files changed in segment-N (from WORKLOG)
         │
         ▼
-Run tests:  execute_command('sprintless/agent/tooling/run-tests.sh')
+Run tests:  execute_command('orchestration/agent/tooling/run-tests.sh')
 Run linter: execute_command('npx eslint ...') or similar
         │
         ▼
@@ -1681,7 +1681,7 @@ reason: CONTRACT_DISAGREEMENT
 | Check | Pass condition |
 |---|---|
 | Scope alignment | Plan addresses all acceptance criteria, nothing more |
-| Technical approach | Follows `sprintless/agent/arch/patterns.md` |
+| Technical approach | Follows `orchestration/agent/arch/patterns.md` |
 | File coverage | All files that need changing are listed |
 | Test strategy | Verification is specific and runnable |
 | Out of scope | Explicit list of what is NOT being built |
@@ -1887,7 +1887,7 @@ Harness writes STATUS.json:
 ↓
 NEXUS escalates to human via Slack:
   "pair-1 T-42 segment 3 cannot be agreed after 5 cycles.
-   See sprintless/pairs/pair-1/shared/segment-3-eval.md history."
+   See orchestration/pairs/pair-1/shared/segment-3-eval.md history."
 ```
 
 ### Contract disagreement (> 3 rounds)
@@ -2210,7 +2210,7 @@ GITHUB_TOKEN=ghp_test...
 ANTHROPIC_API_KEY=sk-ant-test...
 
 # Registry configuration
-# sprintless/registry.json
+# orchestration/registry.json
 {
   "project": {
     "name": "test-project",
@@ -2280,10 +2280,10 @@ echo "════════════════════════�
 echo ""
 
 # Step 1: Start system
-log_nexus "Starting Sprintless system..."
-cargo run --bin sprintless -- \
+log_nexus "Starting AgentFlow orchestration system..."
+cargo run --bin orchestration -- \
   --repo test-org/test-project \
-  --registry sprintless/registry.json &
+  --registry orchestration/registry.json &
 SYSTEM_PID=$!
 sleep 5
 log_success "System started (PID: $SYSTEM_PID)"
@@ -2308,10 +2308,10 @@ echo ""
 # Step 4: Harness provisions pair-1 worktree
 log_harness "pair-1" "Provisioning worktree for T-42..."
 log_harness "pair-1" "  git worktree add worktrees/pair-1 -b forge-1/T-42"
-log_harness "pair-1" "  Created sprintless/pairs/pair-1/shared/"
+log_harness "pair-1" "  Created orchestration/pairs/pair-1/shared/"
 log_harness "pair-1" "  Generated worktrees/pair-1/.claude/settings.json"
 log_harness "pair-1" "  Generated worktrees/pair-1/.claude/mcp.json"
-log_harness "pair-1" "  Symlinked plugin to worktrees/pair-1/.claude/plugins/sprintless"
+log_harness "pair-1" "  Symlinked plugin to worktrees/pair-1/.claude/plugins/orchestration"
 log_success "pair-1 worktree ready"
 echo ""
 
@@ -2320,16 +2320,16 @@ log_harness "pair-1" "Spawning FORGE process..."
 log_forge "pair-1" "Session started (context window: 200k tokens)"
 log_forge "pair-1" "Hook: session_start.sh"
 log_forge "pair-1" "  NEW SESSION: No handoff found."
-log_forge "pair-1" "  Reading sprintless/pairs/pair-1/shared/TICKET.md"
-log_forge "pair-1" "  Reading sprintless/pairs/pair-1/shared/TASK.md"
+log_forge "pair-1" "  Reading orchestration/pairs/pair-1/shared/TICKET.md"
+log_forge "pair-1" "  Reading orchestration/pairs/pair-1/shared/TASK.md"
 log_success "FORGE-1 spawned"
 echo ""
 
 # Step 6: FORGE-1 writes PLAN.md
 log_forge "pair-1" "Analyzing ticket T-42: Add user authentication endpoint"
 log_forge "pair-1" "Searching codebase for existing auth patterns..."
-log_forge "pair-1" "Reading sprintless/agent/arch/patterns.md"
-log_forge "pair-1" "Reading sprintless/agent/standards/CODING.md"
+log_forge "pair-1" "Reading orchestration/agent/arch/patterns.md"
+log_forge "pair-1" "Reading orchestration/agent/standards/CODING.md"
 log_forge "pair-1" "Writing PLAN.md:"
 log_forge "pair-1" "  Segment 1: POST /auth/login endpoint"
 log_forge "pair-1" "  Segment 2: JWT token generation"
@@ -2352,7 +2352,7 @@ echo ""
 # Step 8: SENTINEL reviews plan
 log_sentinel "pair-1" "Reading PLAN.md"
 log_sentinel "pair-1" "Reading TICKET.md acceptance criteria"
-log_sentinel "pair-1" "Checking against sprintless/agent/arch/patterns.md"
+log_sentinel "pair-1" "Checking against orchestration/agent/arch/patterns.md"
 log_sentinel "pair-1" "Verification:"
 log_sentinel "pair-1" "  ✓ All acceptance criteria addressed"
 log_sentinel "pair-1" "  ✓ Follows REST API patterns"
@@ -2381,7 +2381,7 @@ log_forge "pair-1" "    Hook: post_write_lint.sh"
 log_forge "pair-1" "    npx eslint src/routes/auth.ts → 0 warnings"
 log_forge "pair-1" "  Creating tests/routes/auth.test.ts"
 log_forge "pair-1" "  Running tests..."
-log_forge "pair-1" "    execute_command('sprintless/agent/tooling/run-tests.sh')"
+log_forge "pair-1" "    execute_command('orchestration/agent/tooling/run-tests.sh')"
 log_forge "pair-1" "    ✓ 12 tests passed, 0 failed"
 log_forge "pair-1" "  Committing segment..."
 log_forge "pair-1" "    git add -A"
@@ -2407,7 +2407,7 @@ echo ""
 log_sentinel "pair-1" "Reading WORKLOG.md segment-1 entry"
 log_sentinel "pair-1" "Files changed: src/routes/auth.ts, tests/routes/auth.test.ts"
 log_sentinel "pair-1" "Running tests..."
-log_sentinel "pair-1" "  execute_command('sprintless/agent/tooling/run-tests.sh')"
+log_sentinel "pair-1" "  execute_command('orchestration/agent/tooling/run-tests.sh')"
 log_sentinel "pair-1" "  ✓ 12 tests passed, 0 failed"
 log_sentinel "pair-1" "Running linter..."
 log_sentinel "pair-1" "  npx eslint src/routes/auth.ts"
@@ -2415,7 +2415,7 @@ log_sentinel "pair-1" "  ✓ 0 warnings"
 log_sentinel "pair-1" "Checking against 5 criteria:"
 log_sentinel "pair-1" "  ✓ Correctness: Endpoint returns correct status codes"
 log_sentinel "pair-1" "  ✓ Test coverage: Happy path + error path tested"
-log_sentinel "pair-1" "  ✓ Standards: Follows sprintless/agent/standards/CODING.md"
+log_sentinel "pair-1" "  ✓ Standards: Follows orchestration/agent/standards/CODING.md"
 log_sentinel "pair-1" "  ✓ Code quality: Clear naming, no duplication"
 log_sentinel "pair-1" "  ✓ No regressions: All existing tests still pass"
 log_sentinel "pair-1" "Writing segment-1-eval.md (verdict: APPROVED)"
@@ -2499,7 +2499,7 @@ log_harness "pair-1" "git worktree remove worktrees/pair-1"
 log_harness "pair-1" "Recreating idle worktree on main branch"
 log_harness "pair-1" "git worktree add worktrees/pair-1 main"
 log_harness "pair-1" "Clearing file locks owned by pair-1"
-log_harness "pair-1" "  Removed sprintless/locks/*.json (owned by pair-1)"
+log_harness "pair-1" "  Removed orchestration/locks/*.json (owned by pair-1)"
 log_harness "pair-1" "pair-1 status: IDLE"
 log_success "pair-1 ready for next ticket"
 echo ""

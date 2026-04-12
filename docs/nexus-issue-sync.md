@@ -265,4 +265,4 @@ Run `cargo run --bin real_test` and verify:
 - [FORGE-SENTINEL Architecture](./forge-sentinel-arch.md)
 - [FORGE-SENTINEL Pair Integration](./forge-pair-integration.md)
 - [`crates/agent-nexus/src/lib.rs`](../crates/agent-nexus/src/lib.rs) — implementation
-- [`sprintless/agent/agents/nexus.agent.md`](../sprintless/agent/agents/nexus.agent.md) — NEXUS persona
+- [`orchestration/agent/agents/nexus.agent.md`](../orchestration/agent/agents/nexus.agent.md) — NEXUS persona

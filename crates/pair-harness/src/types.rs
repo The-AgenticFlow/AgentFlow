@@ -76,7 +76,7 @@ impl PairConfig {
             project_root: project_root.to_path_buf(),
             worktree: project_root.join("worktrees").join(&pair_id),
             shared: project_root
-                .join("sprintless")
+                .join("orchestration")
                 .join("pairs")
                 .join(&pair_id)
                 .join("shared"),
@@ -100,7 +100,7 @@ impl PairConfig {
             project_root: project_root.to_path_buf(),
             worktree: project_root.join("worktrees").join(&pair_id),
             shared: project_root
-                .join("sprintless")
+                .join("orchestration")
                 .join("pairs")
                 .join(&pair_id)
                 .join("shared"),

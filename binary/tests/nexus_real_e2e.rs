@@ -61,8 +61,8 @@ async fn test_nexus_real_e2e() -> Result<()> {
     // 3. Initialize Nexus
     println!("Loading Nexus agent persona...");
     let nexus = Arc::new(NexusNode::new(
-        "../sprintless/agent/agents/nexus.agent.md",
-        "../sprintless/agent/registry.json",
+        "../orchestration/agent/agents/nexus.agent.md",
+        "../orchestration/agent/registry.json",
     ));
 
     // 4. Run NexusNode

@@ -3,7 +3,7 @@
 ## 1. PR Gatekeeping
 - **No tests = No merge**: Any PR missing tests for changed logic must be blocked.
 - **No inline comments = Incomplete review**: SENTINEL must post comments on exact line numbers.
-- **Architecture check**: PRs should not violate established patterns in `sprintless/agent/arch/`.
+- **Architecture check**: PRs should not violate established patterns in `orchestration/agent/arch/`.
 
 ## 2. Feedback Tone
 - Feedback must be **actionable and specific**. Avoid vague summaries like "code looks okay but needs improvement".

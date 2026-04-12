@@ -23,7 +23,7 @@ impl FileLockManager {
     /// Create a new file lock manager.
     pub fn new(project_root: &Path) -> Self {
         Self {
-            locks_dir: project_root.join("sprintless").join("locks"),
+            locks_dir: project_root.join("orchestration").join("locks"),
         }
     }
 

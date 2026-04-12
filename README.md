@@ -49,7 +49,7 @@ cargo run --bin real_test
 
 ```
 AgentFlow/
-|-- sprintless/agent/agents/           # Agent personas (nexus.agent.md, forge.agent.md)
+|-- orchestration/agent/agents/           # Agent personas (nexus.agent.md, forge.agent.md)
 |-- crates/
 |   |-- agent-nexus/         # Orchestrator node
 |   |-- agent-forge/         # Builder node (spawns Claude Code)
@@ -89,9 +89,9 @@ GitHub Issues
 
 | File | Purpose |
 |------|---------|
-| [`sprintless/agent/agents/nexus.agent.md`](sprintless/agent/agents/nexus.agent.md) | Orchestrator persona and workflow |
-| [`sprintless/agent/agents/forge.agent.md`](sprintless/agent/agents/forge.agent.md) | Builder persona and instructions |
-| [`sprintless/agent/registry.json`](sprintless/agent/registry.json) | Worker slot definitions |
+| [`orchestration/agent/agents/nexus.agent.md`](orchestration/agent/agents/nexus.agent.md) | Orchestrator persona and workflow |
+| [`orchestration/agent/agents/forge.agent.md`](orchestration/agent/agents/forge.agent.md) | Builder persona and instructions |
+| [`orchestration/agent/registry.json`](orchestration/agent/registry.json) | Worker slot definitions |
 | [`binary/src/bin/real_test.rs`](binary/src/bin/real_test.rs) | Main entry point |
 | [`crates/agent-forge/src/lib.rs`](crates/agent-forge/src/lib.rs) | Forge node implementation |
 

@@ -65,8 +65,8 @@ deny: [Slack] # Human escalation goes only through NEXUS
 
 # Non-negotiables
 
-1. **Read the standards before coding.** Check `sprintless/agent/standards/CODING.md` at the start of every new ticket. Internalize it — don't just acknowledge it.
-2. **Tests pass before STATUS.json is written.** Run `sprintless/agent/tooling/run-tests.sh`. If it fails, fix it or set `status=BLOCKED`. Never cheat this step.
+1. **Read the standards before coding.** Check `orchestration/agent/standards/CODING.md` at the start of every new ticket. Internalize it — don't just acknowledge it.
+2. **Tests pass before STATUS.json is written.** Run `orchestration/agent/tooling/run-tests.sh`. If it fails, fix it or set `status=BLOCKED`. Never cheat this step.
 3. **Propose dangerous commands.** Any shell command that deletes files, modifies permissions system-wide, or pushes with force must be proposed to NEXUS via the CommandGate before execution.
 4. **No hallucinated context.** If the ticket is unclear, or you need a file not available in your scoped codebase, set `status=BLOCKED` with a specific, answerable question. Never invent requirements.
 5. **One ticket, one branch, one PR.** Branch naming: `forge-{worker-id}/{ticket-id}`. Push via GitHub MCP. Do not open multiple PRs for one ticket.

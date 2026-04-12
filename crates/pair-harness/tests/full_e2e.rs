@@ -18,8 +18,8 @@ struct TestConfig {
     main_path: PathBuf,
     /// Path to worktrees directory
     worktrees_path: PathBuf,
-    /// Path to sprintless directory
-    sprintless_path: PathBuf,
+    /// Path to orchestration directory
+    orchestration_path: PathBuf,
 }
 
 impl TestConfig {
@@ -27,20 +27,20 @@ impl TestConfig {
         let temp_dir = TempDir::new()?;
         let main_path = temp_dir.path().join("main");
         let worktrees_path = temp_dir.path().join("worktrees");
-        let sprintless_path = temp_dir.path().join("sprintless");
+        let orchestration_path = temp_dir.path().join("orchestration");
 
         // Create directory structure
         std::fs::create_dir_all(&main_path)?;
         std::fs::create_dir_all(&worktrees_path)?;
-        std::fs::create_dir_all(sprintless_path.join("pairs"))?;
-        std::fs::create_dir_all(sprintless_path.join("locks"))?;
-        std::fs::create_dir_all(sprintless_path.join("plugin"))?;
+        std::fs::create_dir_all(orchestration_path.join("pairs"))?;
+        std::fs::create_dir_all(orchestration_path.join("locks"))?;
+        std::fs::create_dir_all(orchestration_path.join("plugin"))?;
 
         Ok(Self {
             temp_dir,
             main_path,
             worktrees_path,
-            sprintless_path,
+            orchestration_path,
         })
     }
 

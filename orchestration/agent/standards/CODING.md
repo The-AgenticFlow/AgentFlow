@@ -14,7 +14,7 @@
 - Every new feature MUST have corresponding unit tests.
 - Bug fixes MUST include a regression test.
 - Use `mockall` for mocking external dependencies where feasible.
-- Run `sprintless/agent/tooling/run-tests.sh` before submitting any `STATUS.json`.
+- Run `orchestration/agent/tooling/run-tests.sh` before submitting any `STATUS.json`.
 
 ## 4. Commits & PRs
 - One ticket = One PR. No mega-PRs.

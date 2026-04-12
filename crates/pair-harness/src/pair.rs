@@ -461,7 +461,7 @@ impl ForgeSentinelPair {
 
     /// Provision configuration files.
     async fn provision_config(&self, _ticket: &Ticket) -> Result<()> {
-        // Use project_root where sprintless/plugin exists
+        // Use project_root where orchestration/plugin exists
         let provisioner = Provisioner::new(&self.config.project_root);
 
         provisioner
@@ -964,7 +964,7 @@ mod tests {
 
         assert_eq!(config.pair_id, "pair-1");
         assert!(config.worktree.ends_with("worktrees/pair-1"));
-        assert!(config.shared.ends_with("sprintless/pairs/pair-1/shared"));
+        assert!(config.shared.ends_with("orchestration/pairs/pair-1/shared"));
         assert!(config.redis_url.is_none());
     }
 

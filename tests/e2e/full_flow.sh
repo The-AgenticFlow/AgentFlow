@@ -91,7 +91,7 @@ assert_branch_merged() {
 
 assert_locks_released() {
     local pair_id=$1
-    local locks_dir="sprintless/locks"
+    local locks_dir="orchestration/locks"
     local count=$(find "$locks_dir" -name "*.json" -exec grep -l "\"pair\": \"$pair_id\"" {} \; 2>/dev/null | wc -l)
     if [ "$count" -eq 0 ]; then
         log_success "All locks released for $pair_id"
@@ -104,7 +104,7 @@ assert_locks_released() {
 assert_status() {
     local pair_id=$1
     local expected=$2
-    local status_file="sprintless/pairs/$pair_id/shared/STATUS.json"
+    local status_file="orchestration/pairs/$pair_id/shared/STATUS.json"
     if [ -f "$status_file" ]; then
         local status=$(grep -o '"status"[[:space:]]*:[[:space:]]*"[^"]*"' "$status_file" | cut -d'"' -f4)
         if [ "$status" = "$expected" ]; then
@@ -129,9 +129,9 @@ setup_test_env() {
     fi
     
     # Create test directories
-    mkdir -p sprintless/pairs/pair-1/shared
-    mkdir -p sprintless/pairs/pair-2/shared
-    mkdir -p sprintless/locks
+    mkdir -p orchestration/pairs/pair-1/shared
+    mkdir -p orchestration/pairs/pair-2/shared
+    mkdir -p orchestration/locks
     mkdir -p worktrees
     
     log_success "Test directories created"
@@ -142,9 +142,9 @@ cleanup_test_env() {
     log_section "CLEANING UP TEST ENVIRONMENT"
     
     # Remove test artifacts (but keep the structure)
-    rm -rf sprintless/pairs/pair-1/shared/*
-    rm -rf sprintless/pairs/pair-2/shared/*
-    rm -rf sprintless/locks/*
+    rm -rf orchestration/pairs/pair-1/shared/*
+    rm -rf orchestration/pairs/pair-2/shared/*
+    rm -rf orchestration/locks/*
     
     # Remove worktrees if they exist
     if [ -d "worktrees/pair-1" ]; then
@@ -187,14 +187,14 @@ main() {
     # Step 4: Harness provisions pair-1 worktree
     log_harness "pair-1" "Provisioning worktree for T-42..."
     log_harness "pair-1" "  git worktree add worktrees/pair-1 -b forge-1/T-42"
-    log_harness "pair-1" "  Created sprintless/pairs/pair-1/shared/"
+    log_harness "pair-1" "  Created orchestration/pairs/pair-1/shared/"
     log_harness "pair-1" "  Generated worktrees/pair-1/.claude/settings.json"
     log_harness "pair-1" "  Generated worktrees/pair-1/.claude/mcp.json"
-    log_harness "pair-1" "  Symlinked plugin to worktrees/pair-1/.claude/plugins/sprintless"
+    log_harness "pair-1" "  Symlinked plugin to worktrees/pair-1/.claude/plugins/orchestration"
     
     # Create mock worktree structure
     mkdir -p worktrees/pair-1/.claude/plugins
-    mkdir -p sprintless/pairs/pair-1/shared
+    mkdir -p orchestration/pairs/pair-1/shared
     
     log_success "pair-1 worktree ready"
     
@@ -203,15 +203,15 @@ main() {
     log_forge "pair-1" "Session started (context window: 200k tokens)"
     log_forge "pair-1" "Hook: session_start.sh"
     log_forge "pair-1" "  NEW SESSION: No handoff found."
-    log_forge "pair-1" "  Reading sprintless/pairs/pair-1/shared/TICKET.md"
-    log_forge "pair-1" "  Reading sprintless/pairs/pair-1/shared/TASK.md"
+    log_forge "pair-1" "  Reading orchestration/pairs/pair-1/shared/TICKET.md"
+    log_forge "pair-1" "  Reading orchestration/pairs/pair-1/shared/TASK.md"
     log_success "FORGE-1 spawned"
     
     # Step 6: FORGE-1 writes PLAN.md
     log_forge "pair-1" "Analyzing ticket T-42: Add user authentication endpoint"
     log_forge "pair-1" "Searching codebase for existing auth patterns..."
-    log_forge "pair-1" "Reading sprintless/agent/arch/patterns.md"
-    log_forge "pair-1" "Reading sprintless/agent/standards/CODING.md"
+    log_forge "pair-1" "Reading orchestration/agent/arch/patterns.md"
+    log_forge "pair-1" "Reading orchestration/agent/standards/CODING.md"
     log_forge "pair-1" "Writing PLAN.md:"
     log_forge "pair-1" "  Segment 1: POST /auth/login endpoint"
     log_forge "pair-1" "  Segment 2: JWT token generation"
@@ -219,7 +219,7 @@ main() {
     log_forge "pair-1" "  Segment 4: Integration tests"
     
     # Create mock PLAN.md
-    cat > sprintless/pairs/pair-1/shared/PLAN.md << 'EOF'
+    cat > orchestration/pairs/pair-1/shared/PLAN.md << 'EOF'
 # Plan: Add user authentication endpoint
 
 ## Ticket: T-42
@@ -268,7 +268,7 @@ EOF
     # Step 8: SENTINEL reviews plan
     log_sentinel "pair-1" "Reading PLAN.md"
     log_sentinel "pair-1" "Reading TICKET.md acceptance criteria"
-    log_sentinel "pair-1" "Checking against sprintless/agent/arch/patterns.md"
+    log_sentinel "pair-1" "Checking against orchestration/agent/arch/patterns.md"
     log_sentinel "pair-1" "Verification:"
     log_sentinel "pair-1" "  â All acceptance criteria addressed"
     log_sentinel "pair-1" "  â Follows REST API patterns"
@@ -277,7 +277,7 @@ EOF
     log_sentinel "pair-1" "Writing CONTRACT.md (status: AGREED)"
     
     # Create mock CONTRACT.md
-    cat > sprintless/pairs/pair-1/shared/CONTRACT.md << 'EOF'
+    cat > orchestration/pairs/pair-1/shared/CONTRACT.md << 'EOF'
 # Contract: T-42
 
 ## Status: AGREED
@@ -322,7 +322,7 @@ EOF
     log_forge "pair-1" "    npx eslint src/routes/auth.ts â 0 warnings"
     log_forge "pair-1" "  Creating tests/routes/auth.test.ts"
     log_forge "pair-1" "  Running tests..."
-    log_forge "pair-1" "    execute_command('sprintless/agent/tooling/run-tests.sh')"
+    log_forge "pair-1" "    execute_command('orchestration/agent/tooling/run-tests.sh')"
     log_forge "pair-1" "    â 12 tests passed, 0 failed"
     log_forge "pair-1" "  Committing segment..."
     log_forge "pair-1" "    git add -A"
@@ -331,7 +331,7 @@ EOF
     log_success "Segment 1 committed (sha: a3f9b12)"
     
     # Create mock WORKLOG.md
-    cat > sprintless/pairs/pair-1/shared/WORKLOG.md << 'EOF'
+    cat > orchestration/pairs/pair-1/shared/WORKLOG.md << 'EOF'
 # Worklog: T-42
 
 ## Segment 1: POST /auth/login endpoint
@@ -358,7 +358,7 @@ EOF
     log_sentinel "pair-1" "Reading WORKLOG.md segment-1 entry"
     log_sentinel "pair-1" "Files changed: src/routes/auth.ts, tests/routes/auth.test.ts"
     log_sentinel "pair-1" "Running tests..."
-    log_sentinel "pair-1" "  execute_command('sprintless/agent/tooling/run-tests.sh')"
+    log_sentinel "pair-1" "  execute_command('orchestration/agent/tooling/run-tests.sh')"
     log_sentinel "pair-1" "  â 12 tests passed, 0 failed"
     log_sentinel "pair-1" "Running linter..."
     log_sentinel "pair-1" "  npx eslint src/routes/auth.ts"
@@ -366,13 +366,13 @@ EOF
     log_sentinel "pair-1" "Checking against 5 criteria:"
     log_sentinel "pair-1" "  â Correctness: Endpoint returns correct status codes"
     log_sentinel "pair-1" "  â Test coverage: Happy path + error path tested"
-    log_sentinel "pair-1" "  â Standards: Follows sprintless/agent/standards/CODING.md"
+    log_sentinel "pair-1" "  â Standards: Follows orchestration/agent/standards/CODING.md"
     log_sentinel "pair-1" "  â Code quality: Clear naming, no duplication"
     log_sentinel "pair-1" "  â No regressions: All existing tests still pass"
     log_sentinel "pair-1" "Writing segment-1-eval.md (verdict: APPROVED)"
     
     # Create mock segment eval
-    cat > sprintless/pairs/pair-1/shared/segment-1-eval.md << 'EOF'
+    cat > orchestration/pairs/pair-1/shared/segment-1-eval.md << 'EOF'
 # Segment 1 Evaluation
 
 ## Verdict: APPROVED
@@ -425,7 +425,7 @@ EOF
     log_sentinel "pair-1" "  Body: Implements JWT-based authentication..."
     
     # Create mock final review
-    cat > sprintless/pairs/pair-1/shared/final-review.md << 'EOF'
+    cat > orchestration/pairs/pair-1/shared/final-review.md << 'EOF'
 # Final Review: T-42
 
 ## Verdict: APPROVED
@@ -478,7 +478,7 @@ EOF
     log_forge "pair-1" "  {status: PR_OPENED, pr_url: ..., pr_number: 47}"
     
     # Create mock STATUS.json
-    cat > sprintless/pairs/pair-1/shared/STATUS.json << 'EOF'
+    cat > orchestration/pairs/pair-1/shared/STATUS.json << 'EOF'
 {
   "status": "PR_OPENED",
   "pr_url": "https://github.com/test-org/test-project/pull/47",
@@ -518,7 +518,7 @@ EOF
     log_harness "pair-1" "Recreating idle worktree on main branch"
     log_harness "pair-1" "git worktree add worktrees/pair-1 main"
     log_harness "pair-1" "Clearing file locks owned by pair-1"
-    log_harness "pair-1" "  Removed sprintless/locks/*.json (owned by pair-1)"
+    log_harness "pair-1" "  Removed orchestration/locks/*.json (owned by pair-1)"
     log_harness "pair-1" "pair-1 status: IDLE"
     log_success "pair-1 ready for next ticket"
     
@@ -532,12 +532,12 @@ EOF
     log_section "RUNNING ASSERTIONS"
     
     # Verify files exist
-    assert_file_exists "sprintless/pairs/pair-1/shared/PLAN.md"
-    assert_file_exists "sprintless/pairs/pair-1/shared/CONTRACT.md"
-    assert_file_exists "sprintless/pairs/pair-1/shared/WORKLOG.md"
-    assert_file_exists "sprintless/pairs/pair-1/shared/segment-1-eval.md"
-    assert_file_exists "sprintless/pairs/pair-1/shared/final-review.md"
-    assert_file_exists "sprintless/pairs/pair-1/shared/STATUS.json"
+    assert_file_exists "orchestration/pairs/pair-1/shared/PLAN.md"
+    assert_file_exists "orchestration/pairs/pair-1/shared/CONTRACT.md"
+    assert_file_exists "orchestration/pairs/pair-1/shared/WORKLOG.md"
+    assert_file_exists "orchestration/pairs/pair-1/shared/segment-1-eval.md"
+    assert_file_exists "orchestration/pairs/pair-1/shared/final-review.md"
+    assert_file_exists "orchestration/pairs/pair-1/shared/STATUS.json"
     
     # Verify status
     assert_status "pair-1" "PR_OPENED"

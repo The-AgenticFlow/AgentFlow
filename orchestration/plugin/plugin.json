@@ -1,7 +1,7 @@
 {
-  "name": "sprintless",
+  "name": "orchestration",
   "version": "3.0.0",
-  "description": "Autonomous agent pair tooling for Sprintless FORGE-SENTINEL architecture",
+  "description": "Autonomous agent pair tooling for AgentFlow FORGE-SENTINEL architecture",
   "skills": {
     "forge": [
       "skills/forge-coding.md",

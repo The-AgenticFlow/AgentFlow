@@ -116,4 +116,4 @@ If you want to contribute, please follow these steps:
 4. **Implement**: Follow the standard agentic coding workflow (Plan -> Implement -> Verify -> Walkthrough).
 
 ---
-For more specific rules, see `sprintless/agent/standards/`.
+For more specific rules, see `orchestration/agent/standards/`.

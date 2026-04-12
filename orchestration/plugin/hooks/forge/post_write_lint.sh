@@ -11,7 +11,7 @@ WORKTREE="${SPRINTLESS_WORKTREE}"
 
 # For shared/ artifacts, ensure atomic write was used (.tmp + rename pattern)
 case "$FILE" in
-  */sprintless/pairs/*/shared/*)
+  */orchestration/pairs/*/shared/*)
     # Verify file was written atomically (should never see .tmp files at this point)
     if [[ "$FILE" == *.tmp ]]; then
       echo "ERROR: Temporary file leaked to filesystem: ${FILE}"

@@ -62,10 +62,10 @@ async fn main() -> Result<()> {
 
     // 4. Build Nodes
     let nexus = Arc::new(NexusNode::new(
-        "sprintless/agent/agents/nexus.agent.md",
-        "sprintless/agent/registry.json",
+        "orchestration/agent/agents/nexus.agent.md",
+        "orchestration/agent/registry.json",
     ));
-    let forge = Arc::new(ForgeNode::new(".", "sprintless/agent/agents/forge.agent.md"));
+    let forge = Arc::new(ForgeNode::new(".", "orchestration/agent/agents/forge.agent.md"));
 
     // 5. Build Flow
     let flow = Flow::new("nexus")

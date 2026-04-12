@@ -13,7 +13,7 @@ LOCKS_DIR="${SPRINTLESS_SHARED}/../locks"
 
 # Skip lock check for shared/ artifacts - those are pair-scoped already
 case "$FILE" in
-  */sprintless/pairs/*/shared/*)
+  */orchestration/pairs/*/shared/*)
     exit 0
     ;;
 esac

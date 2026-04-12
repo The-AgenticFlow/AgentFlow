@@ -4,7 +4,7 @@
 
 The `ForgePairNode` integrates the full event-driven FORGE-SENTINEL lifecycle into the PocketFlow workflow engine.
 
-**Note:** This implementation uses **filesystem-based state** by default, eliminating the need for Redis. State is stored in the shared directory at `sprintless/pairs/{pair-id}/shared/state.json`.
+**Note:** This implementation uses **filesystem-based state** by default, eliminating the need for Redis. State is stored in the shared directory at `orchestration/pairs/{pair-id}/shared/state.json`.
 
 ## Architecture
 
@@ -125,7 +125,7 @@ The `PairConfig` is automatically created with:
 PairConfig {
     pair_id: worker_id,          // e.g., "forge-1"
     worktree: workspace_root/worktrees/forge-1/,
-    shared: workspace_root/sprintless/pairs/forge-1/shared/,
+    shared: workspace_root/orchestration/pairs/forge-1/shared/,
     redis_url: "redis://localhost:6379",
     github_token: "ghp_...",
     max_resets: 10,              // Default
@@ -270,7 +270,7 @@ See [`crates/pair-harness/tests/full_e2e.rs`](../crates/pair-harness/tests/full_
 
 4. **Update configuration:**
    - Add GitHub token to environment
-   - Ensure `sprintless/pairs/` directory exists
+   - Ensure `orchestration/pairs/` directory exists
    - No Redis setup required
 
 ### Benefits of Migration

@@ -118,9 +118,9 @@ impl Provisioner {
         // First check for ORCHESTRATOR_DIR env var (points to orchestrator source with plugin)
         // Fall back to project_root for backwards compatibility
         let plugin_source = if let Ok(orch_dir) = std::env::var("ORCHESTRATOR_DIR") {
-            PathBuf::from(orch_dir).join("sprintless").join("plugin")
+            PathBuf::from(orch_dir).join("orchestration").join("plugin")
         } else {
-            self.project_root.join("sprintless").join("plugin")
+            self.project_root.join("orchestration").join("plugin")
         };
 
         // Check if plugin exists
@@ -137,7 +137,7 @@ impl Provisioner {
 
         fs::create_dir_all(&plugins_dir).context("Failed to create plugins directory")?;
 
-        let symlink_path = plugins_dir.join("sprintless");
+        let symlink_path = plugins_dir.join("orchestration");
 
         // Remove existing symlink if present
         if symlink_path.exists() || symlink_path.symlink_metadata().is_ok() {
