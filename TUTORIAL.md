@@ -275,7 +275,7 @@ AgentFlow creates an isolated workspace structure:
 ```
 
 **What's happening:**
-1. NEXUS loads available worker slots from [`registry.json`](.agent/registry.json:1)
+1. NEXUS loads available worker slots from [`registry.json`](sprintless/agent/registry.json:1)
 2. Connects to GitHub via MCP server
 3. Fetches open issues from your repository
 4. Assigns first issue to `forge-1`
@@ -314,7 +314,7 @@ AgentFlow creates an isolated workspace structure:
 
 ```
 2026-03-31T00:00:12.567Z  INFO agent_forge: Spawning Claude Code for worker forge-1
-2026-03-31T00:00:12.678Z  INFO pair_harness::process: Running: claude run --persona /path/to/.agent/agents/forge.agent.md
+2026-03-31T00:00:12.678Z  INFO pair_harness::process: Running: claude run --persona /path/to/sprintless/agent/agents/forge.agent.md
 2026-03-31T00:00:13.789Z  INFO agent_forge: Claude Code process started (PID: 12345)
 2026-03-31T00:00:13.890Z  INFO agent_forge: Worker forge-1 is now working on T-001
 ```
@@ -697,7 +697,7 @@ curl -H "Authorization: token $GITHUB_PERSONAL_ACCESS_TOKEN" \
 ```
 AgentFlow/                                    # Orchestrator project
 ├── .env                                      # Your API keys (DO NOT COMMIT)
-├── .agent/
+├── sprintless/agent/
 │   ├── agents/
 │   │   ├── nexus.agent.md                   # Orchestrator persona
 │   │   └── forge.agent.md                   # Builder persona
@@ -740,8 +740,8 @@ AgentFlow/                                    # Orchestrator project
 
 ## Next Steps
 
-1. **Customize Agent Personas**: Edit [`.agent/agents/forge.agent.md`](.agent/agents/forge.agent.md:1) to change how the builder agent works
-2. **Add More Workers**: Edit [`.agent/registry.json`](.agent/registry.json:1) to add more parallel workers
+1. **Customize Agent Personas**: Edit [`sprintless/agent/agents/forge.agent.md`](sprintless/agent/agents/forge.agent.md:1) to change how the builder agent works
+2. **Add More Workers**: Edit [`sprintless/agent/registry.json`](sprintless/agent/registry.json:1) to add more parallel workers
 3. **Integrate SENTINEL**: Enable code review by uncommenting SENTINEL node in flow
 4. **Production Deployment**: Use `cargo build --release` and deploy with systemd or Docker
 

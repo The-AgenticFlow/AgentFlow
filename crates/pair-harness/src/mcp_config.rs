@@ -58,7 +58,7 @@ impl McpConfigGenerator {
                     "command": "shell-mcp-server",
                     "args": [
                         "--allowlist",
-                        ".agent/tooling/run-tests.sh,cargo clippy,cargo test,npx eslint,npx jest,ruff check"
+                        "sprintless/agent/tooling/run-tests.sh,cargo clippy,cargo test,npx eslint,npx jest,ruff check"
                     ]
                 }
             }
@@ -98,7 +98,7 @@ impl McpConfigGenerator {
                     "command": "shell-mcp-server",
                     "args": [
                         "--allowlist",
-                        ".agent/tooling/run-tests.sh,npx eslint,ruff check,cargo clippy"
+                        "sprintless/agent/tooling/run-tests.sh,npx eslint,ruff check,cargo clippy"
                     ]
                 }
             }
@@ -189,7 +189,7 @@ pub const DEFAULT_MCP_TEMPLATE: &str = r#"{
       "command": "shell-mcp-server",
       "args": [
         "--allowlist",
-        ".agent/tooling/run-tests.sh,cargo clippy,cargo test,npx eslint,npx jest,ruff check"
+        "sprintless/agent/tooling/run-tests.sh,cargo clippy,cargo test,npx eslint,npx jest,ruff check"
       ]
     }
   }
@@ -218,7 +218,7 @@ pub const DEFAULT_SENTINEL_MCP_TEMPLATE: &str = r#"{
       "command": "shell-mcp-server",
       "args": [
         "--allowlist",
-        ".agent/tooling/run-tests.sh,npx eslint,ruff check,cargo clippy"
+        "sprintless/agent/tooling/run-tests.sh,npx eslint,ruff check,cargo clippy"
       ]
     }
   }

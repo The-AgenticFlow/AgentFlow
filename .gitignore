@@ -97,7 +97,8 @@ coverage/
 # Worker runtime data (top-level forge/ directory only)
 /forge/
 
-# Sprintless runtime data (but keep plugin)
+# Sprintless runtime data (but keep plugin and agent config)
 sprintless/locks/
 sprintless/pairs/
 !sprintless/plugin/
+!sprintless/agent/

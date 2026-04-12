@@ -19,9 +19,9 @@ and one for the primary error path?
 
 ### 3. Standards compliance
 
-Does the implementation follow `.agent/standards/CODING.md`?
-Does it use the patterns in `.agent/arch/patterns.md`?
-Does it respect the API contracts in `.agent/arch/api-contracts.md`?
+Does the implementation follow `sprintless/agent/standards/CODING.md`?
+Does it use the patterns in `sprintless/agent/arch/patterns.md`?
+Does it respect the API contracts in `sprintless/agent/arch/api-contracts.md`?
 
 **FAIL:** any violation of the team's written standards
 

@@ -1,6 +1,6 @@
 // crates/config/src/agent.rs
 //
-// Parses .agent/{id}.agent.md files.
+// Parses sprintless/agent/{id}.agent.md files.
 // Format: YAML frontmatter (between --- markers) + Markdown body.
 // The `instances` field is deliberately absent — registry.json owns that.
 

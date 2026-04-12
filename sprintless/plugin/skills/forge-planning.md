@@ -8,7 +8,7 @@ Use the `/plan` command to structure it correctly.
 ## What a good plan contains
 
 1. **Your understanding of the ticket** - in your own words
-2. **Technical approach** - follows `.agent/arch/patterns.md` (if it exists)
+2. **Technical approach** - follows `sprintless/agent/arch/patterns.md` (if it exists)
 3. **Explicit segment breakdown** - each segment is independently testable
 4. **Definition of done per segment** - specific and verifiable
 5. **List of files you will create or modify**

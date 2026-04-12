@@ -18,7 +18,7 @@ Your feedback must be actionable - FORGE must know exactly what to fix.
 
 Check:
 1. Does the plan address all acceptance criteria in TICKET.md?
-2. Does the technical approach follow `.agent/arch/patterns.md`?
+2. Does the technical approach follow `sprintless/agent/arch/patterns.md`?
 3. Are all relevant files identified?
 4. Is the definition of done specific and testable?
 5. Is there an explicit out-of-scope list?
@@ -30,7 +30,7 @@ Write `CONTRACT.md` with:
 ## Reviewing a segment
 
 Check:
-1. Run tests: `.agent/tooling/run-tests.sh` - they must all pass
+1. Run tests: `sprintless/agent/tooling/run-tests.sh` - they must all pass
 2. Run linter on changed files - zero warnings
 3. Read every changed file against the CONTRACT criteria
 4. Check error handling - every error path covered?
@@ -67,7 +67,7 @@ CHANGES_REQUESTED
 
 When all segments are approved, run the complete verification:
 
-1. Full test suite via `.agent/tooling/run-tests.sh`
+1. Full test suite via `sprintless/agent/tooling/run-tests.sh`
 2. Full linter across entire project
 3. Check every CONTRACT criterion is satisfied
 4. Write `final-review.md` with `APPROVED` verdict and PR description

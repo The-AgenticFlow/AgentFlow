@@ -1,6 +1,6 @@
 // crates/config/src/registry.rs
 //
-// Reads .agent/registry.json — single source of truth for team membership.
+// Reads sprintless/agent/registry.json — single source of truth for team membership.
 // NEXUS reloads this on every poll cycle for zero-downtime team changes.
 
 use anyhow::{Context, Result};
@@ -23,7 +23,7 @@ pub struct Registry {
 }
 
 impl Registry {
-    /// Load from a path (typically `.agent/registry.json`).
+    /// Load from a path (typically `sprintless/agent/registry.json`).
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let content = std::fs::read_to_string(path)

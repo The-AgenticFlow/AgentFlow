@@ -91,7 +91,7 @@ Auto mode (`defaultMode: "auto"`) allows the agent to execute pre-approved opera
       "Bash(git status:*)",
       "Bash(git diff:*)",
       "Bash(git log:*)",
-      "Bash(.agent/tooling/run-tests.sh:*)",
+      "Bash(sprintless/agent/tooling/run-tests.sh:*)",
       "Bash(cargo clippy:*)",
       "Bash(cargo test:*)",
       "Bash(npx eslint:*)",
@@ -129,7 +129,7 @@ Auto mode (`defaultMode: "auto"`) allows the agent to execute pre-approved opera
       "Read",
       "Glob",
       "Grep",
-      "Bash(.agent/tooling/run-tests.sh:*)",
+      "Bash(sprintless/agent/tooling/run-tests.sh:*)",
       "Bash(npx eslint:*)",
       "Bash(ruff check:*)",
       "Bash(cargo clippy:*)"
@@ -527,7 +527,7 @@ Each pair's `mcp.json` is generated dynamically by the harness with environment-
       "command": "shell-mcp-server",
       "args": [
         "--allowlist",
-        ".agent/tooling/run-tests.sh,cargo clippy,cargo test,npx eslint,npx jest,ruff check"
+        "sprintless/agent/tooling/run-tests.sh,cargo clippy,cargo test,npx eslint,npx jest,ruff check"
       ]
     }
   }
@@ -579,7 +579,7 @@ execute_command
   command: string  (must match allowlist pattern)
   
 run_tests
-  # Shorthand for: execute_command(".agent/tooling/run-tests.sh")
+  # Shorthand for: execute_command("sprintless/agent/tooling/run-tests.sh")
   
 run_linter
   files: string[]  (optional)
@@ -635,9 +635,9 @@ Quality comes from the pair loop, not from you alone.
    Tool: search_codebase
 
 ## Coding standards
-- All standards are in .agent/standards/CODING.md
-- All architecture patterns are in .agent/arch/patterns.md
-- API contracts are in .agent/arch/api-contracts.md
+- All standards are in sprintless/agent/standards/CODING.md
+- All architecture patterns are in sprintless/agent/arch/patterns.md
+- API contracts are in sprintless/agent/arch/api-contracts.md
 - READ these before implementing. They are not optional.
 
 ## Testing discipline
@@ -669,7 +669,7 @@ Use the /plan command to structure it correctly.
 
 ## What a good plan contains
 - Your understanding of the ticket in your own words
-- Technical approach that follows .agent/arch/patterns.md
+- Technical approach that follows sprintless/agent/arch/patterns.md
 - Explicit segment breakdown — each segment is independently testable
 - Definition of done per segment — specific and verifiable
 - List of files you will create or modify
@@ -712,7 +712,7 @@ Your feedback must be actionable — FORGE must know exactly what to fix.
 ## Reviewing a plan (PLAN.md)
 Check:
 1. Does the plan address all acceptance criteria in TICKET.md?
-2. Does the technical approach follow .agent/arch/patterns.md?
+2. Does the technical approach follow sprintless/agent/arch/patterns.md?
 3. Are all relevant files identified?
 4. Is the definition of done specific and testable?
 5. Is there an explicit out-of-scope list?
@@ -761,9 +761,9 @@ and one for the primary error path?
 FAIL: any changed file with no tests, any new function with no test
 
 ### 3. Standards compliance
-Does the implementation follow .agent/standards/CODING.md?
-Does it use the patterns in .agent/arch/patterns.md?
-Does it respect the API contracts in .agent/arch/api-contracts.md?
+Does the implementation follow sprintless/agent/standards/CODING.md?
+Does it use the patterns in sprintless/agent/arch/patterns.md?
+Does it respect the API contracts in sprintless/agent/arch/api-contracts.md?
 FAIL: any violation of the team's written standards
 
 ### 4. Code quality
@@ -1097,7 +1097,7 @@ if [ -z "$SEGMENT" ]; then
   echo "Your task:"
   echo "  1. Read ${SHARED}/PLAN.md"
   echo "  2. Read ${SHARED}/TICKET.md"
-  echo "  3. Read .agent/arch/patterns.md and .agent/standards/CODING.md"
+  echo "  3. Read sprintless/agent/arch/patterns.md and sprintless/agent/standards/CODING.md"
   echo "  4. Evaluate the plan against acceptance criteria"
   echo "  5. Write ${SHARED}/CONTRACT.md with status AGREED or ISSUES"
   echo ""
@@ -1113,7 +1113,7 @@ else
   echo "  1. Read ${SHARED}/WORKLOG.md — find segment ${SEGMENT} entry"
   echo "  2. Read ${SHARED}/CONTRACT.md — these are the acceptance criteria"
   echo "  3. Read files changed in segment ${SEGMENT}"
-  echo "  4. Run tests: execute_command('.agent/tooling/run-tests.sh')"
+  echo "  4. Run tests: execute_command('sprintless/agent/tooling/run-tests.sh')"
   echo "  5. Run linter on changed files"
   echo "  6. Evaluate against the five criteria (see sentinel-criteria.md skill)"
   echo "  7. Write ${SHARED}/segment-${SEGMENT}-eval.md with verdict"
@@ -1497,7 +1497,7 @@ SENTINEL session starts
 Hook: session_start.sh (shows "PLAN REVIEW MODE")
         │
         ▼
-Read PLAN.md + TICKET.md + .agent/standards/
+Read PLAN.md + TICKET.md + sprintless/agent/standards/
         │
    Plan review
    ┌────┴────┐
@@ -1549,7 +1549,7 @@ Read CONTRACT.md acceptance criteria
 Read files changed in segment-N (from WORKLOG)
         │
         ▼
-Run tests:  execute_command('.agent/tooling/run-tests.sh')
+Run tests:  execute_command('sprintless/agent/tooling/run-tests.sh')
 Run linter: execute_command('npx eslint ...') or similar
         │
         ▼
@@ -1681,7 +1681,7 @@ reason: CONTRACT_DISAGREEMENT
 | Check | Pass condition |
 |---|---|
 | Scope alignment | Plan addresses all acceptance criteria, nothing more |
-| Technical approach | Follows `.agent/arch/patterns.md` |
+| Technical approach | Follows `sprintless/agent/arch/patterns.md` |
 | File coverage | All files that need changing are listed |
 | Test strategy | Verification is specific and runnable |
 | Out of scope | Explicit list of what is NOT being built |
@@ -2328,8 +2328,8 @@ echo ""
 # Step 6: FORGE-1 writes PLAN.md
 log_forge "pair-1" "Analyzing ticket T-42: Add user authentication endpoint"
 log_forge "pair-1" "Searching codebase for existing auth patterns..."
-log_forge "pair-1" "Reading .agent/arch/patterns.md"
-log_forge "pair-1" "Reading .agent/standards/CODING.md"
+log_forge "pair-1" "Reading sprintless/agent/arch/patterns.md"
+log_forge "pair-1" "Reading sprintless/agent/standards/CODING.md"
 log_forge "pair-1" "Writing PLAN.md:"
 log_forge "pair-1" "  Segment 1: POST /auth/login endpoint"
 log_forge "pair-1" "  Segment 2: JWT token generation"
@@ -2352,7 +2352,7 @@ echo ""
 # Step 8: SENTINEL reviews plan
 log_sentinel "pair-1" "Reading PLAN.md"
 log_sentinel "pair-1" "Reading TICKET.md acceptance criteria"
-log_sentinel "pair-1" "Checking against .agent/arch/patterns.md"
+log_sentinel "pair-1" "Checking against sprintless/agent/arch/patterns.md"
 log_sentinel "pair-1" "Verification:"
 log_sentinel "pair-1" "  ✓ All acceptance criteria addressed"
 log_sentinel "pair-1" "  ✓ Follows REST API patterns"
@@ -2381,7 +2381,7 @@ log_forge "pair-1" "    Hook: post_write_lint.sh"
 log_forge "pair-1" "    npx eslint src/routes/auth.ts → 0 warnings"
 log_forge "pair-1" "  Creating tests/routes/auth.test.ts"
 log_forge "pair-1" "  Running tests..."
-log_forge "pair-1" "    execute_command('.agent/tooling/run-tests.sh')"
+log_forge "pair-1" "    execute_command('sprintless/agent/tooling/run-tests.sh')"
 log_forge "pair-1" "    ✓ 12 tests passed, 0 failed"
 log_forge "pair-1" "  Committing segment..."
 log_forge "pair-1" "    git add -A"
@@ -2407,7 +2407,7 @@ echo ""
 log_sentinel "pair-1" "Reading WORKLOG.md segment-1 entry"
 log_sentinel "pair-1" "Files changed: src/routes/auth.ts, tests/routes/auth.test.ts"
 log_sentinel "pair-1" "Running tests..."
-log_sentinel "pair-1" "  execute_command('.agent/tooling/run-tests.sh')"
+log_sentinel "pair-1" "  execute_command('sprintless/agent/tooling/run-tests.sh')"
 log_sentinel "pair-1" "  ✓ 12 tests passed, 0 failed"
 log_sentinel "pair-1" "Running linter..."
 log_sentinel "pair-1" "  npx eslint src/routes/auth.ts"
@@ -2415,7 +2415,7 @@ log_sentinel "pair-1" "  ✓ 0 warnings"
 log_sentinel "pair-1" "Checking against 5 criteria:"
 log_sentinel "pair-1" "  ✓ Correctness: Endpoint returns correct status codes"
 log_sentinel "pair-1" "  ✓ Test coverage: Happy path + error path tested"
-log_sentinel "pair-1" "  ✓ Standards: Follows .agent/standards/CODING.md"
+log_sentinel "pair-1" "  ✓ Standards: Follows sprintless/agent/standards/CODING.md"
 log_sentinel "pair-1" "  ✓ Code quality: Clear naming, no duplication"
 log_sentinel "pair-1" "  ✓ No regressions: All existing tests still pass"
 log_sentinel "pair-1" "Writing segment-1-eval.md (verdict: APPROVED)"

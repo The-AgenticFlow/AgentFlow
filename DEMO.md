@@ -154,7 +154,7 @@ Example STATUS.json:
 
 ```
 AgentFlow/
-|-- .agent/
+|-- sprintless/agent/
 |   |-- agents/
 |   |   |-- nexus.agent.md    # Orchestrator persona
 |   |   |-- forge.agent.md    # Builder persona
@@ -298,4 +298,4 @@ npm run dev
 
 - Read [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines
 - See [docs/forge-sentinel-arch.md](docs/forge-sentinel-arch.md) for architecture details
-- Customize agent personas in `.agent/agents/*.agent.md`
+- Customize agent personas in `sprintless/agent/agents/*.agent.md`

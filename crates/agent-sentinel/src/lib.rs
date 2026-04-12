@@ -101,7 +101,7 @@ impl SentinelNode {
 Your task:
 1. Read {}/PLAN.md
 2. Read {}/TICKET.md (or the original issue)
-3. Read .agent/arch/patterns.md and .agent/standards/CODING.md if available
+3. Read sprintless/agent/arch/patterns.md and sprintless/agent/standards/CODING.md if available
 4. Evaluate the plan against acceptance criteria
 5. Write {}/CONTRACT.md with status AGREED or ISSUES
 
@@ -446,7 +446,7 @@ mod tests {
             worktree: PathBuf::from("/tmp/worktree"),
             shared: PathBuf::from("/tmp/shared"),
             mode: SentinelMode::SegmentEval(1),
-            persona_path: PathBuf::from(".agent/agents/sentinel.agent.md"),
+            persona_path: PathBuf::from("sprintless/agent/agents/sentinel.agent.md"),
         };
         
         assert_eq!(config.pair_id, "forge-1");

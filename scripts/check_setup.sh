@@ -190,28 +190,28 @@ echo "4. Checking AgentFlow Configuration..."
 echo "--------------------------------------"
 
 # Check for agent personas
-if [ -f ".agent/agents/nexus.agent.md" ]; then
+if [ -f "sprintless/agent/agents/nexus.agent.md" ]; then
     success "NEXUS persona found"
 else
-    error ".agent/agents/nexus.agent.md is missing"
+    error "sprintless/agent/agents/nexus.agent.md is missing"
 fi
 
-if [ -f ".agent/agents/forge.agent.md" ]; then
+if [ -f "sprintless/agent/agents/forge.agent.md" ]; then
     success "FORGE persona found"
 else
-    error ".agent/agents/forge.agent.md is missing"
+    error "sprintless/agent/agents/forge.agent.md is missing"
 fi
 
-if [ -f ".agent/registry.json" ]; then
+if [ -f "sprintless/agent/registry.json" ]; then
     success "Worker registry found"
     
     # Count workers
     if command -v jq &> /dev/null; then
-        WORKER_COUNT=$(jq '.forge.workers | length' .agent/registry.json)
+        WORKER_COUNT=$(jq '.forge.workers | length' sprintless/agent/registry.json)
         success "Registry has $WORKER_COUNT worker slots configured"
     fi
 else
-    error ".agent/registry.json is missing"
+    error "sprintless/agent/registry.json is missing"
 fi
 
 echo ""

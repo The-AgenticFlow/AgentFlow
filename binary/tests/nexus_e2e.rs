@@ -69,8 +69,8 @@ async fn test_nexus_e2e_mocked() -> Result<()> {
     // 4. Run NexusNode
     // Path relative to binary/
     let nexus = Arc::new(NexusNode::new(
-        "../.agent/agents/nexus.agent.md",
-        "../.agent/registry.json",
+        "../sprintless/agent/agents/nexus.agent.md",
+        "../sprintless/agent/registry.json",
     ));
 
     let action = nexus.run(&store).await?;

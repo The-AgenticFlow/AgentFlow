@@ -95,15 +95,15 @@ async fn main() -> Result<()> {
         .set(KEY_WORKER_SLOTS, serde_json::to_value(worker_slots)?)
         .await;
 
-    // 4. Build Flow - use orchestrator's .agent directory for personas
+    // 4. Build Flow - use sprintless/agent directory for personas
     let orchestrator_dir = std::env::current_dir()?;
     let nexus = Arc::new(NexusNode::new(
-        orchestrator_dir.join(".agent/agents/nexus.agent.md"),
-        orchestrator_dir.join(".agent/registry.json"),
+        orchestrator_dir.join("sprintless/agent/agents/nexus.agent.md"),
+        orchestrator_dir.join("sprintless/agent/registry.json"),
     ));
     let forge = Arc::new(ForgeNode::new(
         &workspace_dir,
-        orchestrator_dir.join(".agent/agents/forge.agent.md"),
+        orchestrator_dir.join("sprintless/agent/agents/forge.agent.md"),
     ));
 
     let flow = Flow::new("nexus")
