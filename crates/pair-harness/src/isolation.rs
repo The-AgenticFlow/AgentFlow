@@ -113,7 +113,7 @@ impl FileLockManager {
                     acquired_at: "unknown".to_string(),
                 })
             }
-            Err(e) => Err(anyhow!("Failed to acquire lock: {}", e)),
+            Err(e) => Err(anyhow!("Failed to acquire lock: {:#}", e)),
         }
     }
 

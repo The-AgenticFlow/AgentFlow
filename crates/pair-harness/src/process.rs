@@ -10,6 +10,19 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdout, Command};
 use tracing::{debug, error, info, warn};
 
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    path.metadata()
+        .map(|m| m.mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable(_path: &Path) -> bool {
+    true
+}
+
 /// Mode for SENTINEL spawning.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SentinelMode {
@@ -46,9 +59,12 @@ impl ProcessManager {
     /// Create a new process manager without Redis (uses filesystem state).
     pub fn new(github_token: impl Into<String>) -> Self {
         let claude_path = std::env::var("CLAUDE_PATH").unwrap_or_else(|_| "claude".to_string());
+        let claude_path = PathBuf::from(claude_path);
+
+        Self::validate_claude_binary(&claude_path);
 
         Self {
-            claude_path: PathBuf::from(claude_path),
+            claude_path,
             github_token: github_token.into(),
             redis_url: None,
         }
@@ -57,11 +73,43 @@ impl ProcessManager {
     /// Create a process manager with Redis backend.
     pub fn with_redis(github_token: impl Into<String>, redis_url: impl Into<String>) -> Self {
         let claude_path = std::env::var("CLAUDE_PATH").unwrap_or_else(|_| "claude".to_string());
+        let claude_path = PathBuf::from(claude_path);
+
+        Self::validate_claude_binary(&claude_path);
 
         Self {
-            claude_path: PathBuf::from(claude_path),
+            claude_path,
             github_token: github_token.into(),
             redis_url: Some(redis_url.into()),
+        }
+    }
+
+    fn validate_claude_binary(claude_path: &Path) {
+        if claude_path.is_absolute() {
+            if !claude_path.exists() {
+                error!(
+                    path = %claude_path.display(),
+                    "CLAUDE_PATH binary not found. Install Claude CLI or set CLAUDE_PATH in .env"
+                );
+            } else if !is_executable(claude_path) {
+                error!(
+                    path = %claude_path.display(),
+                    "CLAUDE_PATH binary exists but is not executable. Run: chmod +x {}",
+                    claude_path.display()
+                );
+            }
+        } else {
+            match which::which(claude_path) {
+                Ok(found) => {
+                    debug!(path = %found.display(), "Claude CLI binary found");
+                }
+                Err(_) => {
+                    error!(
+                        binary = %claude_path.display(),
+                        "Claude CLI binary not found on PATH. Install it from https://claude.ai/download or set CLAUDE_PATH in .env to an absolute path"
+                    );
+                }
+            }
         }
     }
 
@@ -512,6 +560,31 @@ impl ProcessManager {
                 )
             } else {
                 // Unknown contract state - treat as new session
+                self.new_session_prompt(&ticket_path, &task_path, shared)
+            }
+        } else if plan_path.exists() {
+            // PLAN.md exists but no CONTRACT.md yet - SENTINEL has not reviewed the plan.
+            // Since --print mode exits after one response, we should NOT respawn FORGE
+            // to wait for SENTINEL. Instead, just exit cleanly. The harness event loop
+            // will spawn SENTINEL and then respawn FORGE once CONTRACT.md is written.
+            info!("PLAN.md exists but no CONTRACT.md - FORGE has nothing to do until SENTINEL reviews");
+
+            // Write a minimal WORKLOG.md so the harness knows progress was made
+            let worklog_path = shared.join("WORKLOG.md");
+            if !worklog_path.exists() {
+                let plan = std::fs::read_to_string(&plan_path)
+                    .unwrap_or_else(|_| "No PLAN.md found".to_string());
+                format!(
+                    "You are FORGE. Your PLAN.md has been submitted for review.\n\n\
+                    --- PLAN.md ---\n{}\n\n\
+                    IMPORTANT: Do NOT write any code or modify any files. Your plan is pending SENTINEL review.\n\
+                    Simply respond with: 'PLAN.md submitted for SENTINEL review. Awaiting CONTRACT.md.'\n\
+                    Do NOT rewrite PLAN.md. Do NOT start implementation. Wait for CONTRACT.md.",
+                    plan
+                )
+            } else {
+                // WORKLOG exists but no CONTRACT - implementation was started before contract?
+                // Fall through to new session
                 self.new_session_prompt(&ticket_path, &task_path, shared)
             }
         } else {
