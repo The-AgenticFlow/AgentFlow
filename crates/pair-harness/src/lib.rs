@@ -1,0 +1,32 @@
+// crates/pair-harness/src/lib.rs
+//! Event-driven harness for FORGE-SENTINEL pair lifecycle management.
+//!
+//! This crate implements the v3 architecture where:
+//! - SENTINEL is ephemeral (spawned fresh per segment evaluation)
+//! - The harness uses inotify/FSEvents for zero-polling event detection
+//! - File locking uses flock for atomic acquisition
+//! - Both FORGE and SENTINEL run with auto-mode permissions
+
+pub mod isolation;
+pub mod mcp_config;
+pub mod pair;
+pub mod process;
+pub mod provision;
+pub mod reset;
+pub mod types;
+pub mod watchdog;
+pub mod watcher;
+pub mod workspace;
+pub mod worktree;
+
+pub use isolation::FileLockManager;
+pub use mcp_config::McpConfigGenerator;
+pub use pair::ForgeSentinelPair;
+pub use process::{ProcessManager, SentinelMode};
+pub use provision::Provisioner;
+pub use reset::ResetManager;
+pub use types::{FsEvent, PairConfig, PairOutcome, Ticket};
+pub use watchdog::Watchdog;
+pub use watcher::SharedDirWatcher;
+pub use workspace::WorkspaceManager;
+pub use worktree::WorktreeManager;

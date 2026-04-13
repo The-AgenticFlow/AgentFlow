@@ -97,3 +97,11 @@ coverage/
 # Worker runtime data
 forge/STATUS.json
 *-eval.md
+# Worker runtime data (top-level forge/ directory only)
+/forge/
+
+# Orchestration runtime data (but keep plugin and agent config)
+orchestration/locks/
+orchestration/pairs/
+!orchestration/plugin/
+!orchestration/agent/

@@ -1,0 +1,35 @@
+{
+  "name": "orchestration",
+  "version": "3.0.0",
+  "description": "Autonomous agent pair tooling for AgentFlow FORGE-SENTINEL architecture",
+  "skills": {
+    "forge": [
+      "skills/forge-coding.md",
+      "skills/forge-planning.md"
+    ],
+    "sentinel": [
+      "skills/sentinel-review.md",
+      "skills/sentinel-criteria.md"
+    ],
+    "nexus": [
+      "skills/nexus-orchestration.md",
+      "skills/nexus-triage.md"
+    ],
+    "vessel": [
+      "skills/vessel-ci-gate.md",
+      "skills/vessel-merge-protocol.md"
+    ],
+    "lore": [
+      "skills/lore-documentation.md",
+      "skills/lore-changelog.md"
+    ]
+  },
+  "hooks": {
+    "forge": "hooks/forge/",
+    "sentinel": "hooks/sentinel/",
+    "nexus": "hooks/nexus/",
+    "vessel": "hooks/vessel/",
+    "lore": "hooks/lore/"
+  },
+  "commands": "commands/"
+}

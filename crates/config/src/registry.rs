@@ -1,6 +1,6 @@
 // crates/config/src/registry.rs
 //
-// Reads .agent/registry.json — single source of truth for team membership.
+// Reads orchestration/agent/registry.json — single source of truth for team membership.
 // NEXUS reloads this on every poll cycle for zero-downtime team changes.
 
 use anyhow::{Context, Result};
@@ -10,10 +10,10 @@ use std::path::Path;
 /// A single agent entry from registry.json.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RegistryEntry {
-    pub id:        String,
-    pub cli:       String,    // "claude" | "gemini" | "codex"
-    pub active:    bool,
-    pub instances: u32,       // registry.json is sole source — .agent.md has no instances field
+    pub id: String,
+    pub cli: String, // "claude" | "gemini" | "codex"
+    pub active: bool,
+    pub instances: u32, // registry.json is sole source — .agent.md has no instances field
 }
 
 /// The full registry — a thin wrapper around the team list.
@@ -23,7 +23,7 @@ pub struct Registry {
 }
 
 impl Registry {
-    /// Load from a path (typically `.agent/registry.json`).
+    /// Load from a path (typically `orchestration/agent/registry.json`).
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let content = std::fs::read_to_string(path)
