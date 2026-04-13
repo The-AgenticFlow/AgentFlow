@@ -55,10 +55,19 @@ impl ForgeSentinelPair {
         Self {
             worktree: WorktreeManager::new(&project_root),
             locks: FileLockManager::new(&project_root),
-            process: if let Some(redis_url) = &config.redis_url {
-                ProcessManager::with_redis(&config.github_token, redis_url)
-            } else {
-                ProcessManager::new(&config.github_token)
+            process: match (&config.redis_url, &config.proxy_url) {
+                (Some(redis_url), Some(proxy_url)) => {
+                    ProcessManager::with_proxy(&config.github_token, Some(redis_url.clone()), proxy_url)
+                }
+                (Some(redis_url), None) => {
+                    ProcessManager::with_redis(&config.github_token, redis_url)
+                }
+                (None, Some(proxy_url)) => {
+                    ProcessManager::with_proxy(&config.github_token, None, proxy_url)
+                }
+                (None, None) => {
+                    ProcessManager::new(&config.github_token)
+                }
             },
             reset: ResetManager::new(config.shared.clone(), config.max_resets),
             watchdog: Watchdog::new(config.shared.clone(), config.watchdog_timeout_secs),
@@ -426,6 +435,7 @@ impl ForgeSentinelPair {
                     if forge_uptime < 30 {
                         // Very quick exit - likely a startup error, retry
                         warn!("FORGE exited quickly ({}s) without progress - retrying spawn", forge_uptime);
+                        self.reset.increment_reset();
                         *forge = self.spawn_forge().await?;
                     } else {
                         // Ran for a while but produced nothing - synthesize handoff and respawn

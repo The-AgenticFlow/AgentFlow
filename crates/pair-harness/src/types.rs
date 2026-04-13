@@ -46,21 +46,14 @@ pub struct Ticket {
 /// Configuration for a pair slot.
 #[derive(Debug, Clone)]
 pub struct PairConfig {
-    /// Pair identifier (e.g., "pair-1")
     pub pair_id: String,
-    /// Path to the project root (contains .git)
     pub project_root: PathBuf,
-    /// Path to the Git worktree for this pair
     pub worktree: PathBuf,
-    /// Path to the shared directory for FORGE-SENTINEL communication
     pub shared: PathBuf,
-    /// Optional Redis URL for shared store (if not provided, uses filesystem-based state)
     pub redis_url: Option<String>,
-    /// GitHub token for MCP tools
+    pub proxy_url: Option<String>,
     pub github_token: String,
-    /// Maximum number of context resets allowed
     pub max_resets: u32,
-    /// Timeout in seconds for watchdog (default: 1200 = 20 minutes)
     pub watchdog_timeout_secs: u64,
 }
 
@@ -82,6 +75,7 @@ impl PairConfig {
                 .join("shared"),
             pair_id,
             redis_url: None,
+            proxy_url: None,
             github_token: github_token.into(),
             max_resets: 10,
             watchdog_timeout_secs: 1200,
@@ -106,6 +100,32 @@ impl PairConfig {
                 .join("shared"),
             pair_id,
             redis_url: Some(redis_url.into()),
+            proxy_url: None,
+            github_token: github_token.into(),
+            max_resets: 10,
+            watchdog_timeout_secs: 1200,
+        }
+    }
+
+    pub fn with_proxy(
+        pair_id: impl Into<String>,
+        project_root: &std::path::Path,
+        redis_url: Option<String>,
+        proxy_url: impl Into<String>,
+        github_token: impl Into<String>,
+    ) -> Self {
+        let pair_id = pair_id.into();
+        Self {
+            project_root: project_root.to_path_buf(),
+            worktree: project_root.join("worktrees").join(&pair_id),
+            shared: project_root
+                .join("orchestration")
+                .join("pairs")
+                .join(&pair_id)
+                .join("shared"),
+            pair_id,
+            redis_url,
+            proxy_url: Some(proxy_url.into()),
             github_token: github_token.into(),
             max_resets: 10,
             watchdog_timeout_secs: 1200,
