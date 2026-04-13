@@ -95,4 +95,5 @@ coverage/
 /target/
 
 # Worker runtime data
-forge/
+forge/STATUS.json
+*-eval.md

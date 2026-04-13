@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "forge-tools": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/forge-mcp",
+      "args": [
+        "--worktree", "${SPRINTLESS_WORKTREE}",
+        "--shared", "${SPRINTLESS_SHARED}",
+        "--pair-id", "${SPRINTLESS_PAIR_ID}",
+        "--ticket-id", "${SPRINTLESS_TICKET_ID}"
+      ],
+      "env": {
+        "GITHUB_TOKEN": "${GITHUB_TOKEN}",
+        "REDIS_URL": "${REDIS_URL:-redis://localhost:6379}"
+      }
+    }
+  }
+}

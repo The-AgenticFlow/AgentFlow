@@ -1,0 +1,138 @@
+#!/usr/bin/env python3
+"""
+Mock FORGE MCP Server for testing plugins.
+
+This is a minimal MCP server that responds to tool calls with mock data.
+It implements the MCP protocol over stdio.
+"""
+
+import json
+import sys
+import os
+
+# Mock data for responses
+MOCK_RESPONSES = {
+    "run_tests": {
+        "passed": 42,
+        "failed": 0,
+        "skipped": 2,
+        "failures": [],
+        "duration_ms": 12345
+    },
+    "run_linter": {
+        "violations": [],
+        "clean": True
+    },
+    "search_codebase": {
+        "results": []
+    },
+    "create_pr": {
+        "pr_url": "https://github.com/org/repo/pull/47",
+        "pr_number": 47
+    },
+    "get_issue": {
+        "title": "Mock Issue",
+        "body": "Mock issue description",
+        "labels": ["enhancement"],
+        "assignees": []
+    },
+    "commit_segment": {
+        "commit_sha": "abc123def456",
+        "files_changed": 3
+    },
+    "write_to_shared": {"success": True},
+    "read_from_shared": {"content": "Mock content"},
+    "emit_event": {"success": True}
+}
+
+def log(message):
+    """Log to stderr."""
+    print(f"[FORGE-MCP] {message}", file=sys.stderr)
+
+def handle_request(request):
+    """Handle an MCP request."""
+    method = request.get("method", "")
+    params = request.get("params", {})
+    
+    if method == "initialize":
+        return {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {
+                "tools": {}
+            },
+            "serverInfo": {
+                "name": "forge-mcp",
+                "version": "1.0.0"
+            }
+        }
+    
+    elif method == "tools/list":
+        return {
+            "tools": [
+                {"name": "run_tests", "description": "Run test suite"},
+                {"name": "run_linter", "description": "Run linter"},
+                {"name": "search_codebase", "description": "Search codebase"},
+                {"name": "create_pr", "description": "Create PR"},
+                {"name": "get_issue", "description": "Get issue"},
+                {"name": "commit_segment", "description": "Commit segment"},
+                {"name": "write_to_shared", "description": "Write to shared"},
+                {"name": "read_from_shared", "description": "Read from shared"},
+                {"name": "emit_event", "description": "Emit event"}
+            ]
+        }
+    
+    elif method == "tools/call":
+        tool_name = params.get("name", "")
+        if tool_name in MOCK_RESPONSES:
+            return {
+                "content": [
+                    {"type": "text", "text": json.dumps(MOCK_RESPONSES[tool_name])}
+                ]
+            }
+        else:
+            return {"error": f"Unknown tool: {tool_name}"}
+    
+    else:
+        return {"error": f"Unknown method: {method}"}
+
+def main():
+    """Main loop - read JSON-RPC from stdin, write responses to stdout."""
+    log("Mock FORGE MCP Server starting")
+    
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        
+        try:
+            request = json.loads(line)
+            request_id = request.get("id")
+            
+            log(f"Request: {request.get('method')}")
+            
+            response = {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": handle_request(request)
+            }
+            
+            print(json.dumps(response), flush=True)
+            
+        except json.JSONDecodeError as e:
+            log(f"JSON error: {e}")
+            print(json.dumps({
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {"code": -32700, "message": "Parse error"}
+            }), flush=True)
+        
+        except Exception as e:
+            log(f"Error: {e}")
+            print(json.dumps({
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {"code": -32603, "message": str(e)}
+            }), flush=True)
+
+if __name__ == "__main__":
+    main()

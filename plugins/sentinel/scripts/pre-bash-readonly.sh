@@ -6,13 +6,14 @@ CMD="${CLAUDE_TOOL_INPUT_COMMAND}"
 WORKTREE="${SPRINTLESS_WORKTREE:-.}"
 SHARED="${SPRINTLESS_SHARED:-.sprintless/shared}"
 
-# Patterns that indicate file modification
-WRITE_PATTERNS="sed -i|awk.*>|tee |> [^/]|echo.*>.*src|echo.*>.*tests|cat.*>|truncate|dd.*of="
+# Patterns that indicate file modification or code execution
+# Covers redirection, common tools with write flags, and script interpreters
+WRITE_PATTERNS="(>|>>)|(sed -i|awk.*>|tee |truncate|dd.*of=)|(python[23]?|perl|ruby|php|node|bash|sh|zsh) (-c|-e|--)"
 
 if echo "$CMD" | grep -qE "$WRITE_PATTERNS"; then
   echo ""
-  echo "=== BLOCKED: Write Operation ==="
-  echo "SENTINEL cannot modify source files."
+  echo "=== BLOCKED: Potential Write/Execute Operation ==="
+  echo "SENTINEL cannot modify source files or run arbitrary scripts."
   echo "Write your evaluation to ${SHARED}/segment-N-eval.md"
   exit 2
 fi

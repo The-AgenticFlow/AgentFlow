@@ -1,0 +1,6 @@
+{
+  "name": "forge",
+  "version": "1.0.0",
+  "description": "Builder agent - implements tickets, writes code, and opens PRs",
+  "author": { "name": "AgentFlow Team" }
+}

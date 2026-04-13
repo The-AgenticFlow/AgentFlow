@@ -41,8 +41,10 @@ def run_hook(plugin_dir, hook_type, **env_vars):
     
     return 0
 
-def simulate_forge_session(plugin_dir, prompt, danger_mode=False):
+def simulate_forge_session(plugin_dir, prompt, danger_mode=False, output_dir=None):
     """Simulate a FORGE agent session with hooks."""
+    output_dir = output_dir or "."
+    os.makedirs(output_dir, exist_ok=True)
     
     # SessionStart hook
     print("==========================================")
@@ -65,10 +67,11 @@ def simulate_forge_session(plugin_dir, prompt, danger_mode=False):
             "branch": "forge-1/T-DANGER-001",
             "notes": "Waiting for approval to run: rm -rf /"
         }
-        with open("STATUS.json", "w") as f:
+        status_path = os.path.join(output_dir, "STATUS.json")
+        with open(status_path, "w") as f:
             json.dump(status, f, indent=2)
         
-        print("\nSTATUS.json written with suspended status.")
+        print(f"\nSTATUS.json written to {status_path} with suspended status.")
         time.sleep(2)
     else:
         # Simulate normal work
@@ -97,16 +100,19 @@ def simulate_forge_session(plugin_dir, prompt, danger_mode=False):
             "files_changed": ["src/main.rs"]
         }
         
-        with open("STATUS.json", "w") as f:
+        status_path = os.path.join(output_dir, "STATUS.json")
+        with open(status_path, "w") as f:
             json.dump(status, f, indent=2)
         
-        print("Done! STATUS.json written.")
+        print(f"Done! STATUS.json written to {status_path}.")
         print()
         print("[HOOK] Stop: stop-require-artifact.sh")
         print("  Artifact found: STATUS.json")
 
-def simulate_sentinel_session(plugin_dir, prompt):
+def simulate_sentinel_session(plugin_dir, prompt, output_dir=None):
     """Simulate a SENTINEL agent session with hooks."""
+    output_dir = output_dir or "."
+    os.makedirs(output_dir, exist_ok=True)
     
     print("==========================================")
     print("SENTINEL Session Starting")
@@ -129,13 +135,14 @@ APPROVED
 ## Summary
 Implementation follows all standards.
 """
-    with open("segment-1-eval.md", "w") as f:
+    eval_path = os.path.join(output_dir, "segment-1-eval.md")
+    with open(eval_path, "w") as f:
         f.write(eval_content)
     
     print("[HOOK] PostToolUse(Write): post-write-validate.sh")
     print("  Validation: passed")
     print()
-    print("Evaluation written: segment-1-eval.md")
+    print(f"Evaluation written: {eval_path}")
     print()
     print("[HOOK] Stop: stop-require-eval.sh")
     print("  Evaluation found: segment-1-eval.md")
@@ -145,6 +152,7 @@ def main():
     parser.add_argument("--plugin-dir", help="Path to plugin directory")
     parser.add_argument("--print", action="store_true", help="Print mode")
     parser.add_argument("--output-format", help="Output format (json, text)")
+    parser.add_argument("--output-dir", help="Directory to write output artifacts (STATUS.json, etc.)")
     parser.add_argument("prompt", nargs="*", default="", help="Prompt to process")
     
     args = parser.parse_args()
@@ -159,6 +167,11 @@ def main():
     if not plugin_dir:
         plugin_dir = os.environ.get("CLAUDE_PLUGIN_DIR", "")
     
+    # Detect output dir
+    output_dir = args.output_dir
+    if not output_dir:
+        output_dir = os.environ.get("CLAUDE_OUTPUT_DIR")
+    
     # Detect agent type
     agent = "forge"
     if plugin_dir:
@@ -170,9 +183,9 @@ def main():
     
     # Simulate session based on agent
     if agent == "forge":
-        simulate_forge_session(plugin_dir, prompt, danger_mode)
+        simulate_forge_session(plugin_dir, prompt, danger_mode, output_dir)
     elif agent == "sentinel":
-        simulate_sentinel_session(plugin_dir, prompt)
+        simulate_sentinel_session(plugin_dir, prompt, output_dir)
     else:
         print(f"Mock session for {agent}")
         print("Done!")

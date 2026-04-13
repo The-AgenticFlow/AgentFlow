@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """Mock NEXUS MCP Server for testing plugins."""
 
-import json
+import os
 import sys
+
+# Add scripts directory to path to find mcp_mock
+sys.path.append(os.path.join(os.path.dirname(__file__), "../../../scripts"))
+from mcp_mock import MCPMockServer
 
 MOCK_RESPONSES = {
     "get_worker_slots": {
@@ -18,53 +22,15 @@ MOCK_RESPONSES = {
     "emit_event": {"success": True}
 }
 
-def handle_request(request):
-    method = request.get("method", "")
-    params = request.get("params", {})
-    
-    if method == "initialize":
-        return {
-            "protocolVersion": "2024-11-05",
-            "capabilities": {"tools": {}},
-            "serverInfo": {"name": "nexus-mcp", "version": "1.0.0"}
-        }
-    elif method == "tools/list":
-        return {
-            "tools": [
-                {"name": "get_worker_slots", "description": "Get worker slots"},
-                {"name": "assign_worker", "description": "Assign worker"},
-                {"name": "get_command_gate", "description": "Get command gate"},
-                {"name": "approve_command", "description": "Approve command"},
-                {"name": "reject_command", "description": "Reject command"},
-                {"name": "emit_event", "description": "Emit event"}
-            ]
-        }
-    elif method == "tools/call":
-        tool_name = params.get("name", "")
-        if tool_name in MOCK_RESPONSES:
-            return {"content": [{"type": "text", "text": json.dumps(MOCK_RESPONSES[tool_name])}]}
-        return {"error": f"Unknown tool: {tool_name}"}
-    return {"error": f"Unknown method: {method}"}
-
-def main():
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            request = json.loads(line)
-            response = {
-                "jsonrpc": "2.0",
-                "id": request.get("id"),
-                "result": handle_request(request)
-            }
-            print(json.dumps(response), flush=True)
-        except Exception as e:
-            print(json.dumps({
-                "jsonrpc": "2.0",
-                "id": None,
-                "error": {"code": -32603, "message": str(e)}
-            }), flush=True)
+TOOLS = [
+    {"name": "get_worker_slots", "description": "Get worker slots"},
+    {"name": "assign_worker", "description": "Assign worker"},
+    {"name": "get_command_gate", "description": "Get command gate"},
+    {"name": "approve_command", "description": "Approve command"},
+    {"name": "reject_command", "description": "Reject command"},
+    {"name": "emit_event", "description": "Emit event"}
+]
 
 if __name__ == "__main__":
-    main()
+    server = MCPMockServer("nexus-mcp", responses=MOCK_RESPONSES, tools=TOOLS)
+    server.run()
