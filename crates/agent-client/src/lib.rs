@@ -1,11 +1,17 @@
 pub mod anthropic;
-pub mod openai;
+pub mod fallback;
+pub mod gemini;
 pub mod mcp;
+pub mod openai;
 pub mod runner;
 pub mod types;
 
 pub use anthropic::AnthropicClient;
-pub use openai::OpenAiClient;
+pub use fallback::FallbackClient;
+pub use gemini::GeminiClient;
 pub use mcp::McpSession;
+pub use openai::OpenAiClient;
 pub use runner::AgentRunner;
-pub use types::{AgentDecision, AgentPersona, Message, ToolSchema, ToolResult, LlmClient, LlmResponse};
+pub use types::{
+    AgentDecision, AgentPersona, LlmClient, LlmResponse, Message, ToolResult, ToolSchema,
+};

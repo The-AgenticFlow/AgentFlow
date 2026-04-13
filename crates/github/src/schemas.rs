@@ -7,8 +7,12 @@
 /// The GITHUB_PERSONAL_ACCESS_TOKEN env var must be set in the environment.
 pub fn github_mcp_cmd() -> Vec<&'static str> {
     vec![
-        "docker", "run", "-i", "--rm",
-        "-e", "GITHUB_PERSONAL_ACCESS_TOKEN",
+        "docker",
+        "run",
+        "-i",
+        "--rm",
+        "-e",
+        "GITHUB_PERSONAL_ACCESS_TOKEN",
         "ghcr.io/github/github-mcp-server",
     ]
 }

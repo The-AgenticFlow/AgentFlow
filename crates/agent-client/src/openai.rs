@@ -5,13 +5,13 @@
 // Compatible with any OpenAI-compatible proxy (e.g. DeepSeek, OpenRouter, etc)
 // via the OPENAI_API_URL environment variable.
 
-use anyhow::{bail, Result, Context};
+use anyhow::{bail, Context, Result};
+use async_trait::async_trait;
 use reqwest::Client;
 use serde_json::{json, Value};
 use tracing::debug;
-use async_trait::async_trait;
 
-use crate::types::{ContentBlock, Message, ToolSchema, LlmClient, LlmResponse};
+use crate::types::{ContentBlock, LlmClient, LlmResponse, Message, ToolSchema};
 
 // ── Constants ─────────────────────────────────────────────────────────────
 
@@ -21,18 +21,18 @@ const DEFAULT_MAX_TOKENS: u32 = 4096;
 // ── Client ────────────────────────────────────────────────────────────────
 
 pub struct OpenAiClient {
-    http:       Client,
-    api_key:    String,
-    pub model:  String,
+    http: Client,
+    api_key: String,
+    pub model: String,
     max_tokens: u32,
 }
 
 impl OpenAiClient {
     pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Self {
         Self {
-            http:       Client::new(),
-            api_key:    api_key.into(),
-            model:      model.into(),
+            http: Client::new(),
+            api_key: api_key.into(),
+            model: model.into(),
             max_tokens: DEFAULT_MAX_TOKENS,
         }
     }
@@ -40,10 +40,8 @@ impl OpenAiClient {
     /// Load API key from OPENAI_API_KEY env var.
     /// Uses gpt-4o-mini by default (fast + cheap for orchestration).
     pub fn from_env() -> Result<Self> {
-        let key   = std::env::var("OPENAI_API_KEY")
-            .context("OPENAI_API_KEY not set")?;
-        let model = std::env::var("OPENAI_MODEL")
-            .unwrap_or_else(|_| "gpt-4o-mini".to_string());
+        let key = std::env::var("OPENAI_API_KEY").context("OPENAI_API_KEY not set")?;
+        let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
         Ok(Self::new(key, model))
     }
 
@@ -98,14 +96,17 @@ fn messages_to_json(messages: &[Message]) -> Value {
                 } else {
                     assistant_msg["content"] = Value::Null;
                 }
-                
+
                 if !tool_calls.is_empty() {
                     assistant_msg["tool_calls"] = json!(tool_calls);
                 }
 
                 turns.push(assistant_msg);
             }
-            Message::ToolResult { tool_use_id, content } => {
+            Message::ToolResult {
+                tool_use_id,
+                content,
+            } => {
                 turns.push(json!({
                     "role":         "tool",
                     "tool_call_id": tool_use_id,
@@ -122,13 +123,9 @@ fn messages_to_json(messages: &[Message]) -> Value {
 
 #[async_trait]
 impl LlmClient for OpenAiClient {
-    async fn send(
-        &self,
-        messages: &[Message],
-        tools:    &[ToolSchema],
-    ) -> Result<LlmResponse> {
+    async fn send(&self, messages: &[Message], tools: &[ToolSchema]) -> Result<LlmResponse> {
         let messages_json = messages_to_json(messages);
-        
+
         let mut body = json!({
             "model":      self.model,
             "max_tokens": self.max_tokens,
@@ -136,31 +133,40 @@ impl LlmClient for OpenAiClient {
         });
 
         if !tools.is_empty() {
-            let tools_json: Vec<Value> = tools.iter().map(|t| json!({
-                "type": "function",
-                "function": {
-                    "name":        t.name,
-                    "description": t.description,
-                    "parameters":  t.input_schema,
-                }
-            })).collect();
+            let tools_json: Vec<Value> = tools
+                .iter()
+                .map(|t| {
+                    json!({
+                        "type": "function",
+                        "function": {
+                            "name":        t.name,
+                            "description": t.description,
+                            "parameters":  t.input_schema,
+                        }
+                    })
+                })
+                .collect();
             body["tools"] = json!(tools_json);
         }
 
-        let api_url = std::env::var("OPENAI_API_URL")
-            .unwrap_or_else(|_| DEFAULT_OPENAI_API_URL.to_string());
+        let api_url =
+            std::env::var("OPENAI_API_URL").unwrap_or_else(|_| DEFAULT_OPENAI_API_URL.to_string());
 
-        let resp = self.http
+        let resp = self
+            .http
             .post(api_url)
             .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type",  "application/json")
+            .header("Content-Type", "application/json")
             .json(&body)
             .send()
             .await
             .context("HTTP request to OpenAI API failed")?;
 
         let status = resp.status();
-        let raw: Value = resp.json().await.context("Failed to parse OpenAI response")?;
+        let raw: Value = resp
+            .json()
+            .await
+            .context("Failed to parse OpenAI response")?;
 
         if !status.is_success() {
             let error_msg = raw["error"]["message"].as_str().unwrap_or("unknown");
@@ -169,16 +175,21 @@ impl LlmClient for OpenAiClient {
 
         debug!(model = %self.model, "← OpenAI response");
 
-        let choice = raw["choices"].get(0).context("OpenAI returned no choices")?;
+        let choice = raw["choices"]
+            .get(0)
+            .context("OpenAI returned no choices")?;
         let message = &choice["message"];
 
         if let Some(tool_calls) = message["tool_calls"].as_array() {
             if let Some(tool_call) = tool_calls.get(0) {
                 let id = tool_call["id"].as_str().unwrap_or("").to_string();
-                let name = tool_call["function"]["name"].as_str().unwrap_or("").to_string();
+                let name = tool_call["function"]["name"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
                 let args_str = tool_call["function"]["arguments"].as_str().unwrap_or("{}");
                 let args: Value = serde_json::from_str(args_str).unwrap_or(json!({}));
-                
+
                 return Ok(LlmResponse::ToolCall { id, name, args });
             }
         }

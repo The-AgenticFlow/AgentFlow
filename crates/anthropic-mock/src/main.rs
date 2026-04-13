@@ -1,13 +1,13 @@
 use axum::{
+    http::{HeaderMap, StatusCode},
     routing::post,
     Json, Router,
-    http::{HeaderMap, StatusCode},
 };
+use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::net::SocketAddr;
-use tracing::{info, error, warn, debug};
-use reqwest::Client;
+use tracing::{debug, error, info, warn};
 
 #[derive(Debug, Deserialize)]
 struct AnthropicRequest {
@@ -22,26 +22,37 @@ struct AnthropicRequest {
 async fn main() {
     tracing_subscriber::fmt::init();
 
-    let app = Router::new()
-        .route("/v1/messages", post(handle_messages));
+    let app = Router::new().route("/v1/messages", post(handle_messages));
 
     let port = std::env::var("PORT").unwrap_or_else(|_| "8080".to_string());
     let addr = format!("0.0.0.0:{}", port).parse::<SocketAddr>().unwrap();
-    
+
     info!("Anthropic-to-OpenAI Proxy listening on {}", addr);
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
 
-async fn handle_messages(_headers: HeaderMap, Json(payload): Json<AnthropicRequest>) -> (StatusCode, Json<Value>) {
-    info!(turn = payload.messages.len(), model = payload.model, "Received Anthropic request");
+async fn handle_messages(
+    _headers: HeaderMap,
+    Json(payload): Json<AnthropicRequest>,
+) -> (StatusCode, Json<Value>) {
+    info!(
+        turn = payload.messages.len(),
+        model = payload.model,
+        "Received Anthropic request"
+    );
 
     // 1. Get OpenAI API Key
     let api_key = match std::env::var("OPENAI_API_KEY") {
         Ok(k) => k,
         Err(_) => {
             error!("OPENAI_API_KEY not set");
-            return (StatusCode::BAD_REQUEST, Json(json!({"error": {"message": "OPENAI_API_KEY must be set in the proxy environment"}})));
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(
+                    json!({"error": {"message": "OPENAI_API_KEY must be set in the proxy environment"}}),
+                ),
+            );
         }
     };
 
@@ -90,7 +101,6 @@ async fn handle_messages(_headers: HeaderMap, Json(payload): Json<AnthropicReque
                 mapped_msg["tool_calls"] = json!(tool_calls);
             }
             openai_messages.push(mapped_msg);
-
         } else if role == "user" && content.is_array() {
             // Check for tool_result in user message
             let mut other_blocks = Vec::new();
@@ -117,14 +127,19 @@ async fn handle_messages(_headers: HeaderMap, Json(payload): Json<AnthropicReque
 
     // Tools -> role: tool and parameters
     let openai_tools: Option<Vec<Value>> = payload.tools.map(|tools| {
-        tools.into_iter().map(|t| json!({
-            "type": "function",
-            "function": {
-                "name": t["name"],
-                "description": t["description"],
-                "parameters": t["input_schema"]
-            }
-        })).collect()
+        tools
+            .into_iter()
+            .map(|t| {
+                json!({
+                    "type": "function",
+                    "function": {
+                        "name": t["name"],
+                        "description": t["description"],
+                        "parameters": t["input_schema"]
+                    }
+                })
+            })
+            .collect()
     });
 
     let openai_payload = json!({
@@ -138,30 +153,41 @@ async fn handle_messages(_headers: HeaderMap, Json(payload): Json<AnthropicReque
 
     // 3. Call OpenAI
     let client = Client::new();
-    let resp = match client.post("https://api.openai.com/v1/chat/completions")
+    let resp = match client
+        .post("https://api.openai.com/v1/chat/completions")
         .bearer_auth(api_key)
         .json(&openai_payload)
         .send()
-        .await {
-            Ok(r) => r,
-            Err(e) => {
-                error!(err = %e, "OpenAI request failed");
-                return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": {"message": format!("OpenAI request failed: {}", e)}})));
-            }
-        };
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            error!(err = %e, "OpenAI request failed");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": {"message": format!("OpenAI request failed: {}", e)}})),
+            );
+        }
+    };
 
     let status = resp.status();
     let openai_raw: Value = match resp.json().await {
         Ok(j) => j,
         Err(e) => {
             error!(err = %e, "Failed to parse OpenAI JSON");
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": {"message": "Malformed OpenAI response"}})));
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": {"message": "Malformed OpenAI response"}})),
+            );
         }
     };
 
     if !status.is_success() {
         warn!(status = %status, "OpenAI error response");
-        return (StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR), Json(openai_raw));
+        return (
+            StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            Json(openai_raw),
+        );
     }
 
     // 4. Transform OpenAI Response -> Anthropic Response

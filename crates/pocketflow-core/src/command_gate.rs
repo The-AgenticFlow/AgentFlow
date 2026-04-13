@@ -41,10 +41,10 @@ pub fn is_dangerous(cmd: &str) -> bool {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommandProposal {
-    pub worker_id:   String,
-    pub command:     String,
-    pub reason:      String,
-    pub risk_level:  RiskLevel,
+    pub worker_id: String,
+    pub command: String,
+    pub reason: String,
+    pub risk_level: RiskLevel,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -82,14 +82,14 @@ impl CommandGate {
         }
 
         let proposal = CommandProposal {
-            worker_id:  worker_id.to_string(),
-            command:    command.to_string(),
-            reason:     reason.to_string(),
+            worker_id: worker_id.to_string(),
+            command: command.to_string(),
+            reason: reason.to_string(),
             risk_level: RiskLevel::High,
         };
 
-        let proposal_key  = format!("command_gate::{}",             worker_id);
-        let decision_key  = format!("command_gate::{}::decision",   worker_id);
+        let proposal_key = format!("command_gate::{}", worker_id);
+        let decision_key = format!("command_gate::{}::decision", worker_id);
 
         // Write the proposal
         store.del(&decision_key).await; // clear stale decision
@@ -102,12 +102,16 @@ impl CommandGate {
             )
             .await;
 
-        warn!(worker = worker_id, cmd = command, "dangerous command proposed — awaiting NEXUS");
+        warn!(
+            worker = worker_id,
+            cmd = command,
+            "dangerous command proposed — awaiting NEXUS"
+        );
 
         // Poll for decision (60s timeout)
-        let timeout    = Duration::from_secs(60);
+        let timeout = Duration::from_secs(60);
         let poll_interval = Duration::from_millis(500);
-        let start      = std::time::Instant::now();
+        let start = std::time::Instant::now();
 
         loop {
             if start.elapsed() >= timeout {
@@ -125,18 +129,28 @@ impl CommandGate {
 
                 return match decision {
                     CommandDecision::Approved => {
-                        info!(worker = worker_id, cmd = command, "command approved by NEXUS");
+                        info!(
+                            worker = worker_id,
+                            cmd = command,
+                            "command approved by NEXUS"
+                        );
                         store
-                            .emit(worker_id, "command_gate_approved",
-                                  serde_json::json!({ "command": command }))
+                            .emit(
+                                worker_id,
+                                "command_gate_approved",
+                                serde_json::json!({ "command": command }),
+                            )
                             .await;
                         Ok(())
                     }
                     CommandDecision::Rejected { reason } => {
                         warn!(worker = worker_id, cmd = command, %reason, "command rejected by NEXUS");
                         store
-                            .emit(worker_id, "command_gate_rejected",
-                                  serde_json::json!({ "command": command, "reason": reason }))
+                            .emit(
+                                worker_id,
+                                "command_gate_rejected",
+                                serde_json::json!({ "command": command, "reason": reason }),
+                            )
                             .await;
                         bail!("Command rejected by NEXUS: {}", reason)
                     }
@@ -161,16 +175,15 @@ impl CommandGate {
         store
             .set_typed(
                 &decision_key,
-                &CommandDecision::Rejected { reason: reason.to_string() },
+                &CommandDecision::Rejected {
+                    reason: reason.to_string(),
+                },
             )
             .await
     }
 
     /// Called by NEXUS during its poll loop to get any pending proposal.
-    pub async fn pending_proposal(
-        store: &SharedStore,
-        worker_id: &str,
-    ) -> Option<CommandProposal> {
+    pub async fn pending_proposal(store: &SharedStore, worker_id: &str) -> Option<CommandProposal> {
         let proposal_key = format!("command_gate::{}", worker_id);
         store.get_typed::<CommandProposal>(&proposal_key).await
     }
@@ -193,8 +206,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_gate_approve_flow() {
-        let store     = SharedStore::new_in_memory();
-        let store2    = store.clone(); // simulated NEXUS side
+        let store = SharedStore::new_in_memory();
+        let store2 = store.clone(); // simulated NEXUS side
         let worker_id = "forge-1";
 
         // Simulate NEXUS approving after 100ms
@@ -208,40 +221,42 @@ mod tests {
             worker_id,
             "rm -rf /tmp/old-build",
             "cleanup before fresh build",
-        ).await;
+        )
+        .await;
 
         assert!(result.is_ok());
     }
 
     #[tokio::test]
     async fn test_gate_reject_flow() {
-        let store     = SharedStore::new_in_memory();
-        let store2    = store.clone();
+        let store = SharedStore::new_in_memory();
+        let store2 = store.clone();
         let worker_id = "forge-2";
 
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(100)).await;
-            CommandGate::reject(&store2, worker_id, "too broad — scope to worker dir only").await.unwrap();
+            CommandGate::reject(&store2, worker_id, "too broad — scope to worker dir only")
+                .await
+                .unwrap();
         });
 
-        let result = CommandGate::check_and_wait(
-            &store,
-            worker_id,
-            "rm -rf /workspace",
-            "full reset",
-        ).await;
+        let result =
+            CommandGate::check_and_wait(&store, worker_id, "rm -rf /workspace", "full reset").await;
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("rejected by NEXUS"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("rejected by NEXUS"));
     }
 
     #[tokio::test]
     async fn test_safe_command_passes_immediately() {
         let store = SharedStore::new_in_memory();
 
-        let result = CommandGate::check_and_wait(
-            &store, "forge-1", "cargo test --release", "run tests",
-        ).await;
+        let result =
+            CommandGate::check_and_wait(&store, "forge-1", "cargo test --release", "run tests")
+                .await;
 
         assert!(result.is_ok());
     }

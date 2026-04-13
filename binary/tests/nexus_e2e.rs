@@ -1,9 +1,9 @@
-use anyhow::Result;
-use pocketflow_core::{Node, SharedStore};
 use agent_nexus::NexusNode;
-use std::sync::Arc;
+use anyhow::Result;
 use mockito::Server;
+use pocketflow_core::{Node, SharedStore};
 use serde_json::json;
+use std::sync::Arc;
 
 #[tokio::test]
 async fn test_nexus_e2e_mocked() -> Result<()> {
@@ -13,22 +13,27 @@ async fn test_nexus_e2e_mocked() -> Result<()> {
 
     // Mock Anthropic response
     // First turn: Tool use (list_issues)
-    let _m1 = server.mock("POST", "/v1/messages")
+    let _m1 = server
+        .mock("POST", "/v1/messages")
         .with_status(200)
         .with_header("content-type", "application/json")
-        .with_body(json!({
-            "id": "msg_123",
-            "type": "message",
-            "role": "assistant",
-            "content": [{
-                "id": "call_1",
-                "type": "tool_use",
-                "name": "list_issues",
-                "input": {}
-            }],
-            "stop_reason": "tool_use"
-        }).to_string())
-        .create_async().await;
+        .with_body(
+            json!({
+                "id": "msg_123",
+                "type": "message",
+                "role": "assistant",
+                "content": [{
+                    "id": "call_1",
+                    "type": "tool_use",
+                    "name": "list_issues",
+                    "input": {}
+                }],
+                "stop_reason": "tool_use"
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
 
     // Second turn: Final decision
     let _m2 = server.mock("POST", "/v1/messages")
@@ -54,7 +59,7 @@ async fn test_nexus_e2e_mocked() -> Result<()> {
 
     // 3. Initialize SharedStore
     let store = SharedStore::new_in_memory();
-    
+
     // Inject initial worker slots
     let slots = json!({
         "forge-1": { "id": "forge-1", "status": { "type": "idle" } }
@@ -63,8 +68,11 @@ async fn test_nexus_e2e_mocked() -> Result<()> {
 
     // 4. Run NexusNode
     // Path relative to binary/
-    let nexus = Arc::new(NexusNode::new("../.agent/agents/nexus.agent.md", "../.agent/registry.json"));
-    
+    let nexus = Arc::new(NexusNode::new(
+        "../orchestration/agent/agents/nexus.agent.md",
+        "../orchestration/agent/registry.json",
+    ));
+
     let action = nexus.run(&store).await?;
     assert_eq!(action.as_str(), "work_assigned");
 

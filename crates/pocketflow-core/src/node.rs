@@ -35,26 +35,38 @@ pub trait Node: Send + Sync {
     async fn run(&self, store: &SharedStore) -> Result<Action> {
         let name = self.name();
 
-        store.emit(name, "prep_started", serde_json::json!({})).await;
+        store
+            .emit(name, "prep_started", serde_json::json!({}))
+            .await;
         let prep_result = self.prep(store).await.map_err(|e| {
             error!(node = name, error = %e, "prep failed");
             e
         })?;
         store.emit(name, "prep_done", serde_json::json!({})).await;
 
-        store.emit(name, "exec_started", serde_json::json!({})).await;
+        store
+            .emit(name, "exec_started", serde_json::json!({}))
+            .await;
         let exec_result = self.exec(prep_result).await.map_err(|e| {
             error!(node = name, error = %e, "exec failed");
             e
         })?;
         store.emit(name, "exec_done", serde_json::json!({})).await;
 
-        store.emit(name, "post_started", serde_json::json!({})).await;
+        store
+            .emit(name, "post_started", serde_json::json!({}))
+            .await;
         let action = self.post(store, exec_result).await.map_err(|e| {
             error!(node = name, error = %e, "post failed");
             e
         })?;
-        store.emit(name, "post_done", serde_json::json!({ "action": action.as_str() })).await;
+        store
+            .emit(
+                name,
+                "post_done",
+                serde_json::json!({ "action": action.as_str() }),
+            )
+            .await;
 
         info!(node = name, action = action.as_str(), "node completed");
         Ok(action)
@@ -85,7 +97,9 @@ mod tests {
 
     #[async_trait]
     impl Node for EchoNode {
-        fn name(&self) -> &str { "echo" }
+        fn name(&self) -> &str {
+            "echo"
+        }
 
         async fn prep(&self, _store: &SharedStore) -> Result<Value> {
             Ok(serde_json::json!({ "input": "hello" }))

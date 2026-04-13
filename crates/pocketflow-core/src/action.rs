@@ -7,28 +7,28 @@ pub struct Action(pub String);
 
 impl Action {
     // ── NEXUS actions ──────────────────────────────────────────────────
-    pub const TICKETS_READY: &'static str      = "tickets_ready";
-    pub const AWAITING_HUMAN: &'static str     = "awaiting_human";
-    pub const NO_TICKETS: &'static str         = "no_tickets";
-    pub const REASSIGN_TO_FORGE: &'static str  = "reassign_to_forge";
-    pub const SPRINT_SUSPENDED: &'static str   = "sprint_suspended";
+    pub const TICKETS_READY: &'static str = "tickets_ready";
+    pub const AWAITING_HUMAN: &'static str = "awaiting_human";
+    pub const NO_TICKETS: &'static str = "no_tickets";
+    pub const REASSIGN_TO_FORGE: &'static str = "reassign_to_forge";
+    pub const SPRINT_SUSPENDED: &'static str = "sprint_suspended";
 
     // ── FORGE actions ──────────────────────────────────────────────────
-    pub const PR_OPENED: &'static str          = "pr_opened";
-    pub const BLOCKED: &'static str            = "blocked";
-    pub const FUEL_EXHAUSTED: &'static str     = "fuel_exhausted";
-    pub const TASK_FAILED: &'static str        = "task_failed";  // distinct from fuel exhaustion
+    pub const PR_OPENED: &'static str = "pr_opened";
+    pub const BLOCKED: &'static str = "blocked";
+    pub const FUEL_EXHAUSTED: &'static str = "fuel_exhausted";
+    pub const TASK_FAILED: &'static str = "task_failed"; // distinct from fuel exhaustion
 
     // ── SENTINEL actions ───────────────────────────────────────────────
-    pub const APPROVED: &'static str           = "approved";
-    pub const CHANGES_REQUESTED: &'static str  = "changes_requested";
+    pub const APPROVED: &'static str = "approved";
+    pub const CHANGES_REQUESTED: &'static str = "changes_requested";
 
     // ── VESSEL actions ─────────────────────────────────────────────────
-    pub const DEPLOYED: &'static str           = "deployed";
-    pub const DEPLOY_FAILED: &'static str      = "deploy_failed";
+    pub const DEPLOYED: &'static str = "deployed";
+    pub const DEPLOY_FAILED: &'static str = "deploy_failed";
 
     // ── LORE actions ───────────────────────────────────────────────────
-    pub const DOCUMENTED: &'static str         = "documented";
+    pub const DOCUMENTED: &'static str = "documented";
 
     /// Construct from any string (for pattern-matching in Flow routing).
     pub fn new(s: impl Into<String>) -> Self {
