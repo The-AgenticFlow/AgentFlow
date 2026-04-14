@@ -5,23 +5,36 @@
   "skills": {
     "forge": [
       "skills/forge-coding.md",
-      "skills/forge-planning.md"
+      "skills/forge-planning.md",
+      "skills/forge-frontend-design.md",
+      "skills/forge-mcp-builder.md",
+      "skills/forge-skill-creator.md",
+      "skills/shared-claude-api.md"
     ],
     "sentinel": [
       "skills/sentinel-review.md",
-      "skills/sentinel-criteria.md"
+      "skills/sentinel-criteria.md",
+      "skills/sentinel-webapp-testing.md",
+      "skills/shared-claude-api.md"
     ],
     "nexus": [
       "skills/nexus-orchestration.md",
-      "skills/nexus-triage.md"
+      "skills/nexus-triage.md",
+      "skills/nexus-internal-comms.md",
+      "skills/shared-claude-api.md"
     ],
     "vessel": [
       "skills/vessel-ci-gate.md",
-      "skills/vessel-merge-protocol.md"
+      "skills/vessel-merge-protocol.md",
+      "skills/vessel-webapp-testing.md",
+      "skills/shared-claude-api.md"
     ],
     "lore": [
       "skills/lore-documentation.md",
-      "skills/lore-changelog.md"
+      "skills/lore-changelog.md",
+      "skills/lore-doc-coauthoring.md",
+      "skills/lore-brand-guidelines.md",
+      "skills/shared-claude-api.md"
     ]
   },
   "hooks": {
