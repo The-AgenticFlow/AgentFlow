@@ -19,4 +19,4 @@ jobs:
         uses: obi1kenobi/cargo-semver-checks-action@v2
         with:
           package: "pocketflow-core, agent-client, github, config, agent-nexus, agent-forge, pair-harness"
-          baseline-rev: main
+          baseline-rev: origin/main
