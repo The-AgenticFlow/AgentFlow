@@ -9,8 +9,7 @@ use config::{
     Ticket, TicketStatus, WorkerSlot, WorkerStatus,
 };
 use pair_harness::{
-    worktree::WorktreeManager, ForgeSentinelPair, PairConfig, PairOutcome,
-    Ticket as PairTicket,
+    worktree::WorktreeManager, ForgeSentinelPair, PairConfig, PairOutcome, Ticket as PairTicket,
 };
 use pocketflow_core::{Action, BatchNode, SharedStore};
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
@@ -51,6 +50,8 @@ pub struct ForgeStatus {
     pub artifacts: Option<Vec<String>>,
     /// Issue URL (optional)
     pub issue: Option<String>,
+    /// Reason for failure or suspension (optional)
+    pub reason: Option<String>,
 }
 
 pub struct ForgeNode {
@@ -240,6 +241,7 @@ impl BatchNode for ForgeNode {
                 "summary": forge_status.summary,
                 "commits": forge_status.commits,
                 "artifacts": forge_status.artifacts,
+                "reason": forge_status.reason,
             }));
         }
 
@@ -258,8 +260,7 @@ impl BatchNode for ForgeNode {
         let mut command_gate: HashMap<String, Value> =
             store.get_typed(KEY_COMMAND_GATE).await.unwrap_or_default();
 
-        let mut tickets: Vec<Ticket> =
-            store.get_typed(KEY_TICKETS).await.unwrap_or_default();
+        let mut tickets: Vec<Ticket> = store.get_typed(KEY_TICKETS).await.unwrap_or_default();
 
         let mut all_success = true;
         let worktree_mgr = WorktreeManager::new(&self.workspace_root);
@@ -698,8 +699,7 @@ impl BatchNode for ForgePairNode {
         let mut command_gate: HashMap<String, Value> =
             store.get_typed(KEY_COMMAND_GATE).await.unwrap_or_default();
 
-        let mut tickets: Vec<Ticket> =
-            store.get_typed(KEY_TICKETS).await.unwrap_or_default();
+        let mut tickets: Vec<Ticket> = store.get_typed(KEY_TICKETS).await.unwrap_or_default();
 
         let batch_workers: Vec<String> = store
             .get("_forge_batch_workers")

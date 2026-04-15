@@ -1,56 +1,50 @@
+---
+name: segment-done
+description: Submit the current segment for SENTINEL review
+---
+
 # /segment-done Command
 
-Signal that the current segment is complete and ready for review.
+Submits the current segment to SENTINEL for evaluation.
 
-## Usage
+## When to Use
 
-```
-/segment-done [notes]
-```
+When you believe a segment is complete and ready for review.
 
-## What it does
+## Steps
 
-1. Updates WORKLOG.md with segment completion entry
-2. Commits all changes with segment marker
-3. Writes to shared/ that segment is done (triggers SENTINEL spawn)
-4. Waits for SENTINEL evaluation
+1. **Run Tests**
+   Use `run_tests` MCP tool.
+   - All tests must pass before continuing
+   - If any fail, fix them first
 
-## WORKLOG Entry
+2. **Run Linter**
+   Use `run_linter` MCP tool.
+   - Must be clean (zero warnings)
+   - Fix any issues first
 
-```markdown
-## Segment {N} Complete - {timestamp}
+3. **Commit Segment**
+   Use `commit_segment` MCP tool with:
+   - segment_name: e.g., "segment-1"
+   - description: Brief description of changes
 
-### Changes
-- {file1}: {description}
-- {file2}: {description}
+4. **Update Worklog**
+   Use `write_to_shared` MCP tool with:
+   - artifact_type: `WORKLOG_ENTRY`
+   - content: What was done, decisions made
 
-### Tests Added
-- {test1}: {purpose}
-- {test2}: {purpose}
+5. **Emit Event**
+   Use `emit_event` MCP tool:
+   - event_type: "segment_submitted"
+   - message: "Segment N submitted for evaluation"
 
-### Notes
-{any notes passed to command}
+## Blocked If
 
-### Status
-WAITING_REVIEW
-```
+- Any tests are failing
+- Any lint warnings exist
+- No files have been changed since last commit
 
-## After SENTINEL Review
+## Output
 
-Check the eval file for verdict:
-
-- **APPROVED**: Proceed to next segment or `/status` if done
-- **NEEDS_WORK**: Fix issues listed, then `/segment-done` again
-
-## Example
-
-```
-/segment-done Fixed edge case in auth flow
-```
-
-## Important
-
-- All tests must pass before calling `/segment-done`
-- Run linters and fix all warnings
-- The segment is not truly "done" until SENTINEL approves
-- If SENTINEL returns NEEDS_WORK, address all issues before re-calling
+Updates WORKLOG.md, commits segment, notifies SENTINEL.
+Wait for `segment-N-eval.md` from SENTINEL.

@@ -1,10 +1,15 @@
+---
+name: status
+description: Signal terminal status to the harness
+---
+
 # /status Command
 
 Signal terminal status to the harness. Use when work is complete or blocked.
 
 ## Usage
 
-```
+```bash
 /status <status> [reason]
 ```
 
@@ -43,24 +48,29 @@ Signal terminal status to the harness. Use when work is complete or blocked.
 ## Examples
 
 ### Work Complete
-```
+
+```bash
 /status PR_OPENED
 ```
+
 Then provide the PR URL when prompted.
 
 ### Blocked
-```
+
+```bash
 /status BLOCKED Cannot proceed due to API rate limit
 ```
 
 ### Fuel Exhausted
-```
+
+```bash
 /status FUEL_EXHAUSTED Need 50k more tokens to complete
 ```
 
 ## After STATUS.json
 
 The harness will:
+
 - **PR_OPENED**: Notify VESSEL to check CI and merge
 - **BLOCKED**: Alert NEXUS for human intervention
 - **FUEL_EXHAUSTED**: Request more budget allocation
