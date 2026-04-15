@@ -5,16 +5,62 @@
   "skills": {
     "forge": [
       "skills/forge-coding.md",
-      "skills/forge-planning.md"
+      "skills/forge-planning.md",
+      "skills/forge-frontend-design.md",
+      "skills/forge-mcp-builder.md",
+      "skills/forge-skill-creator.md",
+      "skills/forge-canvas-design.md",
+      "skills/forge-web-artifacts-builder.md",
+      "skills/forge-algorithmic-art.md",
+      "skills/shared-claude-api.md"
     ],
     "sentinel": [
       "skills/sentinel-review.md",
-      "skills/sentinel-criteria.md"
+      "skills/sentinel-criteria.md",
+      "skills/sentinel-webapp-testing.md",
+      "skills/sentinel-frontend-design.md",
+      "skills/sentinel-web-artifacts-builder.md",
+      "skills/sentinel-algorithmic-art.md",
+      "skills/shared-claude-api.md"
+    ],
+    "nexus": [
+      "skills/nexus-orchestration.md",
+      "skills/nexus-triage.md",
+      "skills/nexus-internal-comms.md",
+      "skills/nexus-doc-coauthoring.md",
+      "skills/nexus-skill-creator.md",
+      "skills/nexus-xlsx.md",
+      "skills/nexus-slack-gif-creator.md",
+      "skills/shared-claude-api.md"
+    ],
+    "vessel": [
+      "skills/vessel-ci-gate.md",
+      "skills/vessel-merge-protocol.md",
+      "skills/vessel-webapp-testing.md",
+      "skills/vessel-internal-comms.md",
+      "skills/vessel-mcp-builder.md",
+      "skills/vessel-pdf.md",
+      "skills/shared-claude-api.md"
+    ],
+    "lore": [
+      "skills/lore-documentation.md",
+      "skills/lore-changelog.md",
+      "skills/lore-doc-coauthoring.md",
+      "skills/lore-brand-guidelines.md",
+      "skills/lore-theme-factory.md",
+      "skills/lore-docx.md",
+      "skills/lore-pptx.md",
+      "skills/lore-xlsx.md",
+      "skills/lore-pdf.md",
+      "skills/shared-claude-api.md"
     ]
   },
   "hooks": {
     "forge": "hooks/forge/",
-    "sentinel": "hooks/sentinel/"
+    "sentinel": "hooks/sentinel/",
+    "nexus": "hooks/nexus/",
+    "vessel": "hooks/vessel/",
+    "lore": "hooks/lore/"
   },
   "commands": "commands/"
 }

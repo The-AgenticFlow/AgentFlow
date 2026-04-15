@@ -1,99 +1,75 @@
+---
+name: handoff
+description: Write a complete handoff for context reset
+---
+
 # /handoff Command
 
-Create a handoff document for context reset. This enables a fresh FORGE session to continue seamlessly.
-
-## Usage
-
-```
-/handoff
-```
+Writes a complete handoff and exits for context reset.
 
 ## When to Use
 
-- Context window is approaching limit (PreCompact hook triggers)
-- You've completed multiple segments and need a clean slate
-- Complex work that would benefit from fresh perspective
+When the PreCompact hook fires, or when you choose to reset
+context at a natural segment boundary.
 
-## What it does
+## Steps
 
-1. Reviews WORKLOG.md for completed segments
-2. Reviews current segment state
-3. Synthesizes HANDOFF.md with all essential context
-4. Updates WORKLOG.md with handoff marker
-5. Exits cleanly (the harness will spawn a fresh FORGE)
+1. **Read Worklog**
+   Read `WORKLOG.md` to summarize completed segments.
 
-## HANDOFF.md Structure
+2. **Scan In-Progress**
+   Check worktree for any in-progress files.
+
+3. **Collect Decisions**
+   Gather all decisions made (from WORKLOG.md).
+
+4. **Write Handoff**
+   Use `write_to_shared` MCP tool with:
+   - artifact_type: `HANDOFF`
+   - content: Must include:
+     - Completed segments summary
+     - In-progress work
+     - Decisions made
+     - **Exact next step** (required)
+     - Files modified
+     - Context needed for continuation
+
+5. **Emit Event**
+   Use `emit_event` MCP tool:
+   - event_type: "context_reset"
+   - message: "Context reset - handoff written"
+
+6. **Exit**
+   Exit cleanly. Harness will spawn fresh session.
+
+## Handoff Template
 
 ```markdown
-# Handoff: T-{id}
-
-## Context
-- Pair: pair-{N}
-- Ticket: T-{id}
-- Branch: forge-{N}/T-{id}
-- Segments completed: {N}
-- Current segment: {M}
+# Handoff for T-{id}
 
 ## Completed Segments
+- Segment 1: {summary}
+- Segment 2: {summary}
 
-### Segment 1: {title}
-- Files changed: [list]
-- Key decisions: [list]
-- Tests: [status]
-
-### Segment 2: {title}
-...
-
-## Current Segment State
-
-### What was being worked on
-{description}
-
-### Files modified so far
-- {file}: {what was done}
-- {file}: {what was done}
-
-### Partial changes
-{any incomplete work - be specific about what's done and what's not}
+## In-Progress
+- {What was being worked on}
 
 ## Decisions Made
-1. {decision} - Reason: {why}
-2. {decision} - Reason: {why}
-
-## Files Changed (All Segments)
-- src/auth.rs: Added OAuth2 support
-- tests/auth_test.rs: Added OAuth2 tests
-- ...
+- {Decision 1}: {rationale}
+- {Decision 2}: {rationale}
 
 ## Exact Next Step
+{Specific, actionable next step}
 
-The next step is:
-{specific, actionable instruction}
+## Files Modified
+- src/file1.rs
+- src/file2.rs
 
-Start by:
-1. {first action}
-2. {second action}
-
-Then continue with segment {M} until `/segment-done`.
-
-## Blockers / Dependencies
-{any blockers or dependencies the next session should know}
-
-## References
-- PLAN.md: {relevant sections}
-- Ticket: {key requirements}
+## Context Needed
+- {Any context the next session needs}
 ```
 
-## After Handoff
+## Output
 
-The harness will:
-1. Detect HANDOFF.md was written
-2. Spawn a fresh FORGE session
-3. The new FORGE reads HANDOFF.md and continues
-
-## Important
-
-- Be specific about the exact next step - the new session has no other context
-- List ALL files changed across all segments
-- Include any partial work that needs completion
-- The handoff is the ONLY link between sessions - make it complete
+Creates `shared/HANDOFF.md`
+Agent exits - harness spawns fresh session.

@@ -94,6 +94,9 @@ coverage/
 # Rust build artifacts
 /target/
 
+# Worker runtime data
+forge/STATUS.json
+*-eval.md
 # Worker runtime data (top-level forge/ directory only)
 /forge/
 
