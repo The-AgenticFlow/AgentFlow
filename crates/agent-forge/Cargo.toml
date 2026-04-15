@@ -2,6 +2,7 @@
 name = "agent-forge"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 
 [dependencies]
 pocketflow-core = { path = "../pocketflow-core" }
