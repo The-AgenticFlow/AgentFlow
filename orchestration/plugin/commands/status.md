@@ -1,70 +1,83 @@
 ---
 name: status
-description: Write terminal STATUS.json after done contract fulfilled
+description: Signal terminal status to the harness
 ---
 
 # /status Command
 
-Writes the terminal STATUS.json after the done contract is fulfilled.
+Signal terminal status to the harness. Use when work is complete or blocked.
 
-## When to Use
+## Usage
 
-ONLY after:
-- `final-review.md` exists with APPROVED verdict
-- All segments are complete and approved
+```bash
+/status <status> [reason]
+```
 
-## Steps
+## Status Values
 
-1. **Verify Final Review**
-   Check `final-review.md` exists and verdict is `APPROVED`.
+- `PR_OPENED` - Work complete, PR created
+- `BLOCKED` - Cannot proceed, needs intervention
+- `FUEL_EXHAUSTED` - Budget/tokens exhausted, need more allocation
 
-2. **Run Tests**
-   Use `run_tests` MCP tool.
-   All tests must pass.
+## What it does
 
-3. **Push Branch**
-   ```bash
-   git push origin forge-{worker_id}/{ticket_id}
-   ```
+1. Writes STATUS.json with current state
+2. Lists all files changed
+3. Provides reason/explanation
+4. Harness reads STATUS.json and takes appropriate action
 
-4. **Open PR**
-   Use `create_pr` MCP tool with:
-   - title: From ticket title
-   - body: From SENTINEL's PR description in final-review.md
-   - head_branch: forge-{worker_id}/{ticket_id}
-   - base_branch: main
+## STATUS.json Structure
 
-5. **Write STATUS.json**
-   Use `write_to_shared` MCP tool with:
-   - artifact_type: `STATUS`
-   - content:
-     ```json
-     {
-       "status": "PR_OPENED",
-       "pair": "forge-1",
-       "ticket_id": "T-42",
-       "pr_url": "https://github.com/org/repo/pull/47",
-       "pr_number": 47,
-       "files_changed": ["src/file1.rs", "src/file2.rs"]
-     }
-     ```
+```json
+{
+  "status": "PR_OPENED | BLOCKED | FUEL_EXHAUSTED",
+  "pair": "pair-{N}",
+  "ticket_id": "T-{id}",
+  "branch": "forge-{N}/T-{id}",
+  "files_changed": [
+    "src/auth.rs",
+    "tests/auth_test.rs"
+  ],
+  "segments_completed": 3,
+  "pr_url": "https://github.com/owner/repo/pull/42",
+  "reason": "Optional reason for BLOCKED or FUEL_EXHAUSTED",
+  "timestamp": "2025-03-24T10:00:00Z"
+}
+```
 
-6. **Emit Event**
-   Use `emit_event` MCP tool:
-   - event_type: "pr_opened"
-   - message: "PR opened - T-{id} complete"
+## Examples
 
-7. **Exit**
-   Exit cleanly. NEXUS will read STATUS.json.
+### Work Complete
 
-## Blocked If
+```bash
+/status PR_OPENED
+```
 
-- `final-review.md` does not exist
-- `final-review.md` verdict is not APPROVED
-- Tests are failing
+Then provide the PR URL when prompted.
 
-## Output
+### Blocked
 
-PR opened on GitHub.
-Creates `shared/STATUS.json` with status: PR_OPENED
-Agent exits - NEXUS reads STATUS.json
+```bash
+/status BLOCKED Cannot proceed due to API rate limit
+```
+
+### Fuel Exhausted
+
+```bash
+/status FUEL_EXHAUSTED Need 50k more tokens to complete
+```
+
+## After STATUS.json
+
+The harness will:
+
+- **PR_OPENED**: Notify VESSEL to check CI and merge
+- **BLOCKED**: Alert NEXUS for human intervention
+- **FUEL_EXHAUSTED**: Request more budget allocation
+
+## Important
+
+- This is a terminal state - you cannot continue after writing STATUS.json
+- For temporary pauses, use `/segment-done` instead
+- For context reset, use `/handoff` instead
+- Always list ALL files changed across all segments

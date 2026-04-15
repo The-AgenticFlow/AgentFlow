@@ -1,7 +1,0 @@
-{
-  "outcome": "suspended",
-  "ticket_id": "T-DANGER-001",
-  "reason": "dangerous_command",
-  "branch": "forge-1/T-DANGER-001",
-  "notes": "Waiting for approval to run: rm -rf /"
-}
