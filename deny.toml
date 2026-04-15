@@ -1,8 +1,8 @@
 [advisories]
 vulnerability = "deny"
-unmaintained = "warn"
-unsound = "warn"
-notice = "warn"
+unmaintained = "all"
+unsound = "all"
+notice = "all"
 ignore = [
     "RUSTSEC-2026-0097", # rand 0.8 is pinned by fred, risk is low in our context
 ]
