@@ -166,8 +166,6 @@ impl LlmClient for FallbackClient {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_fallback_order_parsing() {
         std::env::set_var("LLM_FALLBACK", "gemini,anthropic");

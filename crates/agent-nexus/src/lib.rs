@@ -72,8 +72,7 @@ impl NexusNode {
 
         let gh_issues: Vec<GitHubIssue> = resp.json().await?;
 
-        let mut tickets: Vec<Ticket> =
-            store.get_typed(KEY_TICKETS).await.unwrap_or_default();
+        let mut tickets: Vec<Ticket> = store.get_typed(KEY_TICKETS).await.unwrap_or_default();
 
         for issue in &gh_issues {
             if issue.pull_request.is_some() {
@@ -174,13 +173,13 @@ impl Node for NexusNode {
             warn!("Failed to sync issues from GitHub: {}", e);
         }
 
-        let tickets: Vec<Ticket> =
-            store.get_typed(KEY_TICKETS).await.unwrap_or_default();
+        let tickets: Vec<Ticket> = store.get_typed(KEY_TICKETS).await.unwrap_or_default();
         let worker_slots = store.get(KEY_WORKER_SLOTS).await.unwrap_or(json!({}));
         let open_prs = store.get("open_prs").await.unwrap_or(json!([]));
         let command_gate = store.get(KEY_COMMAND_GATE).await.unwrap_or(json!({}));
 
-        let assignable_tickets: Vec<&Ticket> = tickets.iter().filter(|t| t.is_assignable()).collect();
+        let assignable_tickets: Vec<&Ticket> =
+            tickets.iter().filter(|t| t.is_assignable()).collect();
 
         Ok(json!({
             "tickets": tickets,
@@ -227,7 +226,10 @@ impl Node for NexusNode {
                             ticket.issue_url = Some(url.clone());
                         }
                     } else {
-                        info!(ticket_id, "Creating new ticket in store from LLM assignment");
+                        info!(
+                            ticket_id,
+                            "Creating new ticket in store from LLM assignment"
+                        );
                         tickets.push(Ticket {
                             id: ticket_id.clone(),
                             title: decision.notes.clone(),
@@ -267,8 +269,7 @@ impl Node for NexusNode {
             if new_count >= NO_WORK_THRESHOLD {
                 info!(
                     consecutive = new_count,
-                    "No work found after {} consecutive checks — stopping",
-                    NO_WORK_THRESHOLD
+                    "No work found after {} consecutive checks — stopping", NO_WORK_THRESHOLD
                 );
                 return Ok(Action::new(STOP_SIGNAL));
             }

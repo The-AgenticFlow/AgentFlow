@@ -2,12 +2,11 @@
 //! Process management for FORGE and SENTINEL agents.
 
 use anyhow::{anyhow, Context, Result};
-use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStderr, ChildStdout, Command};
+use tokio::process::{Child, Command};
 use tracing::{debug, error, info, warn};
 
 #[cfg(unix)]
@@ -150,14 +149,38 @@ impl ProcessManager {
             .env("SPRINTLESS_SHARED", shared.to_string_lossy().to_string())
             .env("SPRINTLESS_GITHUB_TOKEN", &self.github_token)
             // Pass all LLM provider environment variables for fallback support
-            .env("LLM_PROVIDER", std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "fallback".to_string()))
-            .env("LLM_FALLBACK", std::env::var("LLM_FALLBACK").unwrap_or_default())
-            .env("ANTHROPIC_API_KEY", std::env::var("ANTHROPIC_API_KEY").unwrap_or_default())
-            .env("ANTHROPIC_MODEL", std::env::var("ANTHROPIC_MODEL").unwrap_or_default())
-            .env("OPENAI_API_KEY", std::env::var("OPENAI_API_KEY").unwrap_or_default())
-            .env("OPENAI_MODEL", std::env::var("OPENAI_MODEL").unwrap_or_default())
-            .env("GEMINI_API_KEY", std::env::var("GEMINI_API_KEY").unwrap_or_default())
-            .env("GEMINI_MODEL", std::env::var("GEMINI_MODEL").unwrap_or_default())
+            .env(
+                "LLM_PROVIDER",
+                std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "fallback".to_string()),
+            )
+            .env(
+                "LLM_FALLBACK",
+                std::env::var("LLM_FALLBACK").unwrap_or_default(),
+            )
+            .env(
+                "ANTHROPIC_API_KEY",
+                std::env::var("ANTHROPIC_API_KEY").unwrap_or_default(),
+            )
+            .env(
+                "ANTHROPIC_MODEL",
+                std::env::var("ANTHROPIC_MODEL").unwrap_or_default(),
+            )
+            .env(
+                "OPENAI_API_KEY",
+                std::env::var("OPENAI_API_KEY").unwrap_or_default(),
+            )
+            .env(
+                "OPENAI_MODEL",
+                std::env::var("OPENAI_MODEL").unwrap_or_default(),
+            )
+            .env(
+                "GEMINI_API_KEY",
+                std::env::var("GEMINI_API_KEY").unwrap_or_default(),
+            )
+            .env(
+                "GEMINI_MODEL",
+                std::env::var("GEMINI_MODEL").unwrap_or_default(),
+            )
             .current_dir(worktree)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -264,14 +287,38 @@ impl ProcessManager {
             .env("SPRINTLESS_SHARED", shared.to_string_lossy().to_string())
             .env("SPRINTLESS_GITHUB_TOKEN", &self.github_token)
             // Pass all LLM provider environment variables for fallback support
-            .env("LLM_PROVIDER", std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "fallback".to_string()))
-            .env("LLM_FALLBACK", std::env::var("LLM_FALLBACK").unwrap_or_default())
-            .env("ANTHROPIC_API_KEY", std::env::var("ANTHROPIC_API_KEY").unwrap_or_default())
-            .env("ANTHROPIC_MODEL", std::env::var("ANTHROPIC_MODEL").unwrap_or_default())
-            .env("OPENAI_API_KEY", std::env::var("OPENAI_API_KEY").unwrap_or_default())
-            .env("OPENAI_MODEL", std::env::var("OPENAI_MODEL").unwrap_or_default())
-            .env("GEMINI_API_KEY", std::env::var("GEMINI_API_KEY").unwrap_or_default())
-            .env("GEMINI_MODEL", std::env::var("GEMINI_MODEL").unwrap_or_default())
+            .env(
+                "LLM_PROVIDER",
+                std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "fallback".to_string()),
+            )
+            .env(
+                "LLM_FALLBACK",
+                std::env::var("LLM_FALLBACK").unwrap_or_default(),
+            )
+            .env(
+                "ANTHROPIC_API_KEY",
+                std::env::var("ANTHROPIC_API_KEY").unwrap_or_default(),
+            )
+            .env(
+                "ANTHROPIC_MODEL",
+                std::env::var("ANTHROPIC_MODEL").unwrap_or_default(),
+            )
+            .env(
+                "OPENAI_API_KEY",
+                std::env::var("OPENAI_API_KEY").unwrap_or_default(),
+            )
+            .env(
+                "OPENAI_MODEL",
+                std::env::var("OPENAI_MODEL").unwrap_or_default(),
+            )
+            .env(
+                "GEMINI_API_KEY",
+                std::env::var("GEMINI_API_KEY").unwrap_or_default(),
+            )
+            .env(
+                "GEMINI_MODEL",
+                std::env::var("GEMINI_MODEL").unwrap_or_default(),
+            )
             .current_dir(worktree)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -287,7 +334,9 @@ impl ProcessManager {
             );
         }
 
-        let mut child = cmd.spawn().context("Failed to spawn FORGE process (PR mode)")?;
+        let mut child = cmd
+            .spawn()
+            .context("Failed to spawn FORGE process (PR mode)")?;
 
         if let Some(mut stdin) = child.stdin.take() {
             stdin
@@ -368,14 +417,38 @@ impl ProcessManager {
             .env("SPRINTLESS_SHARED", shared.to_string_lossy().to_string())
             .env("SPRINTLESS_GITHUB_TOKEN", &self.github_token)
             // Pass all LLM provider environment variables for fallback support
-            .env("LLM_PROVIDER", std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "fallback".to_string()))
-            .env("LLM_FALLBACK", std::env::var("LLM_FALLBACK").unwrap_or_default())
-            .env("ANTHROPIC_API_KEY", std::env::var("ANTHROPIC_API_KEY").unwrap_or_default())
-            .env("ANTHROPIC_MODEL", std::env::var("ANTHROPIC_MODEL").unwrap_or_default())
-            .env("OPENAI_API_KEY", std::env::var("OPENAI_API_KEY").unwrap_or_default())
-            .env("OPENAI_MODEL", std::env::var("OPENAI_MODEL").unwrap_or_default())
-            .env("GEMINI_API_KEY", std::env::var("GEMINI_API_KEY").unwrap_or_default())
-            .env("GEMINI_MODEL", std::env::var("GEMINI_MODEL").unwrap_or_default())
+            .env(
+                "LLM_PROVIDER",
+                std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "fallback".to_string()),
+            )
+            .env(
+                "LLM_FALLBACK",
+                std::env::var("LLM_FALLBACK").unwrap_or_default(),
+            )
+            .env(
+                "ANTHROPIC_API_KEY",
+                std::env::var("ANTHROPIC_API_KEY").unwrap_or_default(),
+            )
+            .env(
+                "ANTHROPIC_MODEL",
+                std::env::var("ANTHROPIC_MODEL").unwrap_or_default(),
+            )
+            .env(
+                "OPENAI_API_KEY",
+                std::env::var("OPENAI_API_KEY").unwrap_or_default(),
+            )
+            .env(
+                "OPENAI_MODEL",
+                std::env::var("OPENAI_MODEL").unwrap_or_default(),
+            )
+            .env(
+                "GEMINI_API_KEY",
+                std::env::var("GEMINI_API_KEY").unwrap_or_default(),
+            )
+            .env(
+                "GEMINI_MODEL",
+                std::env::var("GEMINI_MODEL").unwrap_or_default(),
+            )
             .current_dir(shared)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -858,7 +931,7 @@ impl ForgeProcessBuilder {
             ProcessManager::new(self.github_token)
         };
 
-        let mut child = manager
+        let child = manager
             .spawn_forge(&self.pair_id, &self.ticket_id, &self.worktree, &self.shared)
             .await?;
 
@@ -901,8 +974,8 @@ mod tests {
         let prompt =
             manager.build_sentinel_prompt(Path::new("/tmp/shared"), &SentinelMode::SegmentEval(3));
 
-        assert!(prompt.contains("Read acceptance criteria from /tmp/shared/CONTRACT.md"));
-        assert!(prompt.contains("Write your evaluation to /tmp/shared/segment-3-eval.md"));
+        assert!(prompt.contains("--- CONTRACT.md ---"));
+        assert!(prompt.contains("Write /tmp/shared/segment-3-eval.md"));
     }
 
     #[test]
@@ -911,7 +984,7 @@ mod tests {
         let prompt =
             manager.build_sentinel_prompt(Path::new("/tmp/shared"), &SentinelMode::FinalReview);
 
-        assert!(prompt.contains("Read segment evaluations from /tmp/shared/segment-*-eval.md"));
-        assert!(prompt.contains("Write your verdict to /tmp/shared/final-review.md"));
+        assert!(prompt.contains("--- CONTRACT.md ---"));
+        assert!(prompt.contains("Write /tmp/shared/final-review.md"));
     }
 }

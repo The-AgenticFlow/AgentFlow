@@ -120,8 +120,8 @@ impl ToolResult {
     pub fn as_text(&self) -> String {
         self.content
             .iter()
-            .filter_map(|c| match c {
-                ToolResultContent::Text { text } => Some(text.as_str()),
+            .map(|c| match c {
+                ToolResultContent::Text { text } => text.as_str(),
             })
             .collect::<Vec<_>>()
             .join("\n")

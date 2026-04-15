@@ -7,7 +7,7 @@
 use anyhow::{anyhow, Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 /// Manages the target repository workspace.
 ///

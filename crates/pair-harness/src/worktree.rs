@@ -371,8 +371,7 @@ impl WorktreeManager {
 
     /// Generate branch name for a pair/ticket.
     pub fn branch_name(pair_id: &str, ticket_id: &str) -> String {
-        // Handle both "forge-1" and "pair-1" style pair IDs
-        if pair_id.starts_with("forge-") || pair_id.starts_with("pair-") {
+        if pair_id.starts_with("forge-") {
             format!("{}/{}", pair_id, ticket_id)
         } else {
             format!("forge-{}/{}", pair_id, ticket_id)

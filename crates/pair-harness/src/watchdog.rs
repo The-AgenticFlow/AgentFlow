@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 /// Watchdog for detecting stalled pairs.
 pub struct Watchdog {
@@ -226,8 +226,8 @@ mod tests {
         // Create WORKLOG.md
         fs::write(shared.join("WORKLOG.md"), "# Worklog\n").unwrap();
 
-        // Wait for timeout
-        thread::sleep(Duration::from_millis(1100));
+        // Wait for timeout (double the timeout to be safe)
+        thread::sleep(Duration::from_millis(2100));
 
         // Now check - should be stalled
         let status = watchdog.check_stalled().unwrap();

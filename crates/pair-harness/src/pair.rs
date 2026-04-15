@@ -249,10 +249,7 @@ impl ForgeSentinelPair {
                             info!("All segments complete - spawning SENTINEL for final review");
                             self.spawn_sentinel_for_final().await?;
                         } else if let Some(segment_n) = self.next_segment_to_eval().await? {
-                            info!(
-                                "Spawning SENTINEL for segment {} eval",
-                                segment_n
-                            );
+                            info!("Spawning SENTINEL for segment {} eval", segment_n);
                             self.spawn_sentinel_for_segment(segment_n).await?;
                         }
                         self.watchdog.reset();
@@ -261,7 +258,7 @@ impl ForgeSentinelPair {
                     FsEvent::SegmentEvalWritten(n) => {
                         self.sentinel_tracker = None;
                         info!("Segment {} evaluation complete", n);
-                        
+
                         // Check if this was the last segment - if so, spawn final review
                         if self.all_segments_approved().await? {
                             info!("All segments approved - spawning SENTINEL for final review");
@@ -301,7 +298,7 @@ impl ForgeSentinelPair {
             }
 
             // Check watchdog (every ~60 seconds)
-            if self.start_time.elapsed().as_secs() % 60 == 0 {
+            if self.start_time.elapsed().as_secs().wrapping_rem(60) == 0 {
                 let status = self.watchdog.check_stalled()?;
                 if status.is_stalled() {
                     warn!("Pair stalled - no WORKLOG update for too long");
@@ -387,7 +384,8 @@ impl ForgeSentinelPair {
                         let plan_exists = self.config.shared.join("PLAN.md").exists();
                         let contract_exists = self.config.shared.join("CONTRACT.md").exists();
                         let worklog_exists = self.config.shared.join("WORKLOG.md").exists();
-                        let final_review_exists = self.config.shared.join("final-review.md").exists();
+                        let final_review_exists =
+                            self.config.shared.join("final-review.md").exists();
 
                         if plan_exists && !contract_exists && !self.plan_approved {
                             // Plan written but not reviewed - spawn SENTINEL
@@ -406,7 +404,10 @@ impl ForgeSentinelPair {
                                     self.spawn_sentinel_for_final().await?;
                                 }
                             } else if let Some(segment_n) = self.next_segment_to_eval().await? {
-                                info!("FORGE exited - spawning SENTINEL for segment {} eval", segment_n);
+                                info!(
+                                    "FORGE exited - spawning SENTINEL for segment {} eval",
+                                    segment_n
+                                );
                                 self.spawn_sentinel_for_segment(segment_n).await?;
                             } else {
                                 info!("FORGE exited with partial worklog - respawning to continue implementation");
@@ -425,7 +426,10 @@ impl ForgeSentinelPair {
                     let forge_uptime = self.forge_spawn_time.elapsed().as_secs();
                     if forge_uptime < 30 {
                         // Very quick exit - likely a startup error, retry
-                        warn!("FORGE exited quickly ({}s) without progress - retrying spawn", forge_uptime);
+                        warn!(
+                            "FORGE exited quickly ({}s) without progress - retrying spawn",
+                            forge_uptime
+                        );
                         *forge = self.spawn_forge().await?;
                     } else {
                         // Ran for a while but produced nothing - synthesize handoff and respawn
@@ -890,7 +894,7 @@ impl ForgeSentinelPair {
             .config
             .shared
             .join("logs")
-            .join(format!("sentinel-{}-stdout.log", format!("{:?}", mode)));
+            .join(format!("sentinel-{:?}-stdout.log", mode));
 
         if !log_path.exists() {
             return Ok(None);

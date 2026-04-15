@@ -8,15 +8,18 @@ use crate::types::FileLock;
 use anyhow::{anyhow, Context, Result};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
-use std::io::{Read, Write};
-use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
+
+use std::collections::HashMap;
+use std::sync::Mutex;
 
 /// Manages file locks for pair isolation.
 pub struct FileLockManager {
     /// Directory where lock files are stored
     locks_dir: PathBuf,
+    /// Actively held file handles (to keep flock alive)
+    active_locks: Mutex<HashMap<String, File>>,
 }
 
 impl FileLockManager {
@@ -24,6 +27,7 @@ impl FileLockManager {
     pub fn new(project_root: &Path) -> Self {
         Self {
             locks_dir: project_root.join("orchestration").join("locks"),
+            active_locks: Mutex::new(HashMap::new()),
         }
     }
 
@@ -56,29 +60,26 @@ impl FileLockManager {
         let file = File::create(&lock_file).context("Failed to create lock file")?;
 
         // Try to acquire exclusive lock (non-blocking)
-        // Using flock via fcntl (F_SETLK) for atomic acquisition
         let result = flock_exclusive_nonblocking(&file);
 
         match result {
             Ok(LockState::Acquired) => {
-                // We have the lock, check if JSON exists
+                // If we already had it in active_locks, something is weird but OK
+                {
+                    let mut locks = self.active_locks.lock().unwrap();
+                    locks.insert(lock_hash.clone(), file);
+                }
+
+                // Check JSON
                 if json_file.exists() {
                     let existing_lock = self.read_lock_json(&json_file)?;
                     if existing_lock.pair == pair_id {
-                        // Already owned by us
                         debug!(file = %file_path.display(), pair = pair_id, "Lock already owned");
                         return Ok(LockResult::AlreadyOwned);
-                    } else {
-                        // Another pair owns it (shouldn't happen if we got the lock)
-                        warn!(
-                            file = %file_path.display(),
-                            owner = %existing_lock.pair,
-                            "Lock file inconsistency detected"
-                        );
                     }
                 }
 
-                // Write our lock metadata
+                // Write metadata
                 let lock = FileLock::new(pair_id, file_path.to_string_lossy());
                 self.write_lock_json(&json_file, &lock)?;
 
@@ -86,28 +87,19 @@ impl FileLockManager {
                 Ok(LockResult::Acquired)
             }
             Ok(LockState::WouldBlock) => {
-                // Someone else has the lock, check who
+                // Someone else has the lock
                 if json_file.exists() {
                     let existing_lock = self.read_lock_json(&json_file)?;
                     if existing_lock.pair == pair_id {
-                        // We already own it (lock file is held by our process)
-                        debug!(file = %file_path.display(), pair = pair_id, "Lock already owned");
+                        debug!(file = %file_path.display(), pair = pair_id, "Lock already owned (in-process)");
                         return Ok(LockResult::AlreadyOwned);
                     } else {
-                        info!(
-                            file = %file_path.display(),
-                            owner = %existing_lock.pair,
-                            "File locked by another pair"
-                        );
                         return Ok(LockResult::Blocked {
                             owner: existing_lock.pair,
                             acquired_at: existing_lock.acquired_at,
                         });
                     }
                 }
-
-                // No JSON but lock is held - race condition, wait and retry
-                warn!(file = %file_path.display(), "Lock held but no metadata, retrying");
                 Ok(LockResult::Blocked {
                     owner: "unknown".to_string(),
                     acquired_at: "unknown".to_string(),
@@ -121,7 +113,6 @@ impl FileLockManager {
     pub fn release(&self, file_path: &Path, pair_id: &str) -> Result<()> {
         let lock_hash = self.hash_path(file_path);
         let json_file = self.locks_dir.join(format!("{}.json", lock_hash));
-        let lock_file = self.locks_dir.join(format!("{}.lock", lock_hash));
 
         if !json_file.exists() {
             debug!(file = %file_path.display(), "No lock to release");
@@ -142,8 +133,9 @@ impl FileLockManager {
         // Remove the JSON file
         fs::remove_file(&json_file).context("Failed to remove lock JSON")?;
 
-        // The .lock file will be released when the process exits
-        // (flock is automatically released on file close)
+        // Drop the file handle (releases flock)
+        let mut locks = self.active_locks.lock().unwrap();
+        locks.remove(&lock_hash);
 
         info!(file = %file_path.display(), pair = pair_id, "Lock released");
         Ok(())
@@ -295,7 +287,7 @@ enum LockState {
 /// This uses fcntl(F_SETLK) which is non-blocking.
 #[cfg(unix)]
 fn flock_exclusive_nonblocking(file: &File) -> std::io::Result<LockState> {
-    use libc::{flock, LOCK_EX, LOCK_NB, LOCK_UN};
+    use libc::{flock, LOCK_EX, LOCK_NB};
     use std::os::unix::io::AsRawFd;
 
     let fd = file.as_raw_fd();

@@ -2,10 +2,9 @@ use agent_forge::ForgeNode;
 use agent_nexus::NexusNode;
 use anyhow::Result;
 use config::{
-    Ticket, TicketStatus, WorkerSlot, ACTION_EMPTY, ACTION_FAILED, ACTION_NO_WORK, ACTION_PR_OPENED,
-    ACTION_WORK_ASSIGNED, KEY_TICKETS, KEY_WORKER_SLOTS,
+    Ticket, TicketStatus, WorkerSlot, ACTION_EMPTY, ACTION_FAILED, ACTION_NO_WORK,
+    ACTION_PR_OPENED, ACTION_WORK_ASSIGNED, KEY_TICKETS, KEY_WORKER_SLOTS,
 };
-use dotenvy;
 use pocketflow_core::{Flow, SharedStore};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -65,7 +64,10 @@ async fn main() -> Result<()> {
         "orchestration/agent/agents/nexus.agent.md",
         "orchestration/agent/registry.json",
     ));
-    let forge = Arc::new(ForgeNode::new(".", "orchestration/agent/agents/forge.agent.md"));
+    let forge = Arc::new(ForgeNode::new(
+        ".",
+        "orchestration/agent/agents/forge.agent.md",
+    ));
 
     // 5. Build Flow
     let flow = Flow::new("nexus")
@@ -91,27 +93,7 @@ async fn main() -> Result<()> {
         )
         .max_steps(5);
 
-    // 6. Run Flow manually to show store updates
-    let current_node = "nexus".to_string();
-    for step in 0..5 {
-        info!("--- STEP {}: Node {} ---", step, current_node);
-
-        // Print store BEFORE
-        let slots: HashMap<String, WorkerSlot> =
-            store.get_typed(KEY_WORKER_SLOTS).await.unwrap_or_default();
-        info!("Worker Slots BEFORE: {:?}", slots);
-
-        // Run the node once (logic simplified from Flow::run)
-        let _action = if current_node == "nexus" {
-            // We need to access the node directly, but Flow abstracts it.
-            // For the demo, let's just use the flow.run but with tracing on.
-            break; // We'll just use flow.run and let the background info logs show it
-        } else {
-            break;
-        };
-    }
-
-    // Actually, flow.run already has good tracing. Let's just use it and add more info level logs.
+    // 6. Run Flow
     info!("Running flow...");
     flow.run(&store).await?;
 

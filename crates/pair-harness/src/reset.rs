@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tracing::{debug, info, warn};
 
 /// Manages context resets and handoff synthesis.
@@ -76,7 +76,7 @@ impl ResetManager {
 
         // Write the synthesized handoff
         let handoff_path = self.shared.join("HANDOFF.md");
-        fs::write(&handoff_path, handoff.to_string())?;
+        fs::write(&handoff_path, handoff.to_markdown())?;
 
         info!("Synthesized handoff written");
         Ok(())
@@ -222,6 +222,23 @@ impl Handoff {
         let mut current_section = String::new();
 
         for line in content.lines() {
+            if line.starts_with("**Ticket:**") {
+                handoff.ticket_id = line.trim_start_matches("**Ticket:**").trim().to_string();
+                continue;
+            }
+            if line.starts_with("**Pair:**") {
+                handoff.pair_id = line.trim_start_matches("**Pair:**").trim().to_string();
+                continue;
+            }
+            if line.starts_with("TICKET ID:") {
+                handoff.ticket_id = line.trim_start_matches("TICKET ID:").trim().to_string();
+                continue;
+            }
+            if line.starts_with("PAIR ID:") {
+                handoff.pair_id = line.trim_start_matches("PAIR ID:").trim().to_string();
+                continue;
+            }
+
             // Section headers
             if line.starts_with("## ") {
                 current_section = line.trim_start_matches("## ").to_string();
@@ -230,46 +247,38 @@ impl Handoff {
 
             // Parse based on section
             match current_section.as_str() {
-                "Ticket" | "Ticket ID" => {
+                "Ticket" | "Ticket ID" if !line.trim().is_empty() => {
                     handoff.ticket_id = line.trim().to_string();
                 }
-                "Pair" | "Pair ID" => {
+                "Pair" | "Pair ID" if !line.trim().is_empty() => {
                     handoff.pair_id = line.trim().to_string();
                 }
-                "Completed Segments" => {
-                    if line.starts_with("- Segment") {
-                        // Parse segment summary
-                        let num = line
-                            .split_whitespace()
-                            .nth(1)
-                            .and_then(|s| s.parse::<u32>().ok())
-                            .unwrap_or(0);
-                        handoff.completed_segments.push(SegmentSummary {
-                            number: num,
-                            status: "APPROVED".to_string(),
-                            files: Vec::new(),
-                        });
-                    }
+                "Completed Segments" if line.starts_with("- Segment") => {
+                    // Parse segment summary
+                    let num = line
+                        .split_whitespace()
+                        .nth(1)
+                        .and_then(|s| s.parse::<u32>().ok())
+                        .unwrap_or(0);
+                    handoff.completed_segments.push(SegmentSummary {
+                        number: num,
+                        status: "APPROVED".to_string(),
+                        files: Vec::new(),
+                    });
                 }
-                "Decisions" => {
-                    if line.starts_with("- ") {
-                        handoff
-                            .decisions
-                            .push(line.trim_start_matches("- ").to_string());
-                    }
+                "Decisions" if line.starts_with("- ") => {
+                    handoff
+                        .decisions
+                        .push(line.trim_start_matches("- ").to_string());
                 }
-                "Files Changed" => {
-                    if line.starts_with("- ") {
-                        handoff
-                            .files_changed
-                            .push(line.trim_start_matches("- ").to_string());
-                    }
+                "Files Changed" if line.starts_with("- ") => {
+                    handoff
+                        .files_changed
+                        .push(line.trim_start_matches("- ").to_string());
                 }
-                "Exact next step" => {
-                    if !line.is_empty() && !line.starts_with("#") {
-                        handoff.next_step.push_str(line);
-                        handoff.next_step.push('\n');
-                    }
+                "Exact next step" if !line.is_empty() && !line.starts_with('#') => {
+                    handoff.next_step.push_str(line);
+                    handoff.next_step.push('\n');
                 }
                 _ => {}
             }
@@ -280,7 +289,7 @@ impl Handoff {
     }
 
     /// Convert to markdown format.
-    pub fn to_string(&self) -> String {
+    pub fn to_markdown(&self) -> String {
         let mut md = String::new();
 
         md.push_str("# HANDOFF\n\n");
@@ -319,7 +328,7 @@ impl Handoff {
 
         md.push_str("\n## Exact next step\n\n");
         md.push_str(&self.next_step);
-        md.push_str("\n");
+        md.push('\n');
 
         md
     }
@@ -382,7 +391,7 @@ Continue with segment 2: Implement JWT token generation.
             timestamp: Utc::now(),
         };
 
-        let md = handoff.to_string();
+        let md = handoff.to_markdown();
         let parsed = Handoff::parse(&md);
 
         assert_eq!(parsed.ticket_id, handoff.ticket_id);

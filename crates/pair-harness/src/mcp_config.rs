@@ -7,7 +7,7 @@
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use tracing::{debug, info};
 
 /// Generates MCP configuration files for pairs.

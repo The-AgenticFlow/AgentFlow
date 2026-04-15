@@ -10,14 +10,14 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
-use tracing::{debug, error, warn};
+use tracing::{debug, error};
 
 const DEBOUNCE_MS: u64 = 500;
 
 /// Watches the shared directory for file changes.
 pub struct SharedDirWatcher {
-    /// The underlying notify watcher
-    watcher: RecommendedWatcher,
+    /// The underlying notify watcher (must be kept alive)
+    _watcher: RecommendedWatcher,
     /// Receiver for filesystem events
     receiver: Receiver<FsEvent>,
     /// Last seen timestamps for debouncing
@@ -32,7 +32,7 @@ impl SharedDirWatcher {
         let watcher = Self::create_watcher(tx.clone(), shared_dir)?;
 
         Ok(Self {
-            watcher,
+            _watcher: watcher,
             receiver: rx,
             last_seen: HashMap::new(),
         })
@@ -196,7 +196,6 @@ impl AsyncWatcher {
 mod tests {
     use super::*;
     use std::fs;
-    use std::io::Write;
     use tempfile::tempdir;
 
     #[test]

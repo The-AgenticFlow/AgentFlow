@@ -79,7 +79,7 @@ impl McpSession {
         let mcp_type = std::env::var("GITHUB_MCP_TYPE").unwrap_or_else(|_| "hosted".to_string());
         match mcp_type.as_str() {
             "docker" => Self::connect(DOCKER_MCP_CMD).await,
-            "hosted" | _ => Self::connect_hosted().await,
+            _ => Self::connect_hosted().await,
         }
     }
 
@@ -236,7 +236,7 @@ impl McpSession {
             )
             .await?;
 
-        Ok(serde_json::from_value(result).context("Failed to parse MCP tool result")?)
+        serde_json::from_value(result).context("Failed to parse MCP tool result")
     }
 }
 

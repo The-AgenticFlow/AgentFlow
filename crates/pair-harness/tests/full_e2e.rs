@@ -4,22 +4,20 @@
 //! This test verifies the complete lifecycle from ticket assignment to PR merge,
 //! following the specification in docs/forge-sentinel-arch.md section 19.
 
+use pair_harness::{FileLockManager, ForgeSentinelPair, PairConfig, PairOutcome, Ticket};
 use std::path::PathBuf;
-use std::time::Duration;
 use tempfile::TempDir;
-
-use pair_harness::{FileLockManager, ForgeSentinelPair, FsEvent, PairConfig, PairOutcome, Ticket};
 
 /// Test configuration for e2e tests
 struct TestConfig {
     /// Temporary directory for test project
     temp_dir: TempDir,
     /// Path to main worktree
-    main_path: PathBuf,
+    _main_path: PathBuf,
     /// Path to worktrees directory
-    worktrees_path: PathBuf,
+    _worktrees_path: PathBuf,
     /// Path to orchestration directory
-    orchestration_path: PathBuf,
+    _orchestration_path: PathBuf,
 }
 
 impl TestConfig {
@@ -38,9 +36,9 @@ impl TestConfig {
 
         Ok(Self {
             temp_dir,
-            main_path,
-            worktrees_path,
-            orchestration_path,
+            _main_path: main_path,
+            _worktrees_path: worktrees_path,
+            _orchestration_path: orchestration_path,
         })
     }
 
@@ -171,7 +169,7 @@ async fn test_worktree_provisioning() {
     // Initialize a git repo in main
     std::fs::create_dir_all(&main_path).expect("Failed to create main dir");
     std::process::Command::new("git")
-        .args(&["init"])
+        .args(["init"])
         .current_dir(&main_path)
         .output()
         .expect("Failed to init git repo");
@@ -180,12 +178,12 @@ async fn test_worktree_provisioning() {
     std::fs::write(main_path.join("README.md"), "# Test Project\n")
         .expect("Failed to write README");
     std::process::Command::new("git")
-        .args(&["add", "README.md"])
+        .args(["add", "README.md"])
         .current_dir(&main_path)
         .output()
         .expect("Failed to add README");
     std::process::Command::new("git")
-        .args(&["commit", "-m", "Initial commit"])
+        .args(["commit", "-m", "Initial commit"])
         .current_dir(&main_path)
         .output()
         .expect("Failed to commit");
@@ -201,7 +199,7 @@ async fn test_worktree_provisioning() {
 
             // Verify branch was created
             let output = std::process::Command::new("git")
-                .args(&["branch", "--list", "forge-pair-1/T-42"])
+                .args(["branch", "--list", "forge-pair-1/T-42"])
                 .current_dir(&main_path)
                 .output()
                 .expect("Failed to list branches");
@@ -278,9 +276,9 @@ async fn test_context_reset_and_handoff() {
 
     // Verify handoff content
     let content = std::fs::read_to_string(&handoff_path).expect("Failed to read handoff");
-    assert!(content.contains("## Completed Work"));
+    assert!(content.contains("## Completed Segments"));
     assert!(content.contains("## Files Changed"));
-    assert!(content.contains("## Key Decisions"));
+    assert!(content.contains("## Decisions"));
 }
 
 #[tokio::test]
@@ -310,30 +308,30 @@ fn setup_mock_git_repo(path: &PathBuf) -> anyhow::Result<()> {
 
     // Initialize repo
     Command::new("git")
-        .args(&["init"])
+        .args(["init"])
         .current_dir(path)
         .output()?;
 
     // Set user config
     Command::new("git")
-        .args(&["config", "user.email", "test@example.com"])
+        .args(["config", "user.email", "test@example.com"])
         .current_dir(path)
         .output()?;
 
     Command::new("git")
-        .args(&["config", "user.name", "Test User"])
+        .args(["config", "user.name", "Test User"])
         .current_dir(path)
         .output()?;
 
     // Create initial commit
     std::fs::write(path.join(".gitkeep"), "")?;
     Command::new("git")
-        .args(&["add", ".gitkeep"])
+        .args(["add", ".gitkeep"])
         .current_dir(path)
         .output()?;
 
     Command::new("git")
-        .args(&["commit", "-m", "Initial commit"])
+        .args(["commit", "-m", "Initial commit"])
         .current_dir(path)
         .output()?;
 

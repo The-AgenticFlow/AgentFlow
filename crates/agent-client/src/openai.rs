@@ -73,7 +73,7 @@ fn messages_to_json(messages: &[Message]) -> Value {
                     match block {
                         ContentBlock::Text { text } => {
                             if !text_content.is_empty() {
-                                text_content.push_str("\n");
+                                text_content.push('\n');
                             }
                             text_content.push_str(text);
                         }
@@ -181,7 +181,7 @@ impl LlmClient for OpenAiClient {
         let message = &choice["message"];
 
         if let Some(tool_calls) = message["tool_calls"].as_array() {
-            if let Some(tool_call) = tool_calls.get(0) {
+            if let Some(tool_call) = tool_calls.first() {
                 let id = tool_call["id"].as_str().unwrap_or("").to_string();
                 let name = tool_call["function"]["name"]
                     .as_str()
