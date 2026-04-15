@@ -166,27 +166,34 @@ async fn test_worktree_provisioning() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let main_path = temp_dir.path().join("main");
 
-    // Initialize a git repo in main
+    // Initialize a git repo in main and set up identity
     std::fs::create_dir_all(&main_path).expect("Failed to create main dir");
-    std::process::Command::new("git")
-        .args(["init"])
-        .current_dir(&main_path)
-        .output()
-        .expect("Failed to init git repo");
+    setup_mock_git_repo(&main_path).expect("Failed to setup mock git repo");
 
     // Create initial commit
     std::fs::write(main_path.join("README.md"), "# Test Project\n")
         .expect("Failed to write README");
-    std::process::Command::new("git")
+    let output = std::process::Command::new("git")
         .args(["add", "README.md"])
         .current_dir(&main_path)
         .output()
-        .expect("Failed to add README");
-    std::process::Command::new("git")
+        .expect("Failed to run git add");
+    assert!(
+        output.status.success(),
+        "git add failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let output = std::process::Command::new("git")
         .args(["commit", "-m", "Initial commit"])
         .current_dir(&main_path)
         .output()
-        .expect("Failed to commit");
+        .expect("Failed to run git commit");
+    assert!(
+        output.status.success(),
+        "git commit failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let manager = WorktreeManager::new(main_path.clone());
 
