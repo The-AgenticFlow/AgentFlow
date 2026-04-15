@@ -290,6 +290,11 @@ impl Handoff {
 
     /// Convert to markdown format.
     pub fn to_markdown(&self) -> String {
+        self.to_string()
+    }
+
+    /// Alias for to_markdown for backward compatibility.
+    pub fn to_string(&self) -> String {
         let mut md = String::new();
 
         md.push_str("# HANDOFF\n\n");
