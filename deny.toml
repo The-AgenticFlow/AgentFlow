@@ -1,8 +1,5 @@
 [advisories]
-vulnerability = "deny"
-unmaintained = "all"
-unsound = "all"
-notice = "all"
+db-urls = ["https://github.com/rustsec/advisory-db"]
 ignore = [
     "RUSTSEC-2026-0097", # rand 0.8 is pinned by fred, risk is low in our context
 ]

@@ -205,6 +205,56 @@ pub struct Handoff {
     pub timestamp: DateTime<Utc>,
 }
 
+impl std::fmt::Display for Handoff {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "# HANDOFF")?;
+        writeln!(f)?;
+        writeln!(f, "**Ticket:** {}", self.ticket_id)?;
+        writeln!(f)?;
+        writeln!(f, "**Pair:** {}", self.pair_id)?;
+        writeln!(f)?;
+        writeln!(f, "**Timestamp:** {}", self.timestamp.to_rfc3339())?;
+        writeln!(f)?;
+
+        writeln!(f, "## Completed Segments")?;
+        writeln!(f)?;
+        for seg in &self.completed_segments {
+            writeln!(f, "- Segment {}: {}", seg.number, seg.status)?;
+            for file in &seg.files {
+                writeln!(f, "  - {}", file)?;
+            }
+        }
+
+        if let Some(ref in_prog) = self.in_progress {
+            writeln!(f)?;
+            writeln!(f, "## In Progress")?;
+            writeln!(f)?;
+            writeln!(f, "- Segment {}: {}", in_prog.number, in_prog.status)?;
+        }
+
+        writeln!(f)?;
+        writeln!(f, "## Decisions")?;
+        writeln!(f)?;
+        for decision in &self.decisions {
+            writeln!(f, "- {}", decision)?;
+        }
+
+        writeln!(f)?;
+        writeln!(f, "## Files Changed")?;
+        writeln!(f)?;
+        for file in &self.files_changed {
+            writeln!(f, "- {}", file)?;
+        }
+
+        writeln!(f)?;
+        writeln!(f, "## Exact next step")?;
+        writeln!(f)?;
+        writeln!(f, "{}", self.next_step)?;
+
+        Ok(())
+    }
+}
+
 impl Handoff {
     /// Parse a HANDOFF.md file.
     pub fn parse(content: &str) -> Self {
@@ -291,51 +341,6 @@ impl Handoff {
     /// Convert to markdown format.
     pub fn to_markdown(&self) -> String {
         self.to_string()
-    }
-
-    /// Alias for to_markdown for backward compatibility.
-    pub fn to_string(&self) -> String {
-        let mut md = String::new();
-
-        md.push_str("# HANDOFF\n\n");
-        md.push_str(&format!("**Ticket:** {}\n\n", self.ticket_id));
-        md.push_str(&format!("**Pair:** {}\n\n", self.pair_id));
-        md.push_str(&format!(
-            "**Timestamp:** {}\n\n",
-            self.timestamp.to_rfc3339()
-        ));
-
-        md.push_str("## Completed Segments\n\n");
-        for seg in &self.completed_segments {
-            md.push_str(&format!("- Segment {}: {}\n", seg.number, seg.status));
-            for file in &seg.files {
-                md.push_str(&format!("  - {}\n", file));
-            }
-        }
-
-        if let Some(ref in_prog) = self.in_progress {
-            md.push_str("\n## In Progress\n\n");
-            md.push_str(&format!(
-                "- Segment {}: {}\n",
-                in_prog.number, in_prog.status
-            ));
-        }
-
-        md.push_str("\n## Decisions\n\n");
-        for decision in &self.decisions {
-            md.push_str(&format!("- {}\n", decision));
-        }
-
-        md.push_str("\n## Files Changed\n\n");
-        for file in &self.files_changed {
-            md.push_str(&format!("- {}\n", file));
-        }
-
-        md.push_str("\n## Exact next step\n\n");
-        md.push_str(&self.next_step);
-        md.push('\n');
-
-        md
     }
 }
 
