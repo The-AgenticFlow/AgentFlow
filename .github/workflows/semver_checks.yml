@@ -16,4 +16,4 @@ jobs:
       - name: Check semver
         uses: obi1kenobi/cargo-semver-checks-action@v2
         with:
-          package: "*" # Check all packages in the workspace
+          package: "pocketflow-core, agent-client, github, config, agent-nexus, agent-forge, pair-harness"

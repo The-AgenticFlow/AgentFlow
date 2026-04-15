@@ -1,7 +1,7 @@
 [advisories]
 vulnerability = "deny"
-unmaintained = "warn"
-unsound = "warn"
+unmaintained = "all"
+unsound = "all"
 notice = "warn"
 
 [licenses]

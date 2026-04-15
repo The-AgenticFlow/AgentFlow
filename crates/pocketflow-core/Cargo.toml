@@ -8,7 +8,6 @@ tokio       = { workspace = true }
 async-trait = { workspace = true }
 futures     = { workspace = true }
 anyhow      = { workspace = true }
-thiserror   = { workspace = true }
 serde       = { workspace = true }
 serde_json  = { workspace = true }
 fred        = { workspace = true }

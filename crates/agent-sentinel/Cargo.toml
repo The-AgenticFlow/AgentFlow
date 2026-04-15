@@ -6,7 +6,6 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0"
 async-trait = "0.1"
-config = { path = "../config" }
 pocketflow-core = { path = "../pocketflow-core" }
 pair-harness = { path = "../pair-harness" }
 serde = { version = "1.0", features = ["derive"] }
