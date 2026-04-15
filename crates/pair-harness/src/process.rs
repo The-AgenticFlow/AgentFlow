@@ -53,6 +53,13 @@ pub struct ProcessManager {
     github_token: String,
     /// Optional Redis URL for shared store (fallback to filesystem if None)
     redis_url: Option<String>,
+    /// Optional LiteLLM proxy URL for per-agent model routing
+    proxy_url: Option<String>,
+    /// Optional API key for authenticating with a hosted LiteLLM proxy.
+    /// When set, ANTHROPIC_API_KEY is set to this value (the proxy handles auth + routing).
+    /// When not set, ANTHROPIC_API_KEY is set to the routing key (e.g., "forge-key")
+    /// for self-hosted LiteLLM where the routing key IS the auth.
+    proxy_api_key: Option<String>,
 }
 
 impl ProcessManager {
@@ -63,10 +70,15 @@ impl ProcessManager {
 
         Self::validate_claude_binary(&claude_path);
 
+        let proxy_url = std::env::var("PROXY_URL").ok();
+        let proxy_api_key = std::env::var("PROXY_API_KEY").ok();
+
         Self {
             claude_path,
             github_token: github_token.into(),
             redis_url: None,
+            proxy_url,
+            proxy_api_key,
         }
     }
 
@@ -77,10 +89,37 @@ impl ProcessManager {
 
         Self::validate_claude_binary(&claude_path);
 
+        let proxy_url = std::env::var("PROXY_URL").ok();
+        let proxy_api_key = std::env::var("PROXY_API_KEY").ok();
+
         Self {
             claude_path,
             github_token: github_token.into(),
             redis_url: Some(redis_url.into()),
+            proxy_url,
+            proxy_api_key,
+        }
+    }
+
+    /// Create a process manager with proxy and optional Redis.
+    pub fn with_proxy(
+        github_token: impl Into<String>,
+        redis_url: Option<String>,
+        proxy_url: impl Into<String>,
+    ) -> Self {
+        let claude_path = std::env::var("CLAUDE_PATH").unwrap_or_else(|_| "claude".to_string());
+        let claude_path = PathBuf::from(claude_path);
+
+        Self::validate_claude_binary(&claude_path);
+
+        let proxy_api_key = std::env::var("PROXY_API_KEY").ok();
+
+        Self {
+            claude_path,
+            github_token: github_token.into(),
+            redis_url,
+            proxy_url: Some(proxy_url.into()),
+            proxy_api_key,
         }
     }
 
@@ -111,6 +150,35 @@ impl ProcessManager {
                 }
             }
         }
+    }
+
+    fn inject_proxy_env(cmd: &mut Command, routing_key: &str, proxy_url: &str, proxy_api_key: Option<&str>) {
+        let base_url = proxy_url.trim_end_matches("/v1").trim_end_matches('/');
+        cmd.env("ANTHROPIC_BASE_URL", base_url);
+        if let Some(api_key) = proxy_api_key {
+            cmd.env("ANTHROPIC_API_KEY", api_key);
+        } else {
+            cmd.env("ANTHROPIC_API_KEY", routing_key);
+        }
+    }
+
+    fn inject_llm_env(cmd: &mut Command) {
+        cmd.env("LLM_PROVIDER", std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "fallback".to_string()));
+        cmd.env("LLM_FALLBACK", std::env::var("LLM_FALLBACK").unwrap_or_default());
+        cmd.env("MODEL_PROVIDER_MAP", std::env::var("MODEL_PROVIDER_MAP").unwrap_or_default());
+        cmd.env("ANTHROPIC_MODEL", std::env::var("ANTHROPIC_MODEL").unwrap_or_default());
+        cmd.env("OPENAI_API_KEY", std::env::var("OPENAI_API_KEY").unwrap_or_default());
+        cmd.env("OPENAI_MODEL", std::env::var("OPENAI_MODEL").unwrap_or_default());
+        cmd.env("GEMINI_API_KEY", std::env::var("GEMINI_API_KEY").unwrap_or_default());
+        cmd.env("GEMINI_MODEL", std::env::var("GEMINI_MODEL").unwrap_or_default());
+    }
+
+    pub fn proxy_url(&self) -> Option<&str> {
+        self.proxy_url.as_deref()
+    }
+
+    pub fn proxy_api_key(&self) -> Option<&str> {
+        self.proxy_api_key.as_deref()
     }
 
     /// Spawn a FORGE process (long-running).
@@ -148,17 +216,16 @@ impl ProcessManager {
                 worktree.to_string_lossy().to_string(),
             )
             .env("SPRINTLESS_SHARED", shared.to_string_lossy().to_string())
-            .env("SPRINTLESS_GITHUB_TOKEN", &self.github_token)
-            // Pass all LLM provider environment variables for fallback support
-            .env("LLM_PROVIDER", std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "fallback".to_string()))
-            .env("LLM_FALLBACK", std::env::var("LLM_FALLBACK").unwrap_or_default())
-            .env("ANTHROPIC_API_KEY", std::env::var("ANTHROPIC_API_KEY").unwrap_or_default())
-            .env("ANTHROPIC_MODEL", std::env::var("ANTHROPIC_MODEL").unwrap_or_default())
-            .env("OPENAI_API_KEY", std::env::var("OPENAI_API_KEY").unwrap_or_default())
-            .env("OPENAI_MODEL", std::env::var("OPENAI_MODEL").unwrap_or_default())
-            .env("GEMINI_API_KEY", std::env::var("GEMINI_API_KEY").unwrap_or_default())
-            .env("GEMINI_MODEL", std::env::var("GEMINI_MODEL").unwrap_or_default())
-            .current_dir(worktree)
+            .env("SPRINTLESS_GITHUB_TOKEN", &self.github_token);
+
+        if let Some(proxy_url) = &self.proxy_url {
+            Self::inject_proxy_env(&mut cmd, "forge-key", proxy_url, self.proxy_api_key.as_deref());
+        } else {
+            cmd.env("ANTHROPIC_API_KEY", std::env::var("ANTHROPIC_API_KEY").unwrap_or_default());
+            Self::inject_llm_env(&mut cmd);
+        }
+
+        cmd.current_dir(worktree)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -262,17 +329,16 @@ impl ProcessManager {
                 worktree.to_string_lossy().to_string(),
             )
             .env("SPRINTLESS_SHARED", shared.to_string_lossy().to_string())
-            .env("SPRINTLESS_GITHUB_TOKEN", &self.github_token)
-            // Pass all LLM provider environment variables for fallback support
-            .env("LLM_PROVIDER", std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "fallback".to_string()))
-            .env("LLM_FALLBACK", std::env::var("LLM_FALLBACK").unwrap_or_default())
-            .env("ANTHROPIC_API_KEY", std::env::var("ANTHROPIC_API_KEY").unwrap_or_default())
-            .env("ANTHROPIC_MODEL", std::env::var("ANTHROPIC_MODEL").unwrap_or_default())
-            .env("OPENAI_API_KEY", std::env::var("OPENAI_API_KEY").unwrap_or_default())
-            .env("OPENAI_MODEL", std::env::var("OPENAI_MODEL").unwrap_or_default())
-            .env("GEMINI_API_KEY", std::env::var("GEMINI_API_KEY").unwrap_or_default())
-            .env("GEMINI_MODEL", std::env::var("GEMINI_MODEL").unwrap_or_default())
-            .current_dir(worktree)
+            .env("SPRINTLESS_GITHUB_TOKEN", &self.github_token);
+
+        if let Some(proxy_url) = &self.proxy_url {
+            Self::inject_proxy_env(&mut cmd, "forge-key", proxy_url, self.proxy_api_key.as_deref());
+        } else {
+            cmd.env("ANTHROPIC_API_KEY", std::env::var("ANTHROPIC_API_KEY").unwrap_or_default());
+            Self::inject_llm_env(&mut cmd);
+        }
+
+        cmd.current_dir(worktree)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -366,17 +432,16 @@ impl ProcessManager {
                 worktree.to_string_lossy().to_string(),
             )
             .env("SPRINTLESS_SHARED", shared.to_string_lossy().to_string())
-            .env("SPRINTLESS_GITHUB_TOKEN", &self.github_token)
-            // Pass all LLM provider environment variables for fallback support
-            .env("LLM_PROVIDER", std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "fallback".to_string()))
-            .env("LLM_FALLBACK", std::env::var("LLM_FALLBACK").unwrap_or_default())
-            .env("ANTHROPIC_API_KEY", std::env::var("ANTHROPIC_API_KEY").unwrap_or_default())
-            .env("ANTHROPIC_MODEL", std::env::var("ANTHROPIC_MODEL").unwrap_or_default())
-            .env("OPENAI_API_KEY", std::env::var("OPENAI_API_KEY").unwrap_or_default())
-            .env("OPENAI_MODEL", std::env::var("OPENAI_MODEL").unwrap_or_default())
-            .env("GEMINI_API_KEY", std::env::var("GEMINI_API_KEY").unwrap_or_default())
-            .env("GEMINI_MODEL", std::env::var("GEMINI_MODEL").unwrap_or_default())
-            .current_dir(shared)
+            .env("SPRINTLESS_GITHUB_TOKEN", &self.github_token);
+
+        if let Some(proxy_url) = &self.proxy_url {
+            Self::inject_proxy_env(&mut cmd, "sentinel-key", proxy_url, self.proxy_api_key.as_deref());
+        } else {
+            cmd.env("ANTHROPIC_API_KEY", std::env::var("ANTHROPIC_API_KEY").unwrap_or_default());
+            Self::inject_llm_env(&mut cmd);
+        }
+
+        cmd.current_dir(shared)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -810,6 +875,7 @@ pub struct ForgeProcessBuilder {
     shared: PathBuf,
     github_token: String,
     redis_url: Option<String>,
+    proxy_url: Option<String>,
     extra_env: Vec<(String, String)>,
 }
 
@@ -828,6 +894,7 @@ impl ForgeProcessBuilder {
             shared,
             github_token: String::new(),
             redis_url: None,
+            proxy_url: None,
             extra_env: Vec::new(),
         }
     }
@@ -844,6 +911,12 @@ impl ForgeProcessBuilder {
         self
     }
 
+    /// Set the LiteLLM proxy URL for per-agent model routing.
+    pub fn proxy_url(mut self, url: impl Into<String>) -> Self {
+        self.proxy_url = Some(url.into());
+        self
+    }
+
     /// Add an extra environment variable.
     pub fn env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.extra_env.push((key.into(), value.into()));
@@ -852,10 +925,19 @@ impl ForgeProcessBuilder {
 
     /// Build and spawn the FORGE process.
     pub async fn spawn(self) -> Result<Child> {
-        let manager = if let Some(redis_url) = &self.redis_url {
-            ProcessManager::with_redis(self.github_token, redis_url)
-        } else {
-            ProcessManager::new(self.github_token)
+        let manager = match (&self.redis_url, &self.proxy_url) {
+            (Some(redis_url), Some(proxy_url)) => {
+                ProcessManager::with_proxy(self.github_token, Some(redis_url.clone()), proxy_url)
+            }
+            (Some(redis_url), None) => {
+                ProcessManager::with_redis(self.github_token, redis_url)
+            }
+            (None, Some(proxy_url)) => {
+                ProcessManager::with_proxy(self.github_token, None, proxy_url)
+            }
+            (None, None) => {
+                ProcessManager::new(self.github_token)
+            }
         };
 
         let mut child = manager

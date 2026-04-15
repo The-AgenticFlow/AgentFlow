@@ -97,7 +97,36 @@ GITHUB_PERSONAL_ACCESS_TOKEN=ghp_xxxxxxxxxxxxx
 GITHUB_REPOSITORY=your-username/test-calculator
 ```
 
-**⚠️ Important**: NEXUS can now use `openai`, `gemini`, or `anthropic`. FORGE still requires `ANTHROPIC_API_KEY` for Claude Code.
+**⚠️ Important**: NEXUS can use `openai`, `gemini`, or `anthropic`. FORGE still requires `ANTHROPIC_API_KEY` for Claude Code.
+
+#### If your gateway only supports OpenAI format
+
+If you're using a third-party gateway that doesn't support the Anthropic Messages API, you need the local protocol proxy:
+
+```env
+# Claude CLI and Nexus send Anthropic requests to the LOCAL proxy
+PROXY_URL=http://localhost:8080/v1
+PROXY_API_KEY=your-gateway-api-key
+
+# The LOCAL proxy forwards OpenAI-format requests to the REMOTE gateway
+GATEWAY_URL=https://api.ai.camer.digital/v1/
+GATEWAY_API_KEY=your-gateway-api-key
+
+# Route non-Anthropic models through OpenAI client format
+MODEL_PROVIDER_MAP=glm=openai,deepseek=openai,gpt=openai
+```
+
+Then start the proxy before running the orchestration:
+
+```bash
+# Terminal 1: Start proxy (reads .env automatically)
+./scripts/start_proxy.sh
+
+# Terminal 2: Run orchestration
+cargo run --bin real_test
+```
+
+When your provider adds native Anthropic support, just change `PROXY_URL` to point directly to the gateway and remove `GATEWAY_*`.
 
 ### 4. Verify Your Setup
 
@@ -672,7 +701,22 @@ ls -la ~/.agentflow/workspaces/
 chmod -R u+w ~/.agentflow/workspaces/
 ```
 
-### Issue: GitHub MCP server fails to start
+### Issue: "FORGE exited quickly without progress" or "Failed to authenticate. API Error: 403"
+
+**Cause:** Claude CLI can't authenticate through your gateway because it only supports OpenAI format, not the Anthropic Messages API.
+
+**Fix:** Start the local Anthropic-to-OpenAI proxy before running the orchestration:
+```bash
+# Terminal 1
+./scripts/start_proxy.sh
+
+# Terminal 2
+cargo run --bin real_test
+```
+
+Ensure `.env` has `GATEWAY_URL` and `GATEWAY_API_KEY` set. See the [OpenAI-only gateways](#if-your-gateway-only-supports-openai-format) section above.
+
+### Issue: "GitHub MCP server fails to start"
 
 **Cause:** Missing Node.js or incorrect GitHub token permissions.
 

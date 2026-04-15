@@ -197,7 +197,12 @@ impl Node for NexusNode {
     async fn exec(&self, context: Value) -> Result<Value> {
         info!("Nexus calling AgentRunner for orchestration...");
 
-        let mut runner = AgentRunner::from_env().await?;
+        let model_backend = Registry::load(&self.registry_path)
+            .ok()
+            .and_then(|reg| reg.get("nexus").map(|e| e.model_backend.clone()))
+            .flatten();
+
+        let mut runner = AgentRunner::from_env_for_agent(model_backend.as_deref()).await?;
         let persona = self.load_persona().await?;
 
         let decision: AgentDecision = runner.run(&persona, context, 10).await?;
