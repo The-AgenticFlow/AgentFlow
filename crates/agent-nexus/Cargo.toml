@@ -7,7 +7,6 @@ edition = "2021"
 pocketflow-core = { path = "../pocketflow-core" }
 agent-client = { path = "../agent-client" }
 config = { path = "../config" }
-github = { path = "../github" }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

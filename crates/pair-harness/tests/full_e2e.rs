@@ -197,14 +197,11 @@ async fn test_worktree_provisioning() {
             assert!(worktree_path.exists());
             println!("Worktree created at: {:?}", worktree_path);
 
-            // Verify branch was created
-            let output = std::process::Command::new("git")
-                .args(["branch", "--list", "forge-pair-1/T-42"])
-                .current_dir(&main_path)
-                .output()
-                .expect("Failed to list branches");
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            assert!(stdout.contains("forge-pair-1/T-42"));
+            // Verify branch was created and worktree is on it
+            let actual_branch = manager
+                .get_current_branch(&worktree_path)
+                .expect("Failed to get current branch");
+            assert_eq!(actual_branch, "forge-pair-1/T-42");
         }
         Err(e) => {
             // This test requires git to be installed

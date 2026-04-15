@@ -10,19 +10,16 @@ path = "src/main.rs"
 [dependencies]
 pocketflow-core = { path = "../crates/pocketflow-core" }
 config          = { path = "../crates/config" }
-github          = { path = "../crates/github" }
 agent-nexus     = { path = "../crates/agent-nexus" }
 agent-forge     = { path = "../crates/agent-forge" }
 pair-harness    = { path = "../crates/pair-harness" }
 
 anyhow      = { workspace = true }
-serde       = { workspace = true }
 serde_json  = { workspace = true }
 tokio       = { workspace = true }
 tracing     = { workspace = true }
 tracing-subscriber = { workspace = true }
 dotenvy     = { workspace = true }
-async-trait = "0.1"
 
 [dev-dependencies]
 mockito = "1"
