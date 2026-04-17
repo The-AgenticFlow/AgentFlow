@@ -93,27 +93,13 @@ async fn main() -> Result<()> {
         )
         .max_steps(5);
 
-    // 6. Run Flow manually to show store updates
-    let current_node = "nexus".to_string();
-    for step in 0..5 {
-        info!("--- STEP {}: Node {} ---", step, current_node);
+    // 6. Run Flow
+    // Print store state before running for visibility
+    info!("--- Initial State ---");
+    let slots: HashMap<String, WorkerSlot> =
+        store.get_typed(KEY_WORKER_SLOTS).await.unwrap_or_default();
+    info!("Worker Slots BEFORE: {:?}", slots);
 
-        // Print store BEFORE
-        let slots: HashMap<String, WorkerSlot> =
-            store.get_typed(KEY_WORKER_SLOTS).await.unwrap_or_default();
-        info!("Worker Slots BEFORE: {:?}", slots);
-
-        // Run the node once (logic simplified from Flow::run)
-        let _action = if current_node == "nexus" {
-            // We need to access the node directly, but Flow abstracts it.
-            // For the demo, let's just use the flow.run but with tracing on.
-            break; // We'll just use flow.run and let the background info logs show it
-        } else {
-            break;
-        };
-    }
-
-    // Actually, flow.run already has good tracing. Let's just use it and add more info level logs.
     info!("Running flow...");
     flow.run(&store).await?;
 
