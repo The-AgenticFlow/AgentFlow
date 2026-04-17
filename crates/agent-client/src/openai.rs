@@ -23,6 +23,7 @@ const DEFAULT_MAX_TOKENS: u32 = 4096;
 pub struct OpenAiClient {
     http: Client,
     api_key: String,
+    api_url: String,
     pub model: String,
     max_tokens: u32,
 }
@@ -31,6 +32,7 @@ impl OpenAiClient {
     pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Self {
         Self {
             http: Client::new(),
+            api_url: DEFAULT_OPENAI_API_URL.to_string(),
             api_key: api_key.into(),
             model: model.into(),
             max_tokens: DEFAULT_MAX_TOKENS,
@@ -42,7 +44,50 @@ impl OpenAiClient {
     pub fn from_env() -> Result<Self> {
         let key = std::env::var("OPENAI_API_KEY").context("OPENAI_API_KEY not set")?;
         let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
-        Ok(Self::new(key, model))
+        let api_url =
+            std::env::var("OPENAI_API_URL").unwrap_or_else(|_| DEFAULT_OPENAI_API_URL.to_string());
+        Ok(Self {
+            http: Client::new(),
+            api_url,
+            api_key: key,
+            model,
+            max_tokens: DEFAULT_MAX_TOKENS,
+        })
+    }
+
+    /// Like `from_env()`, but overrides the model name.
+    /// Used when the registry specifies a `model_backend` that maps to OpenAI-compatible.
+    pub fn from_env_with_model(model_override: &str) -> Result<Self> {
+        let mut client = Self::from_env()?;
+        client.model = model_override.to_string();
+        tracing::info!(model = %model_override, "OpenAiClient model overridden from registry");
+        Ok(client)
+    }
+
+    /// Create an OpenAiClient configured to use a proxy endpoint.
+    /// Routes through PROXY_URL as the API URL and uses PROXY_API_KEY for auth.
+    pub fn from_proxy(model_override: &str) -> Result<Self> {
+        let proxy_url = std::env::var("PROXY_URL")
+            .or_else(|_| std::env::var("ANTHROPIC_BASE_URL"))
+            .context("PROXY_URL not set — required for OpenAI-compatible proxy routing")?;
+        let api_url = format!("{}/chat/completions", proxy_url.trim_end_matches('/'));
+        let api_key = std::env::var("PROXY_API_KEY")
+            .or_else(|_| std::env::var("OPENAI_API_KEY"))
+            .context("PROXY_API_KEY or OPENAI_API_KEY not set for proxy")?;
+
+        tracing::info!(
+            api_url = %api_url,
+            model = %model_override,
+            "OpenAiClient configured with proxy"
+        );
+
+        Ok(Self {
+            http: Client::new(),
+            api_url,
+            api_key,
+            model: model_override.to_string(),
+            max_tokens: DEFAULT_MAX_TOKENS,
+        })
     }
 
     pub fn with_max_tokens(mut self, n: u32) -> Self {
@@ -149,12 +194,9 @@ impl LlmClient for OpenAiClient {
             body["tools"] = json!(tools_json);
         }
 
-        let api_url =
-            std::env::var("OPENAI_API_URL").unwrap_or_else(|_| DEFAULT_OPENAI_API_URL.to_string());
-
         let resp = self
             .http
-            .post(api_url)
+            .post(&self.api_url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
             .json(&body)
@@ -163,10 +205,17 @@ impl LlmClient for OpenAiClient {
             .context("HTTP request to OpenAI API failed")?;
 
         let status = resp.status();
-        let raw: Value = resp
-            .json()
+        let raw_text = resp
+            .text()
             .await
-            .context("Failed to parse OpenAI response")?;
+            .context("Failed to read OpenAI response body")?;
+        debug!(model = %self.model, status = %status, body = %raw_text, "← OpenAI raw response");
+
+        let raw: Value = serde_json::from_str(&raw_text).context(format!(
+            "Failed to parse OpenAI response (status={}, body={})",
+            status,
+            &raw_text[..raw_text.len().min(500)]
+        ))?;
 
         if !status.is_success() {
             let error_msg = raw["error"]["message"].as_str().unwrap_or("unknown");

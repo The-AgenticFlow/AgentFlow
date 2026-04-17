@@ -52,6 +52,36 @@ impl AgentRunner {
         Ok(Self::new(client, mcp))
     }
 
+    /// Create a runner for a specific agent, using its registry `model_backend`.
+    ///
+    /// When `model_backend` is provided, it overrides `ANTHROPIC_MODEL` for the
+    /// proxy/anthropic provider so the correct model is sent to the proxy.
+    pub async fn from_env_for_agent(model_backend: Option<&str>) -> Result<Self> {
+        let provider = std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "fallback".to_string());
+
+        let client: Box<dyn LlmClient> = match provider.as_str() {
+            "openai" => Box::new(OpenAiClient::from_env()?),
+            "gemini" => Box::new(GeminiClient::from_env()?),
+            "anthropic" => match model_backend {
+                Some(m) => Box::new(AnthropicClient::from_env_with_model(m)?),
+                None => Box::new(AnthropicClient::from_env()?),
+            },
+            "fallback" => match model_backend {
+                Some(m) => Box::new(FallbackClient::from_env_with_model(m)?),
+                None => Box::new(FallbackClient::from_env()?),
+            },
+            other => bail!(
+                "Unknown LLM_PROVIDER: {}. Valid options: anthropic, gemini, openai, fallback",
+                other
+            ),
+        };
+
+        info!(provider = %provider, model = %client.model(), "AgentRunner initialized for agent");
+
+        let mcp = McpSession::connect_default().await?;
+        Ok(Self::new(client, mcp))
+    }
+
     /// Run a single agent turn to completion.
     ///
     /// 1. Fetches available tool schemas from the MCP server.

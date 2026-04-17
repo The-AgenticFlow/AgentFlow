@@ -14,6 +14,10 @@ pub struct RegistryEntry {
     pub cli: String, // "claude" | "gemini" | "codex"
     pub active: bool,
     pub instances: u32, // registry.json is sole source — .agent.md has no instances field
+    #[serde(default)]
+    pub model_backend: Option<String>, // e.g. "anthropic/claude-sonnet-4-5", "gemini/gemini-2.5-pro"
+    #[serde(default)]
+    pub routing_key: Option<String>, // LiteLLM proxy routing key, e.g. "forge-key"
 }
 
 /// The full registry — a thin wrapper around the team list.
@@ -68,11 +72,11 @@ mod tests {
     fn sample_registry_json() -> &'static str {
         r#"{
           "team": [
-            { "id": "nexus",    "cli": "claude", "active": true,  "instances": 1 },
-            { "id": "forge",    "cli": "claude", "active": true,  "instances": 2 },
-            { "id": "sentinel", "cli": "claude", "active": true,  "instances": 1 },
-            { "id": "vessel",   "cli": "claude", "active": true,  "instances": 1 },
-            { "id": "lore",     "cli": "claude", "active": false, "instances": 1 }
+            { "id": "nexus",    "cli": "claude", "active": true,  "instances": 1, "model_backend": "anthropic/claude-sonnet-4-5", "routing_key": "nexus-key" },
+            { "id": "forge",    "cli": "claude", "active": true,  "instances": 2, "model_backend": "anthropic/claude-sonnet-4-5", "routing_key": "forge-key" },
+            { "id": "sentinel", "cli": "claude", "active": true,  "instances": 1, "model_backend": "gemini/gemini-2.5-pro",      "routing_key": "sentinel-key" },
+            { "id": "vessel",   "cli": "claude", "active": true,  "instances": 1, "model_backend": "groq/llama-3.3-70b-versatile", "routing_key": "vessel-key" },
+            { "id": "lore",     "cli": "claude", "active": false, "instances": 1, "model_backend": "openai/gpt-4o-mini",       "routing_key": "lore-key" }
           ]
         }"#
     }

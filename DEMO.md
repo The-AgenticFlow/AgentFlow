@@ -49,6 +49,28 @@ GITHUB_PERSONAL_ACCESS_TOKEN=ghp_...
 GITHUB_REPOSITORY=your-username/your-repo
 ```
 
+#### If your gateway only supports OpenAI format
+
+Add these additional variables and start the local proxy before running:
+
+```env
+# Claude CLI sends Anthropic requests to the LOCAL proxy
+PROXY_URL=http://localhost:8080/v1
+PROXY_API_KEY=your-gateway-api-key
+
+# The LOCAL proxy forwards OpenAI-format requests to the REMOTE gateway
+GATEWAY_URL=https://api.ai.camer.digital/v1/
+GATEWAY_API_KEY=your-gateway-api-key
+```
+
+```bash
+# Terminal 1: Start the proxy (reads .env automatically)
+./scripts/start_proxy.sh
+
+# Terminal 2: Run the orchestration
+cargo run --bin real_test
+```
+
 ### 3. Prepare Target Repository
 
 Create a GitHub repository where the autonomous team will work. You can use an existing repo or create a new one:
@@ -72,8 +94,20 @@ gh issue create --title "Add UI styling" --body "Style the calculator with a mod
 
 ### Start the Orchestration
 
+**If you have direct Anthropic API access** (or a LiteLLM proxy that supports Anthropic format):
+
 ```bash
 # From AgentFlow directory
+cargo run --bin real_test
+```
+
+**If your gateway only supports OpenAI format** (needs the local Anthropic-to-OpenAI proxy):
+
+```bash
+# Terminal 1: Start the protocol proxy
+./scripts/start_proxy.sh
+
+# Terminal 2: Run the orchestration
 cargo run --bin real_test
 ```
 
@@ -229,6 +263,12 @@ AgentFlow/
 ### "Claude Code timed out"
 - Default timeout is 30 minutes
 - Complex tasks may need longer - adjust in `agent-forge/src/lib.rs`
+
+### "FORGE exited quickly without progress" or "Failed to authenticate. API Error: 403"
+- Your gateway likely doesn't support the Anthropic Messages API (`/v1/messages`)
+- Start the local proxy: `./scripts/start_proxy.sh`
+- Ensure `GATEWAY_URL` and `GATEWAY_API_KEY` are set in `.env`
+- See the [OpenAI-only gateways](#if-your-gateway-only-supports-openai-format) section
 
 ### "Worker status stuck on 'assigned'"
 - Check worker logs for errors
