@@ -1,10 +1,9 @@
 //! VESSEL agent — performs CI checks and merges PRs. Emits `ticket_merged` event.
 
 use anyhow::{Context, Result};
-use pocketflow_core::{node::Node, Action, SharedStore};
+use pocketflow_core::SharedStore;
 use serde_json::json;
-use std::path::PathBuf;
-use tracing::info;
+use tracing::{info, warn};
 
 pub mod node;
 
@@ -18,16 +17,23 @@ pub async fn emit_ticket_merged(store: &SharedStore, ticket_id: &str, pr_url: Op
     if let Ok(url) = std::env::var("REDIS_URL") {
         use fred::prelude::*;
 
-        let cfg = Config::from_url(&url).context("Invalid REDIS_URL")?;
-        let client = Builder::from_config(cfg).build()?;
-        client.init().await?;
+        let redis_emit = async {
+            let cfg = Config::from_url(&url).context("Invalid REDIS_URL")?;
+            let client = Builder::from_config(cfg).build()?;
+            client.init().await?;
 
-        // Append JSON payload to a well-known list 'ticket_merged'
-        let s = serde_json::to_string(&payload)?;
-        // RPUSH returns the new length of the list (integer). Specify `i64` as
-        // the expected return type so fred can resolve its generic `R`.
-        let _ = client.rpush::<i64, _, _>("ticket_merged", s).await;
-        // Best-effort: ignore errors here
+            // Append JSON payload to a well-known list 'ticket_merged'
+            let s = serde_json::to_string(&payload)?;
+            // RPUSH returns the new length of the list (integer). Specify `i64` as
+            // the expected return type so fred can resolve its generic `R`.
+            let _ = client.rpush::<i64, _, _>("ticket_merged", s).await?;
+            Ok::<(), anyhow::Error>(())
+        };
+
+        // Best-effort: Redis failures are logged, but do not fail local emission.
+        if let Err(err) = redis_emit.await {
+            warn!(ticket = ticket_id, error = %err, "failed to emit ticket_merged to Redis");
+        }
     }
 
     info!(ticket = ticket_id, "ticket_merged emitted");
