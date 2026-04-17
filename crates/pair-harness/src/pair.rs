@@ -20,6 +20,14 @@ use crate::types::{FsEvent, PairConfig, PairOutcome, StatusJson, Ticket};
 use crate::watchdog::Watchdog;
 use crate::watcher::SharedDirWatcher;
 use crate::worktree::WorktreeManager;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// Test hooks: when `AGENT_FLOW_TEST_PAIR_DELAY_MS` is set, the pair lifecycle
+/// short-circuits to a simulated run that sleeps for the specified milliseconds
+/// and updates the simulated concurrency counters. This allows integration tests
+/// to assert concurrency without provisioning real worktrees and processes.
+pub static SIMULATED_ACTIVE_PAIRS: AtomicUsize = AtomicUsize::new(0);
+pub static SIMULATED_MAX_ACTIVE_PAIRS: AtomicUsize = AtomicUsize::new(0);
 
 const SENTINEL_TIMEOUT_SECS: u64 = 120;
 const FORGE_STARTUP_TIMEOUT_SECS: u64 = 300; // 5 minutes to write PLAN.md
@@ -39,6 +47,7 @@ pub struct ForgeSentinelPair {
     reset: ResetManager,
     watchdog: Watchdog,
     start_time: Instant,
+    last_watchdog_check: Instant,
     sentinel_tracker: Option<SentinelTracker>,
     forge_spawn_time: Instant,
     ticket_id: String,
@@ -56,23 +65,24 @@ impl ForgeSentinelPair {
             worktree: WorktreeManager::new(&project_root),
             locks: FileLockManager::new(&project_root),
             process: match (&config.redis_url, &config.proxy_url) {
-                (Some(redis_url), Some(proxy_url)) => {
-                    ProcessManager::with_proxy(&config.github_token, Some(redis_url.clone()), proxy_url)
-                }
+                (Some(redis_url), Some(proxy_url)) => ProcessManager::with_proxy(
+                    &config.github_token,
+                    Some(redis_url.clone()),
+                    proxy_url,
+                ),
                 (Some(redis_url), None) => {
                     ProcessManager::with_redis(&config.github_token, redis_url)
                 }
                 (None, Some(proxy_url)) => {
                     ProcessManager::with_proxy(&config.github_token, None, proxy_url)
                 }
-                (None, None) => {
-                    ProcessManager::new(&config.github_token)
-                }
+                (None, None) => ProcessManager::new(&config.github_token),
             },
             reset: ResetManager::new(config.shared.clone(), config.max_resets),
             watchdog: Watchdog::new(config.shared.clone(), config.watchdog_timeout_secs),
             config,
             start_time: Instant::now(),
+            last_watchdog_check: Instant::now(),
             sentinel_tracker: None,
             forge_spawn_time: Instant::now(),
             ticket_id: String::new(),
@@ -99,6 +109,38 @@ impl ForgeSentinelPair {
 
         self.start_time = Instant::now();
         self.ticket_id = ticket.id.clone();
+
+        // Test hook: if AGENT_FLOW_TEST_PAIR_DELAY_MS is set, simulate a pair run
+        // by sleeping for the configured milliseconds and updating counters.
+        if let Ok(val) = std::env::var("AGENT_FLOW_TEST_PAIR_DELAY_MS") {
+            if let Ok(ms) = val.parse::<u64>() {
+                let cur = SIMULATED_ACTIVE_PAIRS.fetch_add(1, Ordering::SeqCst) + 1;
+                // update max observed
+                loop {
+                    let prev = SIMULATED_MAX_ACTIVE_PAIRS.load(Ordering::SeqCst);
+                    if cur > prev {
+                        if SIMULATED_MAX_ACTIVE_PAIRS
+                            .compare_exchange(prev, cur, Ordering::SeqCst, Ordering::SeqCst)
+                            .is_ok()
+                        {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+
+                std::thread::sleep(std::time::Duration::from_millis(ms));
+
+                SIMULATED_ACTIVE_PAIRS.fetch_sub(1, Ordering::SeqCst);
+
+                return Ok(PairOutcome::PrOpened {
+                    pr_url: format!("http://localhost/{}/pr", ticket.id),
+                    pr_number: 1,
+                    branch: format!("forge-{}/{}", self.config.pair_id, ticket.id),
+                });
+            }
+        }
 
         // Check if this is a resume with existing approved plan
         let contract_path = self.config.shared.join("CONTRACT.md");
@@ -258,10 +300,7 @@ impl ForgeSentinelPair {
                             info!("All segments complete - spawning SENTINEL for final review");
                             self.spawn_sentinel_for_final().await?;
                         } else if let Some(segment_n) = self.next_segment_to_eval().await? {
-                            info!(
-                                "Spawning SENTINEL for segment {} eval",
-                                segment_n
-                            );
+                            info!("Spawning SENTINEL for segment {} eval", segment_n);
                             self.spawn_sentinel_for_segment(segment_n).await?;
                         }
                         self.watchdog.reset();
@@ -270,7 +309,7 @@ impl ForgeSentinelPair {
                     FsEvent::SegmentEvalWritten(n) => {
                         self.sentinel_tracker = None;
                         info!("Segment {} evaluation complete", n);
-                        
+
                         // Check if this was the last segment - if so, spawn final review
                         if self.all_segments_approved().await? {
                             info!("All segments approved - spawning SENTINEL for final review");
@@ -309,8 +348,9 @@ impl ForgeSentinelPair {
                 }
             }
 
-            // Check watchdog (every ~60 seconds)
-            if self.start_time.elapsed().as_secs() % 60 == 0 {
+            // Check watchdog approximately every 60 seconds using a monotonic timer
+            if self.last_watchdog_check.elapsed() >= Duration::from_secs(60) {
+                self.last_watchdog_check = Instant::now();
                 let status = self.watchdog.check_stalled()?;
                 if status.is_stalled() {
                     warn!("Pair stalled - no WORKLOG update for too long");
@@ -396,7 +436,8 @@ impl ForgeSentinelPair {
                         let plan_exists = self.config.shared.join("PLAN.md").exists();
                         let contract_exists = self.config.shared.join("CONTRACT.md").exists();
                         let worklog_exists = self.config.shared.join("WORKLOG.md").exists();
-                        let final_review_exists = self.config.shared.join("final-review.md").exists();
+                        let final_review_exists =
+                            self.config.shared.join("final-review.md").exists();
 
                         if plan_exists && !contract_exists && !self.plan_approved {
                             // Plan written but not reviewed - spawn SENTINEL
@@ -415,7 +456,10 @@ impl ForgeSentinelPair {
                                     self.spawn_sentinel_for_final().await?;
                                 }
                             } else if let Some(segment_n) = self.next_segment_to_eval().await? {
-                                info!("FORGE exited - spawning SENTINEL for segment {} eval", segment_n);
+                                info!(
+                                    "FORGE exited - spawning SENTINEL for segment {} eval",
+                                    segment_n
+                                );
                                 self.spawn_sentinel_for_segment(segment_n).await?;
                             } else {
                                 info!("FORGE exited with partial worklog - respawning to continue implementation");
@@ -434,7 +478,10 @@ impl ForgeSentinelPair {
                     let forge_uptime = self.forge_spawn_time.elapsed().as_secs();
                     if forge_uptime < 30 {
                         // Very quick exit - likely a startup error, retry
-                        warn!("FORGE exited quickly ({}s) without progress - retrying spawn", forge_uptime);
+                        warn!(
+                            "FORGE exited quickly ({}s) without progress - retrying spawn",
+                            forge_uptime
+                        );
                         self.reset.increment_reset();
                         *forge = self.spawn_forge().await?;
                     } else {
@@ -914,33 +961,52 @@ impl ForgeSentinelPair {
             return Ok(None);
         }
 
-        let last_line = content.lines().rev().find(|line| !line.trim().is_empty());
+        // Try to robustly find the last parseable JSON object containing a "result" field
+        let mut found_result: Option<String> = None;
 
-        let Some(last_line) = last_line else {
-            return Ok(None);
-        };
+        for line in content.lines().rev() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
 
-        let value: Value = match serde_json::from_str(last_line) {
-            Ok(v) => v,
-            Err(e) => {
-                warn!(
-                    mode = ?mode,
-                    error = %e,
-                    "Failed to parse SENTINEL stdout JSON - SENTINEL may not have produced structured output"
-                );
+            // First try to parse the whole line as JSON
+            if let Ok(v) = serde_json::from_str::<Value>(line) {
+                if let Some(s) = v.get("result").and_then(Value::as_str) {
+                    if !s.trim().is_empty() {
+                        found_result = Some(s.trim().to_string());
+                        break;
+                    }
+                }
+            }
+
+            // If parsing failed, attempt to find a JSON substring within the line
+            if let Some(start) = line.find('{') {
+                if let Some(end) = line.rfind('}') {
+                    if end > start {
+                        let sub = &line[start..=end];
+                        if let Ok(v) = serde_json::from_str::<Value>(sub) {
+                            if let Some(s) = v.get("result").and_then(Value::as_str) {
+                                if !s.trim().is_empty() {
+                                    found_result = Some(s.trim().to_string());
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let result_text = match found_result {
+            Some(s) => s,
+            None => {
+                warn!(mode = ?mode, "Failed to locate structured SENTINEL JSON 'result' in stdout log");
                 return Ok(None);
             }
         };
-        let result_text = value
-            .get("result")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .trim();
-        if result_text.is_empty() {
-            return Ok(None);
-        }
 
-        Ok(Self::extract_result_block(result_text).or_else(|| Some(result_text.to_string())))
+        Ok(Self::extract_result_block(&result_text).or_else(|| Some(result_text.to_string())))
     }
 
     fn extract_result_block(result_text: &str) -> Option<String> {

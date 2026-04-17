@@ -18,6 +18,8 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tracing::{info, warn};
+use std::sync::Arc;
+use tokio::sync::Semaphore;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ForgeStatus {
@@ -408,6 +410,8 @@ impl BatchNode for ForgeNode {
 pub struct ForgePairNode {
     pub workspace_root: PathBuf,
     pub github_token: String,
+    // Optional concurrency limiter (configured via AGENT_FORGE_MAX_CONCURRENCY)
+    concurrency_limit: Option<Arc<Semaphore>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -422,9 +426,26 @@ struct GithubIssue {
 impl ForgePairNode {
     /// Create a new ForgePairNode with filesystem-based state.
     pub fn new(workspace_root: impl Into<PathBuf>, github_token: impl Into<String>) -> Self {
+        // Optional concurrency limit via env var. If unset, no explicit limit is applied
+        let concurrency_limit = match std::env::var("AGENT_FORGE_MAX_CONCURRENCY") {
+            Ok(s) => match s.parse::<usize>() {
+                Ok(n) if n > 0 => Some(Arc::new(Semaphore::new(n))),
+                Ok(_) => {
+                    warn!(value = %s, "AGENT_FORGE_MAX_CONCURRENCY set but <= 0; ignoring");
+                    None
+                }
+                Err(e) => {
+                    warn!(value = %s, error = %e, "Failed to parse AGENT_FORGE_MAX_CONCURRENCY; ignoring");
+                    None
+                }
+            },
+            Err(_) => None,
+        };
+
         Self {
             workspace_root: workspace_root.into(),
             github_token: github_token.into(),
+            concurrency_limit,
         }
     }
 
@@ -630,11 +651,49 @@ impl BatchNode for ForgePairNode {
 
         let config = PairConfig::new(&worker_id, &self.workspace_root, &self.github_token);
 
-        let mut pair = ForgeSentinelPair::new(config);
-        let outcome = pair
-            .run(&ticket)
-            .await
-            .map_err(|e| anyhow!("Pair lifecycle failed: {:#}", e))?;
+        // Optionally limit concurrency across pair lifecycles using a semaphore.
+        // Acquire permit (if configured) and hold it for the duration of the pair lifecycle.
+        let _permit = if let Some(sem) = &self.concurrency_limit {
+            // acquire_owned gives an OwnedSemaphorePermit that releases when dropped
+            Some(
+                sem
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .map_err(|e| anyhow!("Failed to acquire concurrency permit: {}", e))?,
+            )
+        } else {
+            None
+        };
+
+        // Run the pair lifecycle inside a blocking task. The pair lifecycle uses a
+        // SharedDirWatcher (std::sync::mpsc) and other blocking primitives; running it
+        // inside a dedicated blocking thread and creating a small runtime there keeps
+        // the main async executor free and allows multiple pairs to run concurrently.
+        let config_clone = config.clone();
+        let ticket_clone = ticket.clone();
+
+        let handle = tokio::task::spawn_blocking(move || -> Result<PairOutcome> {
+            // Use a current-thread runtime inside the dedicated blocking thread
+            // to avoid creating a multi-threaded runtime (and extra threads)
+            // per pair lifecycle. This prevents thread explosion under high
+            // concurrency while keeping async support for the pair lifecycle.
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| anyhow!("Failed to create current-thread runtime in spawn_blocking: {}", e))?;
+
+            rt.block_on(async move {
+                let mut pair = ForgeSentinelPair::new(config_clone);
+                pair.run(&ticket_clone).await
+            })
+        });
+
+        let outcome = match handle.await {
+            Ok(Ok(o)) => o,
+            Ok(Err(e)) => return Err(anyhow!("Pair lifecycle failed: {:#}", e)),
+            Err(e) => return Err(anyhow!("Pair task join error: {}", e)),
+        };
 
         match outcome {
             PairOutcome::PrOpened {

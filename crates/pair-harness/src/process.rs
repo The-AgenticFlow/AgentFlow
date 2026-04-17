@@ -128,12 +128,12 @@ impl ProcessManager {
             if !claude_path.exists() {
                 error!(
                     path = %claude_path.display(),
-                    "CLAUDE_PATH binary not found. Install Claude CLI or set CLAUDE_PATH in .env"
+                    "CLAUDE_PATH binary not found. Install Claude CLI or set CLAUDE_PATH in .env. Note: processes that spawn the Claude CLI will fail later if this is not corrected."
                 );
             } else if !is_executable(claude_path) {
                 error!(
                     path = %claude_path.display(),
-                    "CLAUDE_PATH binary exists but is not executable. Run: chmod +x {}",
+                    "CLAUDE_PATH binary exists but is not executable. Run: chmod +x {}. Processes that attempt to spawn the Claude CLI will fail unless this is fixed.",
                     claude_path.display()
                 );
             }
@@ -145,14 +145,19 @@ impl ProcessManager {
                 Err(_) => {
                     error!(
                         binary = %claude_path.display(),
-                        "Claude CLI binary not found on PATH. Install it from https://claude.ai/download or set CLAUDE_PATH in .env to an absolute path"
+                        "Claude CLI binary not found on PATH. Install it from https://claude.ai/download or set CLAUDE_PATH in .env to an absolute path. Processes that spawn Claude will fail if this is not corrected."
                     );
                 }
             }
         }
     }
 
-    fn inject_proxy_env(cmd: &mut Command, routing_key: &str, proxy_url: &str, proxy_api_key: Option<&str>) {
+    fn inject_proxy_env(
+        cmd: &mut Command,
+        routing_key: &str,
+        proxy_url: &str,
+        proxy_api_key: Option<&str>,
+    ) {
         let base_url = proxy_url.trim_end_matches("/v1").trim_end_matches('/');
         cmd.env("ANTHROPIC_BASE_URL", base_url);
         if let Some(api_key) = proxy_api_key {
@@ -163,14 +168,38 @@ impl ProcessManager {
     }
 
     fn inject_llm_env(cmd: &mut Command) {
-        cmd.env("LLM_PROVIDER", std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "fallback".to_string()));
-        cmd.env("LLM_FALLBACK", std::env::var("LLM_FALLBACK").unwrap_or_default());
-        cmd.env("MODEL_PROVIDER_MAP", std::env::var("MODEL_PROVIDER_MAP").unwrap_or_default());
-        cmd.env("ANTHROPIC_MODEL", std::env::var("ANTHROPIC_MODEL").unwrap_or_default());
-        cmd.env("OPENAI_API_KEY", std::env::var("OPENAI_API_KEY").unwrap_or_default());
-        cmd.env("OPENAI_MODEL", std::env::var("OPENAI_MODEL").unwrap_or_default());
-        cmd.env("GEMINI_API_KEY", std::env::var("GEMINI_API_KEY").unwrap_or_default());
-        cmd.env("GEMINI_MODEL", std::env::var("GEMINI_MODEL").unwrap_or_default());
+        cmd.env(
+            "LLM_PROVIDER",
+            std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "fallback".to_string()),
+        );
+        cmd.env(
+            "LLM_FALLBACK",
+            std::env::var("LLM_FALLBACK").unwrap_or_default(),
+        );
+        cmd.env(
+            "MODEL_PROVIDER_MAP",
+            std::env::var("MODEL_PROVIDER_MAP").unwrap_or_default(),
+        );
+        cmd.env(
+            "ANTHROPIC_MODEL",
+            std::env::var("ANTHROPIC_MODEL").unwrap_or_default(),
+        );
+        cmd.env(
+            "OPENAI_API_KEY",
+            std::env::var("OPENAI_API_KEY").unwrap_or_default(),
+        );
+        cmd.env(
+            "OPENAI_MODEL",
+            std::env::var("OPENAI_MODEL").unwrap_or_default(),
+        );
+        cmd.env(
+            "GEMINI_API_KEY",
+            std::env::var("GEMINI_API_KEY").unwrap_or_default(),
+        );
+        cmd.env(
+            "GEMINI_MODEL",
+            std::env::var("GEMINI_MODEL").unwrap_or_default(),
+        );
     }
 
     pub fn proxy_url(&self) -> Option<&str> {
@@ -219,9 +248,17 @@ impl ProcessManager {
             .env("SPRINTLESS_GITHUB_TOKEN", &self.github_token);
 
         if let Some(proxy_url) = &self.proxy_url {
-            Self::inject_proxy_env(&mut cmd, "forge-key", proxy_url, self.proxy_api_key.as_deref());
+            Self::inject_proxy_env(
+                &mut cmd,
+                "forge-key",
+                proxy_url,
+                self.proxy_api_key.as_deref(),
+            );
         } else {
-            cmd.env("ANTHROPIC_API_KEY", std::env::var("ANTHROPIC_API_KEY").unwrap_or_default());
+            cmd.env(
+                "ANTHROPIC_API_KEY",
+                std::env::var("ANTHROPIC_API_KEY").unwrap_or_default(),
+            );
             Self::inject_llm_env(&mut cmd);
         }
 
@@ -332,9 +369,17 @@ impl ProcessManager {
             .env("SPRINTLESS_GITHUB_TOKEN", &self.github_token);
 
         if let Some(proxy_url) = &self.proxy_url {
-            Self::inject_proxy_env(&mut cmd, "forge-key", proxy_url, self.proxy_api_key.as_deref());
+            Self::inject_proxy_env(
+                &mut cmd,
+                "forge-key",
+                proxy_url,
+                self.proxy_api_key.as_deref(),
+            );
         } else {
-            cmd.env("ANTHROPIC_API_KEY", std::env::var("ANTHROPIC_API_KEY").unwrap_or_default());
+            cmd.env(
+                "ANTHROPIC_API_KEY",
+                std::env::var("ANTHROPIC_API_KEY").unwrap_or_default(),
+            );
             Self::inject_llm_env(&mut cmd);
         }
 
@@ -353,7 +398,9 @@ impl ProcessManager {
             );
         }
 
-        let mut child = cmd.spawn().context("Failed to spawn FORGE process (PR mode)")?;
+        let mut child = cmd
+            .spawn()
+            .context("Failed to spawn FORGE process (PR mode)")?;
 
         if let Some(mut stdin) = child.stdin.take() {
             stdin
@@ -435,9 +482,17 @@ impl ProcessManager {
             .env("SPRINTLESS_GITHUB_TOKEN", &self.github_token);
 
         if let Some(proxy_url) = &self.proxy_url {
-            Self::inject_proxy_env(&mut cmd, "sentinel-key", proxy_url, self.proxy_api_key.as_deref());
+            Self::inject_proxy_env(
+                &mut cmd,
+                "sentinel-key",
+                proxy_url,
+                self.proxy_api_key.as_deref(),
+            );
         } else {
-            cmd.env("ANTHROPIC_API_KEY", std::env::var("ANTHROPIC_API_KEY").unwrap_or_default());
+            cmd.env(
+                "ANTHROPIC_API_KEY",
+                std::env::var("ANTHROPIC_API_KEY").unwrap_or_default(),
+            );
             Self::inject_llm_env(&mut cmd);
         }
 
@@ -929,15 +984,11 @@ impl ForgeProcessBuilder {
             (Some(redis_url), Some(proxy_url)) => {
                 ProcessManager::with_proxy(self.github_token, Some(redis_url.clone()), proxy_url)
             }
-            (Some(redis_url), None) => {
-                ProcessManager::with_redis(self.github_token, redis_url)
-            }
+            (Some(redis_url), None) => ProcessManager::with_redis(self.github_token, redis_url),
             (None, Some(proxy_url)) => {
                 ProcessManager::with_proxy(self.github_token, None, proxy_url)
             }
-            (None, None) => {
-                ProcessManager::new(self.github_token)
-            }
+            (None, None) => ProcessManager::new(self.github_token),
         };
 
         let mut child = manager

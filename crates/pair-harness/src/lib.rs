@@ -30,3 +30,4 @@ pub use watchdog::Watchdog;
 pub use watcher::SharedDirWatcher;
 pub use workspace::WorkspaceManager;
 pub use worktree::WorktreeManager;
+pub use pair::{SIMULATED_ACTIVE_PAIRS, SIMULATED_MAX_ACTIVE_PAIRS};
