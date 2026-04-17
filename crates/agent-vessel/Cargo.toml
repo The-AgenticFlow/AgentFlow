@@ -1,0 +1,15 @@
+[package]
+name = "agent-vessel"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+fred = { workspace = true }
+pocketflow-core = { path = "../pocketflow-core" }
+config = { path = "../config" }

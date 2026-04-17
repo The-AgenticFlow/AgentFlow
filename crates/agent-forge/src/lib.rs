@@ -911,6 +911,7 @@ impl BatchNode for ForgePairNode {
                     status: new_status,
                     issue_url: None,
                     attempts: 1,
+                    depends_on: vec![],
                 });
             }
         }

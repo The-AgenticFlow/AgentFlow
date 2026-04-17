@@ -59,7 +59,7 @@ impl WorktreeManager {
         let output = Command::new("git")
             .args(["worktree", "add"])
             .arg(&worktree_path)
-            .args(["-b", &branch_name])
+            .args(["-b", &branch_name, "origin/main"])
             .current_dir(&self.project_root)
             .output()
             .context("Failed to run git worktree add")?;
@@ -176,7 +176,7 @@ impl WorktreeManager {
         let output = Command::new("git")
             .args(["worktree", "add"])
             .arg(&worktree_path)
-            .arg("main")
+            .arg("origin/main")
             .current_dir(&self.project_root)
             .output()
             .context("Failed to run git worktree add")?;

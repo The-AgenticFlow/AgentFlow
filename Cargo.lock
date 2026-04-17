@@ -67,6 +67,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent-vessel"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "config",
+ "fred",
+ "pocketflow-core",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

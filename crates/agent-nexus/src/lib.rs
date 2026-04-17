@@ -11,6 +11,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tracing::{info, warn};
 
 const NO_WORK_THRESHOLD: u32 = 3;
@@ -28,6 +29,8 @@ struct GitHubIssue {
 pub struct NexusNode {
     pub persona_path: PathBuf,
     pub registry_path: PathBuf,
+    /// Cursor into SharedStore event ring buffer — used to consume ticket_merged events.
+    last_event_cursor: AtomicUsize,
 }
 
 impl NexusNode {
@@ -35,6 +38,7 @@ impl NexusNode {
         Self {
             persona_path: persona_path.into(),
             registry_path: registry_path.into(),
+            last_event_cursor: AtomicUsize::new(0),
         }
     }
 
@@ -95,6 +99,7 @@ impl NexusNode {
                 status: TicketStatus::Open,
                 issue_url: Some(issue.html_url.clone()),
                 attempts: 0,
+                depends_on: vec![],
             });
         }
 
@@ -173,6 +178,31 @@ impl Node for NexusNode {
             warn!("Failed to sync issues from GitHub: {}", e);
         }
 
+        // Load tickets and process any ticket_merged events from the shared store.
+        let mut tickets: Vec<Ticket> = store.get_typed(KEY_TICKETS).await.unwrap_or_default();
+
+        // Consume in-memory events emitted by agents (VESSEL will emit "ticket_merged").
+        let cursor = self.last_event_cursor.load(Ordering::SeqCst);
+        let events = store.get_events_since(cursor).await;
+        if !events.is_empty() {
+            for ev in &events {
+                if ev.event_type == "ticket_merged" {
+                    // Expect payload: { "ticket_id": "T-001", "pr_url": "..." }
+                    if let Some(tid) = ev.payload.get("ticket_id").and_then(|v| v.as_str()) {
+                        if let Some(ticket) = tickets.iter_mut().find(|t| t.id == tid) {
+                            // Mark as merged so dependent tickets can be re-evaluated.
+                            let pr_url = ev.payload.get("pr_url").and_then(|v| v.as_str()).map(|s| s.to_string());
+                            ticket.status = TicketStatus::Merged { worker_id: "vessel".to_string(), pr_url };
+                        }
+                    }
+                }
+            }
+            // advance cursor
+            let new_cursor = cursor + events.len();
+            self.last_event_cursor.store(new_cursor, Ordering::SeqCst);
+            // persist updated tickets
+            store.set(KEY_TICKETS, json!(tickets)).await;
+        }
         let tickets: Vec<Ticket> = store.get_typed(KEY_TICKETS).await.unwrap_or_default();
         let worker_slots = store.get(KEY_WORKER_SLOTS).await.unwrap_or(json!({}));
         let open_prs = store.get("open_prs").await.unwrap_or(json!([]));
@@ -180,6 +210,55 @@ impl Node for NexusNode {
 
         let assignable_tickets: Vec<&Ticket> =
             tickets.iter().filter(|t| t.is_assignable()).collect();
+        // Build a quick lookup of ticket statuses for dependency checks.
+        let status_map: HashMap<String, TicketStatus> = tickets
+            .iter()
+            .map(|t| (t.id.clone(), t.status.clone()))
+            .collect();
+
+        let mut changed = false;
+        // Return owned clones of assignable tickets to avoid holding references
+        // into `tickets` which would prevent moving/serializing `tickets` later.
+        let mut assignable_tickets: Vec<Ticket> = Vec::new();
+
+        for t in &mut tickets {
+            // If ticket declares dependencies, ensure they are all merged before allowing assignment.
+            if !t.depends_on.is_empty() {
+                let all_merged = t.depends_on.iter().all(|dep| {
+                    status_map
+                        .get(dep)
+                        .map(|s| matches!(s, TicketStatus::Merged { .. }))
+                        .unwrap_or(false)
+                });
+
+                if !all_merged {
+                    // Move to WAITING_ON_DEPENDENCY if not already
+                    match &t.status {
+                        TicketStatus::WaitingOnDependency { .. } => {}
+                        _ => {
+                            t.status = TicketStatus::WaitingOnDependency { depends_on: t.depends_on.clone() };
+                            changed = true;
+                        }
+                    }
+                    continue; // not assignable
+                } else {
+                    // All dependencies are merged; if we were previously waiting,
+                    // transition back to Open so the ticket can be assigned.
+                    if matches!(t.status, TicketStatus::WaitingOnDependency { .. }) {
+                        t.status = TicketStatus::Open;
+                        changed = true;
+                    }
+                }
+            }
+
+            if t.is_assignable() {
+                assignable_tickets.push(t.clone());
+            }
+        }
+
+        if changed {
+            store.set(KEY_TICKETS, json!(tickets)).await;
+        }
 
         Ok(json!({
             "tickets": tickets,
@@ -246,6 +325,7 @@ impl Node for NexusNode {
                             },
                             issue_url: decision.issue_url.clone(),
                             attempts: 0,
+                            depends_on: vec![],
                         });
                     }
                     store.set(KEY_TICKETS, json!(tickets)).await;

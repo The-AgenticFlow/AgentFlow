@@ -69,6 +69,7 @@ async fn main() -> Result<()> {
         status: TicketStatus::Open,
         issue_url: None,
         attempts: 0,
+        depends_on: vec![],
     };
 
     let worker_slots = HashMap::from([

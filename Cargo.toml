@@ -6,6 +6,7 @@ members = [
     "crates/github",
     "crates/config",
     "crates/agent-nexus",
+    "crates/agent-vessel",
     "crates/agent-forge",
     "crates/pair-harness",
     "binary",

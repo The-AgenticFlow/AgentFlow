@@ -54,6 +54,7 @@ async fn main() -> Result<()> {
         status: TicketStatus::Open,
         issue_url: None,
         attempts: 0,
+        depends_on: vec![],
     };
     store
         .set(KEY_TICKETS, serde_json::json!(vec![ticket]))

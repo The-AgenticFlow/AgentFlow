@@ -1,23 +1,10 @@
 // crates/config/src/state.rs
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Ticket {
-    pub id: String,
-    pub title: String,
-    pub body: String,
-    pub priority: u32,
-    pub branch: Option<String>,
-    #[serde(default)]
-    pub status: TicketStatus,
-    #[serde(default)]
-    pub issue_url: Option<String>,
-    #[serde(default)]
-    pub attempts: u32,
-}
+// Re-export core ticket model from `ticket.rs`.
+pub use crate::ticket::{Ticket, TicketStatus};
 
-impl Ticket {
-    pub const MAX_ATTEMPTS: u32 = 3;
+// Keep serialization import available for other types in this module.
 
     pub fn is_assignable(&self) -> bool {
         match &self.status {
