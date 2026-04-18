@@ -6,9 +6,16 @@
 use anyhow::Result;
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+};
 use tokio::sync::RwLock;
 use tracing::debug;
+use fred::prelude::*;
 
 // ── Event ring buffer ─────────────────────────────────────────────────────
 
@@ -62,7 +69,7 @@ impl StoreBackend for InMemoryBackend {
 // Allow redis as stub for now
 // Allow redis as stub for now
 struct RedisBackend {
-    client: fred::clients::Client,
+    client: std::sync::Arc<fred::clients::Client>,
 }
 
 impl RedisBackend {
@@ -71,7 +78,7 @@ impl RedisBackend {
         let config = Config::from_url(url)?;
         let client = Builder::from_config(config).build()?;
         client.init().await?;
-        Ok(Self { client })
+        Ok(Self { client: Arc::new(client) })
     }
 }
 
@@ -101,6 +108,12 @@ impl StoreBackend for RedisBackend {
 pub struct SharedStore {
     backend: Arc<dyn StoreBackend>,
     ring_buffer: Arc<RwLock<Vec<StoreEvent>>>,
+    /// Monotonically increasing count of events that have been evicted from
+    /// the front of the ring buffer. Adding this to a buffer index gives the
+    /// absolute sequence number for that event.
+    base_seq: Arc<AtomicUsize>,
+    // Optional Redis client used as a cross-process event bus when present.
+    redis_client: Option<Arc<fred::clients::Client>>,
 }
 
 impl SharedStore {
@@ -109,14 +122,37 @@ impl SharedStore {
         Self {
             backend: Arc::new(InMemoryBackend::new()),
             ring_buffer: Arc::new(RwLock::new(Vec::with_capacity(RING_BUFFER_SIZE))),
+            base_seq: Arc::new(AtomicUsize::new(0)),
+            redis_client: None,
         }
     }
 
     /// Redis backend — use for Docker Compose and production.
     pub async fn new_redis(url: &str) -> Result<Self> {
+        // Initialise Redis backend + populate local ring buffer from the Redis list
+        let backend_impl = RedisBackend::new(url).await?;
+        let client = Arc::clone(&backend_impl.client);
+
+        // Load recent events from Redis into the in-memory ring buffer so
+        // cross-process events become visible to this process.
+        let mut init_buf: Vec<StoreEvent> = Vec::with_capacity(RING_BUFFER_SIZE);
+        if let Ok(len) = client.llen::<i64, _>("pocketflow:events").await {
+            if len > 0 {
+                if let Ok(items) = client.lrange::<Vec<String>, _>("pocketflow:events", 0, -1).await {
+                    for item in items {
+                        if let Ok(ev) = serde_json::from_str::<StoreEvent>(&item) {
+                            init_buf.push(ev);
+                        }
+                    }
+                }
+            }
+        }
+
         Ok(Self {
-            backend: Arc::new(RedisBackend::new(url).await?),
-            ring_buffer: Arc::new(RwLock::new(Vec::with_capacity(RING_BUFFER_SIZE))),
+            backend: Arc::new(backend_impl),
+            ring_buffer: Arc::new(RwLock::new(init_buf)),
+            base_seq: Arc::new(AtomicUsize::new(0)),
+            redis_client: Some(client),
         })
     }
 
@@ -167,20 +203,69 @@ impl SharedStore {
             ts,
         };
 
+        // Push into in-memory ring buffer immediately for local consumers.
         let mut buf = self.ring_buffer.write().await;
         if buf.len() >= RING_BUFFER_SIZE {
-            buf.remove(0); // drop oldest
+            buf.remove(0);
+            self.base_seq.fetch_add(1, Ordering::Relaxed);
         }
-        buf.push(event);
+        buf.push(event.clone());
+        drop(buf);
+
+        // If Redis available, also RPUSH the serialized event into a
+        // shared Redis list so other processes can observe it.
+        if let Some(client) = &self.redis_client {
+                if let Ok(s) = serde_json::to_string(&event) {
+                let _: core::result::Result<i64, _> = client.rpush("pocketflow:events", s).await;
+                // Trim to keep the list bounded to the ring buffer size.
+                let _: Result<(), _> = client.ltrim("pocketflow:events", -(RING_BUFFER_SIZE as i64), -1).await;
+            }
+        }
     }
 
-    /// Returns all events since `cursor` (index). Used by the TUI tail loop.
-    pub async fn get_events_since(&self, cursor: usize) -> Vec<StoreEvent> {
-        let buf = self.ring_buffer.read().await;
-        if cursor >= buf.len() {
-            return vec![];
+    /// Returns `(new_cursor, events)` where `cursor` is an absolute sequence
+    /// number.  `new_cursor` is always the absolute index one past the last
+    /// returned event and should replace the caller's stored cursor.
+    ///
+    /// If the ring buffer has evicted events that `cursor` once pointed to
+    /// (i.e. `cursor < base_seq`), the method clamps to the oldest available
+    /// event so no *future* events are silently skipped.
+    pub async fn get_events_since(&self, cursor: usize) -> (usize, Vec<StoreEvent>) {
+        // If Redis is configured, try to pull any new events from the
+        // shared Redis list into the local ring buffer first. This lets
+        // processes that only write to Redis be observed here.
+        if let Some(client) = &self.redis_client {
+            if let Ok(remote_len_i64) = client.llen::<i64, _>("pocketflow:events").await {
+                let remote_len = remote_len_i64 as usize;
+                let local_len = { self.ring_buffer.read().await.len() };
+                if remote_len > local_len {
+                    // Fetch items from the Redis list starting at local_len.
+                    if let Ok(items) = client.lrange::<Vec<String>, _>("pocketflow:events", local_len as i64, -1).await {
+                        if !items.is_empty() {
+                            let mut buf = self.ring_buffer.write().await;
+                            for item in items {
+                                if let Ok(ev) = serde_json::from_str::<StoreEvent>(&item) {
+                                    if buf.len() >= RING_BUFFER_SIZE {
+                                        buf.remove(0);
+                                        self.base_seq.fetch_add(1, Ordering::Relaxed);
+                                    }
+                                    buf.push(ev);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
-        buf[cursor..].to_vec()
+
+        let buf = self.ring_buffer.read().await;
+        let base = self.base_seq.load(Ordering::Relaxed);
+        // `cursor` is an absolute sequence number; convert to a buffer index,
+        // clamping downward if the ring wrapped past the cursor position.
+        let buf_idx = cursor.saturating_sub(base).min(buf.len());
+        let events = buf[buf_idx..].to_vec();
+        let new_cursor = base + buf.len();
+        (new_cursor, events)
     }
 
     /// Number of events in the ring buffer (for initial TUI render).

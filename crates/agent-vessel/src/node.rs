@@ -23,13 +23,22 @@ impl Node for VesselNode {
         "vessel"
     }
 
-    async fn prep(&self, _store: &SharedStore) -> Result<Value> {
-        Ok(json!({ "note": "VESSEL node ready" }))
+    async fn prep(&self, store: &SharedStore) -> Result<Value> {
+        let ticket_id = store.get("current_ticket_id").await
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+            .unwrap_or_default();
+        let pr_url = store.get("current_pr_url").await
+            .and_then(|v| v.as_str().map(|s| s.to_string()));
+        Ok(json!({ "ticket_id": ticket_id, "pr_url": pr_url }))
     }
 
     async fn exec(&self, prep_result: Value) -> Result<Value> {
         // In a full implementation this node would check CI and perform the merge.
-        Ok(json!({ "action": "merge", "details": prep_result }))
+        Ok(json!({
+            "action": "merge",
+            "ticket_id": prep_result["ticket_id"],
+            "pr_url": prep_result["pr_url"],
+        }))
     }
 
     async fn post(&self, store: &SharedStore, result: Value) -> Result<Action> {

@@ -135,7 +135,7 @@ mod tests {
         node.run(&store).await.unwrap();
 
         // prep_started, prep_done, exec_started, exec_done, post_started, post_done = 6
-        let events = store.get_events_since(0).await;
+        let (_, events) = store.get_events_since(0).await;
         assert_eq!(events.len(), 6);
         assert_eq!(events[0].event_type, "prep_started");
         assert_eq!(events[5].event_type, "post_done");

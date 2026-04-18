@@ -172,11 +172,28 @@ impl WorktreeManager {
         std::fs::create_dir_all(&self.worktrees_dir)
             .context("Failed to create worktrees directory")?;
 
+        // Try to fetch origin/main so the remote-tracking ref is up-to-date.
+        // A failure here is non-fatal: we fall back to the local main branch.
+        let fetch_ok = Command::new("git")
+            .args(["fetch", "origin", "main"])
+            .current_dir(&self.project_root)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+
+        // Prefer origin/main when available; fall back to local main.
+        let branch_ref = if fetch_ok {
+            "origin/main"
+        } else {
+            warn!("Could not fetch origin/main; falling back to local main branch");
+            "main"
+        };
+
         // Create worktree on main branch
         let output = Command::new("git")
             .args(["worktree", "add"])
             .arg(&worktree_path)
-            .arg("origin/main")
+            .arg(branch_ref)
             .current_dir(&self.project_root)
             .output()
             .context("Failed to run git worktree add")?;

@@ -184,7 +184,7 @@ impl Node for NexusNode {
 
         // Consume in-memory events emitted by agents (VESSEL will emit "ticket_merged").
         let cursor = self.last_event_cursor.load(Ordering::SeqCst);
-        let events = store.get_events_since(cursor).await;
+        let (new_cursor, events) = store.get_events_since(cursor).await;
         if !events.is_empty() {
             for ev in &events {
                 if ev.event_type == "ticket_merged" {
@@ -198,8 +198,6 @@ impl Node for NexusNode {
                     }
                 }
             }
-            // advance cursor
-            let new_cursor = cursor + events.len();
             self.last_event_cursor.store(new_cursor, Ordering::SeqCst);
             // persist updated tickets
             store.set(KEY_TICKETS, json!(tickets)).await;
