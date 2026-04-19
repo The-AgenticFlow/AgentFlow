@@ -20,4 +20,4 @@ jobs:
         with:
           package: "pocketflow-core, agent-client, github, config, agent-nexus, agent-forge, pair-harness"
           baseline-rev: origin/main
-          release-type: minor
+          release-type: major
