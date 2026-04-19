@@ -101,3 +101,5 @@ pub const ACTION_FAILED: &str = "failed";
 pub const ACTION_DEPLOYED: &str = "deployed";
 pub const ACTION_DEPLOY_FAILED: &str = "deploy_failed";
 pub const ACTION_MERGE_BLOCKED: &str = "merge_blocked";
+pub const ACTION_MERGE_PRS: &str = "merge_prs";
+pub const ACTION_CONFLICTS_DETECTED: &str = "conflicts_detected";

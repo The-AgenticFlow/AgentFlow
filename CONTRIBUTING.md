@@ -46,16 +46,20 @@ This guide explains how to set up your environment, run the project in different
 
 2. **Choose Your Mode**:
 
-   ### Mode 1: Proxy (Recommended)
-   Routes all LLM calls through a LiteLLM proxy. **Individual API keys are optional.**
+   ### Mode 1: Proxy (Recommended — always preferred)
+   Routes all LLM calls through a proxy. Direct API keys serve as **fallback** when the proxy has transient errors.
 
    ```env
    PROXY_URL=http://localhost:8080/v1      # Required - enables proxy mode
-   PROXY_API_KEY=your-key                   # Optional - for authenticated proxies
+   PROXY_API_KEY=your-key                   # Highest priority key
    MODEL_PROVIDER_MAP=glm=openai,...        # Maps model names to client format
+
+   # Optional fallback keys (used only when proxy fails)
+   ANTHROPIC_API_KEY=your-anthropic-key     # Fallback for Anthropic
+   GEMINI_API_KEY=your-gemini-key           # Fallback for Gemini
    ```
 
-   ### Mode 2: Direct
+   ### Mode 2: Direct (Fallback only)
    Calls LLM providers directly. **Requires individual API keys.**
 
    ```env
@@ -76,16 +80,17 @@ This guide explains how to set up your environment, run the project in different
 | Variable | Proxy Mode | Direct Mode | Description |
 |----------|------------|-------------|-------------|
 | `PROXY_URL` | **Required** | Not set | Enables proxy mode |
-| `PROXY_API_KEY` | Optional | N/A | Auth key for proxy |
-| `ANTHROPIC_API_KEY` | Optional | Required* | Anthropic/Claude API key |
-| `OPENAI_API_KEY` | Optional | Required* | OpenAI API key |
-| `GEMINI_API_KEY` | Optional | Required* | Google Gemini API key |
+| `PROXY_API_KEY` | **Recommended** | N/A | Auth key for proxy (highest priority) |
+| `GATEWAY_API_KEY` | Optional | N/A | Upstream gateway key (second priority) |
+| `ANTHROPIC_API_KEY` | Fallback | Required* | Anthropic/Claude API key |
+| `OPENAI_API_KEY` | Fallback | Required* | OpenAI API key |
+| `GEMINI_API_KEY` | Fallback | Required* | Google Gemini API key |
 | `LLM_FALLBACK` | N/A | Optional | Provider fallback order |
 | `MODEL_PROVIDER_MAP` | Optional | Optional | Model→provider mapping |
 
 *Required only if listed in `LLM_FALLBACK`
 
-**Key insight**: When `PROXY_URL` is set, the system uses proxy mode and individual API keys become optional. The proxy handles all authentication and model routing.
+**Key priority order**: `PROXY_API_KEY` > `GATEWAY_API_KEY` > `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` / `OPENAI_API_KEY`. When `PROXY_URL` is set, the proxy client is tried first. Direct API key clients are appended as fallbacks, so a transient proxy error (503, timeout) doesn't block the orchestration pipeline.
 
 ## 🚀 Running the Project
 

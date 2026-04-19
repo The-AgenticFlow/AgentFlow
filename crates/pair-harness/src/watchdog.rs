@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 /// Watchdog for detecting stalled pairs.
 pub struct Watchdog {

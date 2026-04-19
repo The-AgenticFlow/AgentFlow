@@ -3,8 +3,9 @@ use agent_nexus::NexusNode;
 use agent_vessel::VesselNode;
 use anyhow::Result;
 use config::{
-    ACTION_DEPLOYED, ACTION_DEPLOY_FAILED, ACTION_FAILED, ACTION_NO_WORK, ACTION_PR_OPENED,
-    ACTION_WORK_ASSIGNED, KEY_PENDING_PRS, KEY_TICKETS, KEY_WORKER_SLOTS,
+    ACTION_CONFLICTS_DETECTED, ACTION_DEPLOYED, ACTION_DEPLOY_FAILED, ACTION_FAILED,
+    ACTION_MERGE_PRS, ACTION_NO_WORK, ACTION_PR_OPENED, ACTION_WORK_ASSIGNED, KEY_PENDING_PRS,
+    KEY_TICKETS, KEY_WORKER_SLOTS,
 };
 use pair_harness::WorkspaceManager;
 use pocketflow_core::{Flow, SharedStore};
@@ -76,6 +77,9 @@ async fn main() -> Result<()> {
     // 
     // VesselNode handles the merge gate:
     // - Polls CI status until terminal (success/failure/timeout)
+    // - Detects merge conflicts early via GitHub's `mergeable` field
+    // - Attempts conflict resolution (GitHub update-branch or local rebase)
+    // - Routes unresolvable conflicts back to forge_pair for rework
     // - Merges PR if CI green
     // - Emits ticket_merged event for dependency resolution
     let flow = Flow::new("nexus")
@@ -84,6 +88,7 @@ async fn main() -> Result<()> {
             nexus,
             vec![
                 (ACTION_WORK_ASSIGNED, "forge_pair"),
+                (ACTION_MERGE_PRS, "vessel"),
                 (ACTION_NO_WORK, "nexus"),
                 ("approve_command", "forge_pair"),
                 ("reject_command", "nexus"),
@@ -105,6 +110,7 @@ async fn main() -> Result<()> {
                 (ACTION_DEPLOYED, "nexus"),
                 (ACTION_DEPLOY_FAILED, "nexus"),
                 ("merge_blocked", "nexus"),
+                (ACTION_CONFLICTS_DETECTED, "forge_pair"),
                 ("no_work", "nexus"),
             ],
         );

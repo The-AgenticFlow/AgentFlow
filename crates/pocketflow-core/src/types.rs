@@ -85,6 +85,16 @@ pub struct PrInfo {
     pub ticket_id: Option<String>,
     pub title: String,
     pub state: PrState,
+    /// Whether the PR can be merged without conflicts.
+    /// `None` means GitHub hasn't computed it yet (retry later).
+    pub mergeable: Option<bool>,
+}
+
+impl PrInfo {
+    /// Returns true if the PR is confirmed to have merge conflicts.
+    pub fn has_conflicts(&self) -> bool {
+        self.mergeable == Some(false)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -156,6 +166,7 @@ mod tests {
             ticket_id: Some("T-42".to_string()),
             title: "Add feature".to_string(),
             state: PrState::Open,
+            mergeable: Some(true),
         };
 
         let json = serde_json::to_string(&pr_info).unwrap();
@@ -163,6 +174,46 @@ mod tests {
         assert_eq!(parsed.number, 42);
         assert_eq!(parsed.head_sha, "abc123");
         assert_eq!(parsed.ticket_id, Some("T-42".to_string()));
+        assert_eq!(parsed.mergeable, Some(true));
+    }
+
+    #[test]
+    fn test_pr_info_has_conflicts() {
+        let conflicting = PrInfo {
+            number: 1,
+            head_sha: "a".to_string(),
+            head_branch: "f".to_string(),
+            base_branch: "main".to_string(),
+            ticket_id: None,
+            title: "t".to_string(),
+            state: PrState::Open,
+            mergeable: Some(false),
+        };
+        assert!(conflicting.has_conflicts());
+
+        let clean = PrInfo {
+            number: 1,
+            head_sha: "a".to_string(),
+            head_branch: "f".to_string(),
+            base_branch: "main".to_string(),
+            ticket_id: None,
+            title: "t".to_string(),
+            state: PrState::Open,
+            mergeable: Some(true),
+        };
+        assert!(!clean.has_conflicts());
+
+        let unknown = PrInfo {
+            number: 1,
+            head_sha: "a".to_string(),
+            head_branch: "f".to_string(),
+            base_branch: "main".to_string(),
+            ticket_id: None,
+            title: "t".to_string(),
+            state: PrState::Open,
+            mergeable: None,
+        };
+        assert!(!unknown.has_conflicts());
     }
 
     #[test]

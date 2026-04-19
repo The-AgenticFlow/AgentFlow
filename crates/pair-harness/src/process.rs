@@ -2,12 +2,11 @@
 //! Process management for FORGE and SENTINEL agents.
 
 use anyhow::{anyhow, Context, Result};
-use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStderr, ChildStdout, Command};
+use tokio::process::{Child, Command};
 use tracing::{debug, error, info, warn};
 
 #[cfg(unix)]
@@ -398,6 +397,7 @@ impl ProcessManager {
         mode: SentinelMode,
         worktree: &Path,
         shared: &Path,
+        timeout_secs: u64,
     ) -> Result<Child> {
         let segment = mode.segment_value();
 
@@ -432,7 +432,8 @@ impl ProcessManager {
                 worktree.to_string_lossy().to_string(),
             )
             .env("SPRINTLESS_SHARED", shared.to_string_lossy().to_string())
-            .env("SPRINTLESS_GITHUB_TOKEN", &self.github_token);
+            .env("SPRINTLESS_GITHUB_TOKEN", &self.github_token)
+            .env("SPRINTLESS_SENTINEL_TIMEOUT_SECS", timeout_secs.to_string());
 
         if let Some(proxy_url) = &self.proxy_url {
             Self::inject_proxy_env(&mut cmd, "sentinel-key", proxy_url, self.proxy_api_key.as_deref());
@@ -746,23 +747,41 @@ impl ProcessManager {
 
                 format!(
                     "You are SENTINEL. Review this plan. Write ONLY to {}/CONTRACT.md.\n\n\
-                    --- TICKET.md ---\n{}\n\n\
-                    --- PLAN.md ---\n{}\n\n\
-                    Check the plan has these sections:\n\
-                    - ## Understanding (explains what we're building)\n\
-                    - ## Segments (each with Files and Definition of Done)\n\
-                    - ## Files Changed (specific file paths)\n\
-                    - ## Risks (identified risks)\n\n\
-                    APPROVE if all sections exist and are specific (real file paths, real criteria).\n\
-                    REJECT if generic/placeholder content (e.g. '[Task 1 description]').\n\n\
-                    Write CONTRACT.md now:\n\
-                    ---\n\
-                    status: AGREED | ISSUES\n\
-                    summary: <one line>\n\
-                    definition_of_done:\n\
-                    - <criterion from plan>\n\
-                    objections:\n\
-                    - <specific issue or 'None'>",
+                     --- TICKET.md ---\n{}\n\n\
+                     --- PLAN.md ---\n{}\n\n\
+                     Check the plan has these sections:\n\
+                     - ## Understanding (explains what we're building)\n\
+                     - ## Segments (each with Files and Definition of Done)\n\
+                     - ## Files Changed (specific file paths)\n\
+                     - ## Risks (identified risks)\n\n\
+                     APPROVE if all sections exist and are specific (real file paths, real criteria).\n\
+                     REJECT if generic/placeholder content (e.g. '[Task 1 description]').\n\n\
+                     ESTIMATE TIMEOUTS based on these complexity factors:\n\
+                     - Number of segments (more segments = more eval time)\n\
+                     - Test coverage depth (integration/e2e tests need more time than unit tests)\n\
+                     - Build system requirements (compiled languages, container builds add time)\n\
+                     - Number of files changed (larger diffs need more review time)\n\
+                     - Cross-cutting changes (refactors, API changes affect many files)\n\n\
+                     Timeout guidelines (these are BASE values, the harness adds environmental overhead):\n\
+                     - Low complexity: plan_review=90s, segment_eval=180s, final_review=300s\n\
+                       (1-2 segments, unit tests only, few files, simple feature)\n\
+                     - Medium complexity: plan_review=120s, segment_eval=300s, final_review=480s\n\
+                       (3-4 segments, integration tests, moderate files, typical feature)\n\
+                     - High complexity: plan_review=180s, segment_eval=480s, final_review=720s\n\
+                       (5+ segments, e2e/container builds, many files, cross-cutting refactor)\n\n\
+                     Write CONTRACT.md now:\n\
+                     ---\n\
+                     status: AGREED | ISSUES\n\
+                     summary: <one line>\n\
+                     definition_of_done:\n\
+                     - <criterion from plan>\n\
+                     objections:\n\
+                     - <specific issue or 'None'>\n\
+                     timeout_profile:\n\
+                       plan_review_secs: <number>\n\
+                       segment_eval_secs: <number>\n\
+                       final_review_secs: <number>\n\
+                       complexity: low | medium | high",
                     shared_path, ticket, plan
                 )
             }
@@ -940,7 +959,7 @@ impl ForgeProcessBuilder {
             }
         };
 
-        let mut child = manager
+        let child = manager
             .spawn_forge(&self.pair_id, &self.ticket_id, &self.worktree, &self.shared)
             .await?;
 
@@ -975,6 +994,11 @@ mod tests {
         assert!(prompt.contains("status: AGREED | ISSUES"));
         assert!(prompt.contains("REJECT if generic/placeholder content"));
         assert!(prompt.contains("definition_of_done:"));
+        assert!(prompt.contains("timeout_profile:"));
+        assert!(prompt.contains("plan_review_secs:"));
+        assert!(prompt.contains("segment_eval_secs:"));
+        assert!(prompt.contains("final_review_secs:"));
+        assert!(prompt.contains("complexity: low | medium | high"));
     }
 
     #[test]
@@ -983,8 +1007,8 @@ mod tests {
         let prompt =
             manager.build_sentinel_prompt(Path::new("/tmp/shared"), &SentinelMode::SegmentEval(3));
 
-        assert!(prompt.contains("Read acceptance criteria from /tmp/shared/CONTRACT.md"));
-        assert!(prompt.contains("Write your evaluation to /tmp/shared/segment-3-eval.md"));
+        assert!(prompt.contains("SHARED: /tmp/shared"));
+        assert!(prompt.contains("/tmp/shared/segment-3-eval.md"));
     }
 
     #[test]
@@ -993,7 +1017,7 @@ mod tests {
         let prompt =
             manager.build_sentinel_prompt(Path::new("/tmp/shared"), &SentinelMode::FinalReview);
 
-        assert!(prompt.contains("Read segment evaluations from /tmp/shared/segment-*-eval.md"));
-        assert!(prompt.contains("Write your verdict to /tmp/shared/final-review.md"));
+        assert!(prompt.contains("SHARED: /tmp/shared"));
+        assert!(prompt.contains("/tmp/shared/final-review.md"));
     }
 }

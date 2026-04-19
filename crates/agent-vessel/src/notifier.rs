@@ -94,6 +94,49 @@ impl VesselNotifier {
             .await;
     }
 
+    /// Emit ci_missing event when no CI workflows are configured in the repo.
+    pub async fn emit_ci_missing(store: &SharedStore, ticket_id: Option<&str>, pr_number: u64) {
+        info!(ticket_id = ?ticket_id, pr_number, "Emitting ci_missing event — no CI workflows configured");
+
+        store
+            .emit(
+                "vessel",
+                "ci_missing",
+                json!({
+                    "ticket_id": ticket_id,
+                    "pr_number": pr_number,
+                }),
+            )
+            .await;
+    }
+
+    /// Emit conflicts_detected event when merge conflicts prevent CI/merge.
+    pub async fn emit_conflicts_detected(
+        store: &SharedStore,
+        ticket_id: Option<&str>,
+        pr_number: u64,
+        conflicted_files: &[String],
+    ) {
+        info!(
+            ticket_id = ?ticket_id,
+            pr_number,
+            files = conflicted_files.len(),
+            "Emitting conflicts_detected event"
+        );
+
+        store
+            .emit(
+                "vessel",
+                "conflicts_detected",
+                json!({
+                    "ticket_id": ticket_id,
+                    "pr_number": pr_number,
+                    "conflicted_files": conflicted_files,
+                }),
+            )
+            .await;
+    }
+
     /// Write ticket status to SharedStore for dependency resolution.
     /// Key format: ticket:{ticket_id}:status
     pub async fn set_ticket_status_merged(store: &SharedStore, ticket_id: &str) {

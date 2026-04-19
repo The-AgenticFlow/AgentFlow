@@ -93,73 +93,79 @@ impl FallbackClient {
     }
 
     /// Build client chain for proxy mode.
-    /// Uses the proxy exclusively - individual API keys are optional.
+    /// Proxy client is always first. Direct API key clients are appended as
+    /// fallbacks so a transient proxy failure (503, timeout) doesn't kill the
+    /// entire request.
     fn build_proxy_chain(model_override: Option<&str>) -> Result<Self> {
         let mut clients: Vec<Box<dyn LlmClient>> = Vec::new();
         let model = model_override.unwrap_or("claude-haiku-4-5-20251001");
 
-        // Determine which client type to use based on model mapping
         let mapped_provider = model_override.and_then(|m| resolve_provider_for_model(m));
-        
+
         info!(
             model = model,
             mapped_provider = ?mapped_provider,
-            "Proxy mode: configuring client"
+            "Proxy mode: configuring client (with direct-key fallbacks)"
         );
 
+        // --- 1. Proxy client (primary) ---
         match mapped_provider.as_deref() {
             Some("openai") => {
-                // Model maps to OpenAI-compatible format (e.g., glm, deepseek, gpt)
                 match OpenAiClient::from_proxy(model) {
                     Ok(c) => {
-                        info!(
-                            provider = "openai-proxy",
-                            model = %c.model(),
-                            "Proxy client initialized (OpenAI format)"
-                        );
+                        info!(provider = "openai-proxy", model = %c.model(), "Proxy client initialized");
                         clients.push(Box::new(c));
                     }
-                    Err(e) => {
-                        warn!(
-                            provider = "openai-proxy",
-                            error = %e,
-                            "Failed to init OpenAI proxy client"
-                        );
-                    }
+                    Err(e) => warn!(provider = "openai-proxy", error = %e, "Failed to init proxy client"),
                 }
             }
             Some("gemini") => {
-                // Model maps to Gemini format
                 warn!("Gemini proxy format not yet supported, falling back to Anthropic format");
-                // Fall through to default
             }
             _ => {
-                // Default: use Anthropic format (most common for proxies)
                 match AnthropicClient::from_env_with_model(model) {
                     Ok(c) => {
-                        info!(
-                            provider = "anthropic-proxy",
-                            model = %c.model(),
-                            "Proxy client initialized (Anthropic format)"
-                        );
+                        info!(provider = "anthropic-proxy", model = %c.model(), "Proxy client initialized");
                         clients.push(Box::new(c));
                     }
-                    Err(e) => {
-                        warn!(
-                            provider = "anthropic-proxy",
-                            error = %e,
-                            "Failed to init Anthropic proxy client"
-                        );
-                    }
+                    Err(e) => warn!(provider = "anthropic-proxy", error = %e, "Failed to init proxy client"),
                 }
+            }
+        }
+
+        // --- 2. Direct-key fallbacks ---
+        // Skip providers that would duplicate the primary proxy client's format
+        // to avoid hammering the same endpoint with a stale key.
+        let skip_anthropic_direct = matches!(mapped_provider.as_deref(), None | Some("anthropic"));
+        if !skip_anthropic_direct {
+            if let Ok(c) = AnthropicClient::from_env_with_model(model) {
+                info!(provider = "anthropic-direct", model = %c.model(), "Direct fallback initialized");
+                clients.push(Box::new(c));
+            }
+        }
+
+        if std::env::var("GEMINI_API_KEY").is_ok() {
+            if let Ok(c) = GeminiClient::from_env() {
+                info!(provider = "gemini-direct", model = %c.model(), "Direct fallback initialized");
+                clients.push(Box::new(c));
+            }
+        }
+
+        if std::env::var("OPENAI_API_KEY").is_ok() {
+            if matches!(mapped_provider.as_deref(), Some("openai")) {
+                // Already using OpenAI-format proxy — skip direct OpenAI
+            } else if let Ok(c) = OpenAiClient::from_env() {
+                info!(provider = "openai-direct", model = %c.model(), "Direct fallback initialized");
+                clients.push(Box::new(c));
             }
         }
 
         if clients.is_empty() {
             bail!(
                 "Proxy mode: Failed to initialize any client. \
-                 Ensure PROXY_URL is set and your proxy is running. \
-                 PROXY_API_KEY is optional for self-hosted proxies."
+                 Ensure PROXY_URL is set and your proxy is running, \
+                 or set at least one direct API key (ANTHROPIC_API_KEY, \
+                 GEMINI_API_KEY, OPENAI_API_KEY) as fallback."
             );
         }
 

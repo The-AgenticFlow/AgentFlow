@@ -85,6 +85,7 @@ mod tests {
             ticket_id: Some("T-100".to_string()),
             title: "Add new feature".to_string(),
             state: PrState::Open,
+            mergeable: Some(true),
         };
 
         let title = build_merge_commit_title(&pr_info);
@@ -101,6 +102,7 @@ mod tests {
             ticket_id: None,
             title: "Add new feature".to_string(),
             state: PrState::Open,
+            mergeable: None,
         };
 
         let title = build_merge_commit_title(&pr_info);

@@ -53,7 +53,7 @@ impl GithubRestClient {
             anyhow::bail!("GitHub API error {}: {}", status, body);
         }
 
-        resp.json::<T>().await.context("Failed to parse GitHub response")
+        resp.json::<T>().await.with_context(|| format!("Failed to parse GitHub response from {}", url))
     }
 
     async fn put_json<T: for<'de> Deserialize<'de>, B: Serialize>(&self, url: &str, body: &B) -> Result<T> {
@@ -155,9 +155,10 @@ impl GithubRestClient {
             title: resp.title,
             state: match resp.state.as_str() {
                 "open" => PrState::Open,
-                "closed" if resp.merged => PrState::Merged,
+                "closed" if resp.merged.unwrap_or(false) => PrState::Merged,
                 _ => PrState::Closed,
             },
+            mergeable: resp.mergeable,
         })
     }
 
@@ -186,6 +187,42 @@ impl GithubRestClient {
         })
     }
 
+    /// Check if the repository has any GitHub Actions workflow files.
+    /// Probes the `.github/workflows/` directory via the Contents API.
+    /// Returns `true` if at least one workflow file exists, `false` otherwise.
+    pub async fn has_workflows(&self, owner: &str, repo: &str) -> Result<bool> {
+        let url = format!(
+            "{}/repos/{}/{}/contents/.github/workflows",
+            GITHUB_API_BASE, owner, repo
+        );
+
+        let resp = self
+            .client
+            .get(&url)
+            .header("Authorization", self.auth_header())
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .send()
+            .await
+            .context("GitHub API request failed")?;
+
+        let status = resp.status();
+        if status.as_u16() == 404 {
+            return Ok(false);
+        }
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            warn!(status = %status, body, "Failed to check workflows directory");
+            return Ok(false);
+        }
+
+        let entries: Vec<ContentEntry> = resp.json().await.context("Failed to parse contents response")?;
+        let has_yml = entries.iter().any(|e| {
+            e.name.ends_with(".yml") || e.name.ends_with(".yaml")
+        });
+        Ok(has_yml)
+    }
+
     /// Check if a PR is already merged (for startup reconciliation).
     pub async fn is_pr_merged(&self, owner: &str, repo: &str, pr_number: u64) -> Result<bool> {
         match self.get_pull_request(owner, repo, pr_number).await {
@@ -194,6 +231,62 @@ impl GithubRestClient {
                 warn!(error = %e, pr = pr_number, "Failed to check PR merge status");
                 Ok(false)
             }
+        }
+    }
+
+    /// List open pull requests for a repository.
+    pub async fn list_open_prs(&self, owner: &str, repo: &str) -> Result<Vec<PrInfo>> {
+        let url = format!(
+            "{}/repos/{}/{}/pulls?state=open&per_page=100",
+            GITHUB_API_BASE, owner, repo
+        );
+        let resp: Vec<PullRequestResponse> = self.get_json(&url).await?;
+
+        Ok(resp
+            .into_iter()
+            .map(|pr| PrInfo {
+                number: pr.number,
+                head_sha: pr.head.sha,
+                head_branch: pr.head.ref_field,
+                base_branch: pr.base.ref_field,
+                ticket_id: extract_ticket_id(&pr.title, &pr.body),
+                title: pr.title,
+                state: PrState::Open,
+                mergeable: pr.mergeable,
+            })
+            .collect())
+    }
+
+    /// Update a PR branch with the latest changes from the base branch.
+    /// Uses GitHub's built-in "Update branch" feature.
+    /// Returns `Ok(())` if successful, `Err` if conflicts exist or API unavailable.
+    pub async fn update_branch(&self, owner: &str, repo: &str, pr_number: u64) -> Result<()> {
+        let url = format!(
+            "{}/repos/{}/{}/pulls/{}/update-branch",
+            GITHUB_API_BASE, owner, repo, pr_number
+        );
+
+        let resp = self
+            .client
+            .put(&url)
+            .header("Authorization", self.auth_header())
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .send()
+            .await
+            .context("GitHub update-branch request failed")?;
+
+        let status = resp.status();
+        if status.is_success() {
+            debug!(pr = pr_number, "Branch updated successfully via GitHub API");
+            Ok(())
+        } else if status.as_u16() == 409 {
+            anyhow::bail!("Merge conflict when updating branch for PR {}", pr_number)
+        } else if status.as_u16() == 422 {
+            anyhow::bail!("Update branch not available for PR {} — may require admin access", pr_number)
+        } else {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("GitHub update-branch error {}: {}", status, body)
         }
     }
 }
@@ -253,7 +346,8 @@ struct PullRequestResponse {
     title: String,
     body: Option<String>,
     state: String,
-    merged: bool,
+    merged: Option<bool>,
+    mergeable: Option<bool>,
     head: PrBranch,
     base: PrBranch,
 }
@@ -277,4 +371,9 @@ struct MergeResponse {
     merged: bool,
     sha: Option<String>,
     message: String,
+}
+
+#[derive(Deserialize)]
+struct ContentEntry {
+    name: String,
 }

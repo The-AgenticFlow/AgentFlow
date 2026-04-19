@@ -7,7 +7,7 @@
 use anyhow::{anyhow, Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 /// Manages the target repository workspace.
 ///
@@ -49,7 +49,8 @@ impl WorkspaceManager {
 
     /// Ensure the workspace exists, cloning if necessary.
     ///
-    /// If the workspace already exists, it will be updated with `git pull`.
+    /// If the workspace already exists and is a git repo, it will be updated with `git pull`.
+    /// If it exists but is not a git repo, it will be cloned fresh.
     /// If it doesn't exist, it will be cloned from GitHub.
     ///
     /// # Arguments
@@ -63,9 +64,15 @@ impl WorkspaceManager {
             .await
             .context("Failed to create workspaces base directory")?;
 
-        if self.workspace_dir.exists() {
+        if self.workspace_dir.exists() && self.workspace_dir.join(".git").exists() {
             info!(workspace = %self.workspace_dir.display(), "Workspace exists, updating...");
             self.update_workspace()?;
+        } else if self.workspace_dir.exists() {
+            info!(workspace = %self.workspace_dir.display(), "Workspace directory exists but is not a git repo — removing and re-cloning");
+            tokio::fs::remove_dir_all(&self.workspace_dir)
+                .await
+                .context("Failed to remove invalid workspace directory")?;
+            self.clone_workspace(github_token).await?;
         } else {
             info!(repo = %self.repo_id, workspace = %self.workspace_dir.display(), "Cloning repository...");
             self.clone_workspace(github_token).await?;

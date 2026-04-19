@@ -11,6 +11,7 @@ description: Core orchestration skill for assigning work and managing workers
 Read `KEY_WORKER_SLOTS` from shared store. Look for workers with status `Idle`.
 
 ### Step 2: Prioritize Tickets
+- **BLOCKING (CI-FIRST):** CI setup tickets (IDs starting with `T-CI-`) must be assigned before any other work if `ci_readiness` is `missing` or `ci_must_go_first` is `true`. Without CI, VESSEL stalls on every PR.
 - High priority: Security fixes, blocking issues
 - Medium priority: Features, enhancements
 - Low priority: Refactors, documentation

@@ -271,6 +271,7 @@ impl BatchNode for ForgeNode {
         let worktree_mgr = WorktreeManager::new(&self.workspace_root);
 
         let mut ticket_updates: Vec<(String, TicketStatus)> = Vec::new();
+        let mut opened_prs: Vec<Value> = Vec::new();
 
         for res_opt in &results {
             let res = match res_opt {
@@ -305,6 +306,18 @@ impl BatchNode for ForgeNode {
                                 outcome: outcome.to_string(),
                             },
                         ));
+
+                        let pr_number = res["pr_number"].as_u64().unwrap_or(0);
+                        let branch = res["branch"].as_str().unwrap_or("");
+                        if pr_number > 0 {
+                            opened_prs.push(json!({
+                                "number": pr_number,
+                                "ticket_id": ticket_id,
+                                "branch": branch,
+                                "worker_id": worker_id,
+                            }));
+                        }
+
                         if let Err(e) = worktree_mgr.remove_worktree(worker_id, ticket_id) {
                             warn!(worker = worker_id, error = %e, "Failed to cleanup worktree");
                         } else {
@@ -385,13 +398,22 @@ impl BatchNode for ForgeNode {
         store.set(KEY_COMMAND_GATE, json!(command_gate)).await;
         store.set(KEY_TICKETS, json!(tickets)).await;
 
+        let has_prs = !opened_prs.is_empty();
+        if has_prs {
+            let mut pending_prs: Vec<Value> =
+                store.get_typed(KEY_PENDING_PRS).await.unwrap_or_default();
+            pending_prs.extend(opened_prs);
+            store.set(KEY_PENDING_PRS, json!(pending_prs)).await;
+            info!("Updated pending_prs for VESSEL processing");
+        }
+
         let has_suspended = slots
             .values()
             .any(|s| matches!(s.status, WorkerStatus::Suspended { .. }));
 
         if has_suspended {
             Ok(Action::new("suspended"))
-        } else if all_success && !results.is_empty() {
+        } else if (has_prs || all_success) && !results.is_empty() {
             Ok(Action::new(ACTION_PR_OPENED))
         } else if results.is_empty() {
             Ok(Action::new(ACTION_EMPTY))
@@ -575,6 +597,52 @@ impl ForgePairNode {
         }
 
         ticket
+    }
+
+    async fn check_existing_pr(
+        &self,
+        worker_id: &str,
+        ticket_id: &str,
+    ) -> Result<Option<(String, u64, String)>> {
+        let repo_str = std::env::var("GITHUB_REPOSITORY").unwrap_or_default();
+        let (owner, repo_name) = repo_str
+            .split_once('/')
+            .unwrap_or(("The-AgenticFlow", "template-counterapp"));
+
+        let branch_name = WorktreeManager::branch_name(worker_id, ticket_id);
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!(
+                "https://api.github.com/repos/{}/{}/pulls?head={}:{}&state=open",
+                owner, repo_name, owner, branch_name
+            ))
+            .header("Authorization", format!("Bearer {}", self.github_token))
+            .header("User-Agent", "agentflow-forge")
+            .header("Accept", "application/vnd.github+json")
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            return Ok(None);
+        }
+
+        let prs: Vec<serde_json::Value> = resp.json().await.unwrap_or_default();
+        if let Some(pr) = prs.first() {
+            let pr_url = pr["html_url"].as_str().unwrap_or_default().to_string();
+            let pr_number = pr["number"].as_u64().unwrap_or(0);
+            if pr_number > 0 {
+                info!(
+                    worker = worker_id,
+                    pr_number,
+                    branch = %branch_name,
+                    "Found existing PR on GitHub for fuel-exhausted worker"
+                );
+                return Ok(Some((pr_url, pr_number, branch_name)));
+            }
+        }
+
+        Ok(None)
     }
 
     async fn push_and_create_pr(
@@ -968,33 +1036,63 @@ impl BatchNode for ForgePairNode {
                         warn!(
                             worker = worker_id,
                             ticket = ticket_id,
-                            "Pair fuel exhausted"
+                            "Pair fuel exhausted - checking for existing PR on GitHub"
                         );
-                        slot.status = WorkerStatus::Idle;
-                        all_success = false;
-                        let prev_attempts = tickets
-                            .iter()
-                            .find(|t| t.id == ticket_id)
-                            .map(|t| t.attempts)
-                            .unwrap_or(0)
-                            + 1;
-                        if prev_attempts >= Ticket::MAX_ATTEMPTS {
-                            ticket_updates.push((
-                                ticket_id.to_string(),
-                                TicketStatus::Exhausted {
-                                    worker_id: worker_id.to_string(),
-                                    attempts: prev_attempts,
-                                },
-                            ));
-                        } else {
-                            ticket_updates.push((
-                                ticket_id.to_string(),
-                                TicketStatus::Failed {
-                                    worker_id: worker_id.to_string(),
-                                    reason: "fuel_exhausted".to_string(),
-                                    attempts: prev_attempts,
-                                },
-                            ));
+
+                        match self.check_existing_pr(worker_id, ticket_id).await {
+                            Ok(Some((pr_url, pr_number, branch))) => {
+                                info!(
+                                    worker = worker_id,
+                                    pr_number,
+                                    "PR already exists for fuel-exhausted worker - routing to VESSEL"
+                                );
+                                slot.status = WorkerStatus::Done {
+                                    ticket_id: ticket_id.to_string(),
+                                    outcome: "pr_opened".to_string(),
+                                };
+                                ticket_updates.push((
+                                    ticket_id.to_string(),
+                                    TicketStatus::Completed {
+                                        worker_id: worker_id.to_string(),
+                                        outcome: "pr_opened".to_string(),
+                                    },
+                                ));
+                                opened_prs.push(json!({
+                                    "number": pr_number,
+                                    "ticket_id": ticket_id,
+                                    "branch": branch,
+                                    "worker_id": worker_id,
+                                    "pr_url": pr_url,
+                                }));
+                            }
+                            _ => {
+                                slot.status = WorkerStatus::Idle;
+                                all_success = false;
+                                let prev_attempts = tickets
+                                    .iter()
+                                    .find(|t| t.id == ticket_id)
+                                    .map(|t| t.attempts)
+                                    .unwrap_or(0)
+                                    + 1;
+                                if prev_attempts >= Ticket::MAX_ATTEMPTS {
+                                    ticket_updates.push((
+                                        ticket_id.to_string(),
+                                        TicketStatus::Exhausted {
+                                            worker_id: worker_id.to_string(),
+                                            attempts: prev_attempts,
+                                        },
+                                    ));
+                                } else {
+                                    ticket_updates.push((
+                                        ticket_id.to_string(),
+                                        TicketStatus::Failed {
+                                            worker_id: worker_id.to_string(),
+                                            reason: "fuel_exhausted".to_string(),
+                                            attempts: prev_attempts,
+                                        },
+                                    ));
+                                }
+                            }
                         }
                     }
                     _ => {
@@ -1116,8 +1214,8 @@ impl BatchNode for ForgePairNode {
         store.set(KEY_COMMAND_GATE, json!(command_gate)).await;
         store.set(KEY_TICKETS, json!(tickets)).await;
         
-        // Update pending_prs for VESSEL to process
-        if !opened_prs.is_empty() {
+        let has_prs = !opened_prs.is_empty();
+        if has_prs {
             let mut pending_prs: Vec<Value> =
                 store.get_typed(KEY_PENDING_PRS).await.unwrap_or_default();
             pending_prs.extend(opened_prs);
@@ -1131,7 +1229,7 @@ impl BatchNode for ForgePairNode {
 
         if has_suspended {
             Ok(Action::new("suspended"))
-        } else if all_success && !results.is_empty() {
+        } else if (has_prs || all_success) && !results.is_empty() {
             Ok(Action::new(ACTION_PR_OPENED))
         } else if results.is_empty() {
             Ok(Action::new(ACTION_EMPTY))

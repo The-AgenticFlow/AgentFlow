@@ -5,6 +5,15 @@
 use pocketflow_core::{CiPollConfig, MergeMethod};
 use serde::{Deserialize, Serialize};
 
+/// CI readiness state — mirrors the nexus CiReadiness for store deserialization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CiReadiness {
+    Ready,
+    Missing,
+    SetupInProgress,
+}
+
 /// Configuration for the VESSEL agent.
 #[derive(Debug, Clone)]
 pub struct VesselConfig {
@@ -66,6 +75,17 @@ pub enum VesselOutcome {
         ticket_id: Option<String>,
         pr_number: u64,
     },
+    /// No CI workflows configured — merged without CI validation
+    CiMissing {
+        ticket_id: Option<String>,
+        pr_number: u64,
+    },
+    /// Merge conflicts detected — could not be auto-resolved
+    Conflicts {
+        ticket_id: Option<String>,
+        pr_number: u64,
+        conflicted_files: Vec<String>,
+    },
 }
 
 impl VesselOutcome {
@@ -75,6 +95,8 @@ impl VesselOutcome {
             VesselOutcome::CiFailed { ticket_id, .. } => ticket_id.as_deref(),
             VesselOutcome::MergeBlocked { ticket_id, .. } => ticket_id.as_deref(),
             VesselOutcome::CiTimeout { ticket_id, .. } => ticket_id.as_deref(),
+            VesselOutcome::CiMissing { ticket_id, .. } => ticket_id.as_deref(),
+            VesselOutcome::Conflicts { ticket_id, .. } => ticket_id.as_deref(),
         }
     }
 
@@ -84,6 +106,8 @@ impl VesselOutcome {
             VesselOutcome::CiFailed { pr_number, .. } => *pr_number,
             VesselOutcome::MergeBlocked { pr_number, .. } => *pr_number,
             VesselOutcome::CiTimeout { pr_number, .. } => *pr_number,
+            VesselOutcome::CiMissing { pr_number, .. } => *pr_number,
+            VesselOutcome::Conflicts { pr_number, .. } => *pr_number,
         }
     }
 }

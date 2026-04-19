@@ -10,9 +10,9 @@ use tracing::info;
 
 use crate::nodes::{ForgeNode, NexusNode, VesselNode};
 use crate::state::{
-    Ticket, TicketStatus, WorkerSlot, WorkerStatus, ACTION_DEPLOYED, ACTION_DEPLOY_FAILED,
-    ACTION_EMPTY, ACTION_FAILED, ACTION_NO_WORK, ACTION_PR_OPENED, ACTION_WORK_ASSIGNED,
-    KEY_PENDING_PRS, KEY_TICKETS, KEY_WORKER_SLOTS,
+    Ticket, TicketStatus, WorkerSlot, WorkerStatus, ACTION_CONFLICTS_DETECTED, ACTION_DEPLOYED,
+    ACTION_DEPLOY_FAILED, ACTION_EMPTY, ACTION_FAILED, ACTION_MERGE_PRS, ACTION_NO_WORK,
+    ACTION_PR_OPENED, ACTION_WORK_ASSIGNED, KEY_PENDING_PRS, KEY_TICKETS, KEY_WORKER_SLOTS,
 };
 
 #[tokio::main]
@@ -115,6 +115,7 @@ async fn main() -> Result<()> {
             nexus,
             vec![
                 (ACTION_WORK_ASSIGNED, "forge"),
+                (ACTION_MERGE_PRS, "vessel"),
                 (ACTION_NO_WORK, "nexus"),
                 ("approve_command", "forge"),
                 ("reject_command", "nexus"),
@@ -137,6 +138,7 @@ async fn main() -> Result<()> {
                 (ACTION_DEPLOYED, "nexus"),
                 (ACTION_DEPLOY_FAILED, "nexus"),
                 ("merge_blocked", "nexus"),
+                (ACTION_CONFLICTS_DETECTED, "forge"),
                 ("no_work", "nexus"),
             ],
         )

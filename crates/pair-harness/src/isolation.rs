@@ -8,8 +8,6 @@ use crate::types::FileLock;
 use anyhow::{anyhow, Context, Result};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
-use std::io::{Read, Write};
-use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
 
@@ -121,7 +119,7 @@ impl FileLockManager {
     pub fn release(&self, file_path: &Path, pair_id: &str) -> Result<()> {
         let lock_hash = self.hash_path(file_path);
         let json_file = self.locks_dir.join(format!("{}.json", lock_hash));
-        let lock_file = self.locks_dir.join(format!("{}.lock", lock_hash));
+        let _lock_file = self.locks_dir.join(format!("{}.lock", lock_hash));
 
         if !json_file.exists() {
             debug!(file = %file_path.display(), "No lock to release");
@@ -295,7 +293,7 @@ enum LockState {
 /// This uses fcntl(F_SETLK) which is non-blocking.
 #[cfg(unix)]
 fn flock_exclusive_nonblocking(file: &File) -> std::io::Result<LockState> {
-    use libc::{flock, LOCK_EX, LOCK_NB, LOCK_UN};
+    use libc::{flock, LOCK_EX, LOCK_NB};
     use std::os::unix::io::AsRawFd;
 
     let fd = file.as_raw_fd();

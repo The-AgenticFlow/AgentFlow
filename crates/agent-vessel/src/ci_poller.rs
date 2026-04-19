@@ -8,23 +8,28 @@ use pocketflow_core::{CiPollConfig, CiStatus, PrInfo};
 use tracing::{debug, info, warn};
 
 /// CI Poller — polls GitHub for CI status until terminal state or timeout.
+/// Also detects merge conflicts early via the `mergeable` field.
 pub struct CiPoller {
     config: CiPollConfig,
     client: github::GithubRestClient,
 }
+
+/// How often (in poll attempts) to re-check mergeability.
+/// GitHub may compute `mergeable: null` initially and fill it in later.
+const MERGEABLE_CHECK_INTERVAL: u32 = 3;
 
 impl CiPoller {
     pub fn new(config: CiPollConfig, client: github::GithubRestClient) -> Self {
         Self { config, client }
     }
 
-    /// Get a reference to the GitHub client for additional operations.
     pub fn client(&self) -> &github::GithubRestClient {
         &self.client
     }
 
     /// Poll CI status until it reaches a terminal state or times out.
-    /// Returns the final status.
+    /// Also checks mergeability on each iteration — if the PR has conflicts,
+    /// returns `Conflicts` immediately instead of waiting for timeout.
     pub async fn poll_until_terminal(
         &self,
         owner: &str,
@@ -32,7 +37,7 @@ impl CiPoller {
         pr_info: &PrInfo,
     ) -> Result<CiPollResult> {
         let mut attempts = 0u32;
-        
+
         loop {
             if attempts >= self.config.max_attempts {
                 warn!(
@@ -56,9 +61,38 @@ impl CiPoller {
                 return Ok(CiPollResult::Status(status));
             }
 
+            if attempts % MERGEABLE_CHECK_INTERVAL == 0 {
+                let mergeable = self.check_mergeability(owner, repo, pr_info).await?;
+                if mergeable == Some(false) {
+                    warn!(
+                        pr = pr_info.number,
+                        "PR has merge conflicts — short-circuiting CI poll"
+                    );
+                    return Ok(CiPollResult::Conflicts);
+                }
+                if mergeable.is_none() {
+                    debug!(
+                        pr = pr_info.number,
+                        "PR mergeability unknown (GitHub still computing) — continuing poll"
+                    );
+                }
+            }
+
             attempts += 1;
             tokio::time::sleep(std::time::Duration::from_secs(self.config.interval_secs)).await;
         }
+    }
+
+    /// Re-fetch the PR to check current mergeability state.
+    /// Returns `Some(true)` if mergeable, `Some(false)` if conflicting, `None` if unknown.
+    async fn check_mergeability(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_info: &PrInfo,
+    ) -> Result<Option<bool>> {
+        let fresh_pr = self.client.get_pull_request(owner, repo, pr_info.number).await?;
+        Ok(fresh_pr.mergeable)
     }
 }
 
@@ -69,6 +103,8 @@ pub enum CiPollResult {
     Status(CiStatus),
     /// Polling timed out before terminal state
     Timeout,
+    /// PR has merge conflicts — CI won't run until resolved
+    Conflicts,
 }
 
 impl CiPollResult {
@@ -82,6 +118,10 @@ impl CiPollResult {
 
     pub fn is_timeout(&self) -> bool {
         matches!(self, CiPollResult::Timeout)
+    }
+
+    pub fn is_conflicts(&self) -> bool {
+        matches!(self, CiPollResult::Conflicts)
     }
 }
 
@@ -108,5 +148,12 @@ mod tests {
     fn test_ci_poll_result_is_timeout() {
         assert!(CiPollResult::Timeout.is_timeout());
         assert!(!CiPollResult::Status(CiStatus::Success).is_timeout());
+    }
+
+    #[test]
+    fn test_ci_poll_result_is_conflicts() {
+        assert!(CiPollResult::Conflicts.is_conflicts());
+        assert!(!CiPollResult::Timeout.is_conflicts());
+        assert!(!CiPollResult::Status(CiStatus::Success).is_conflicts());
     }
 }
