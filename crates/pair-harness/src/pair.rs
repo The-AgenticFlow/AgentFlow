@@ -1113,7 +1113,10 @@ impl ForgeSentinelPair {
                 reset_count: status.context_resets,
             },
             "PENDING_REVIEW" => {
-                debug!(status = "PENDING_REVIEW", "FORGE requests review — treating as non-terminal, continuing event loop");
+                debug!(
+                    status = "PENDING_REVIEW",
+                    "FORGE requests review — treating as non-terminal, continuing event loop"
+                );
                 return Ok(None);
             }
             _ => {
