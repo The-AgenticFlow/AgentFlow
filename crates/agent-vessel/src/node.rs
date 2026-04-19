@@ -63,7 +63,7 @@ impl VesselNode {
         if parts.len() != 2 {
             return None;
         }
-        let pair_id = parts[0].strip_prefix("forge-").unwrap_or(parts[0]);
+        let pair_id = parts[0];
         let ticket_id = parts[1];
         Some(PathBuf::from(workspace_root)
             .join("worktrees")

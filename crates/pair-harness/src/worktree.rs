@@ -453,6 +453,20 @@ impl WorktreeManager {
     pub fn force_push_branch(&self, worktree_path: &Path) -> Result<()> {
         let branch = self.get_current_branch(worktree_path)?;
 
+        let fetch = Command::new("git")
+            .args(["fetch", "origin"])
+            .current_dir(worktree_path)
+            .output()
+            .context("Failed to fetch before force-push")?;
+
+        if !fetch.status.success() {
+            warn!(
+                path = %worktree_path.display(),
+                error = %String::from_utf8_lossy(&fetch.stderr),
+                "git fetch origin failed before force-push — continuing anyway"
+            );
+        }
+
         info!(path = %worktree_path.display(), branch = %branch, "Force-pushing branch to origin with --force-with-lease");
 
         let output = Command::new("git")
@@ -466,6 +480,25 @@ impl WorktreeManager {
             Ok(())
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
+            if stderr.contains("stale info") || stderr.contains("rejected") {
+                warn!(
+                    path = %worktree_path.display(),
+                    branch = %branch,
+                    "force-with-lease rejected (stale info) — falling back to --force"
+                );
+                let force = Command::new("git")
+                    .args(["push", "origin", &branch, "--force"])
+                    .current_dir(worktree_path)
+                    .output()
+                    .context("Failed to force-push branch")?;
+
+                if force.status.success() {
+                    info!(path = %worktree_path.display(), branch = %branch, "Force-push (no lease) succeeded");
+                    return Ok(());
+                }
+                let force_stderr = String::from_utf8_lossy(&force.stderr);
+                return Err(anyhow!("Force-push failed: {}", force_stderr));
+            }
             Err(anyhow!("Force-push failed: {}", stderr))
         }
     }
