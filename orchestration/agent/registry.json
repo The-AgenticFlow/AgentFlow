@@ -1,10 +1,10 @@
 {
   "team": [
-    { "id": "nexus",    "cli": "claude", "active": true,  "instances": 1, "model_backend": "glm-5", "routing_key": "nexus-key" },
-    { "id": "forge",    "cli": "claude", "active": true,  "instances": 2, "model_backend": "glm-5", "routing_key": "forge-key" },
-    { "id": "sentinel", "cli": "claude", "active": true,  "instances": 1, "model_backend": "glm-5", "routing_key": "sentinel-key" },
-    { "id": "vessel",   "cli": "claude", "active": true,  "instances": 1, "model_backend": "glm-5", "routing_key": "vessel-key" },
-    { "id": "lore",     "cli": "claude", "active": true,  "instances": 1, "model_backend": "glm-5", "routing_key": "lore-key" }
+    { "id": "nexus",    "cli": "claude", "active": true,  "instances": 1, "model_backend": "accounts/fireworks/models/kimi-k2p5", "routing_key": "nexus-key" },
+    { "id": "forge",    "cli": "claude", "active": true,  "instances": 2, "model_backend": "accounts/fireworks/models/kimi-k2p5", "routing_key": "forge-key" },
+    { "id": "sentinel", "cli": "claude", "active": true,  "instances": 1, "model_backend": "accounts/fireworks/models/kimi-k2p5", "routing_key": "sentinel-key" },
+    { "id": "vessel",   "cli": "claude", "active": true,  "instances": 1, "model_backend": "accounts/fireworks/models/kimi-k2p5", "routing_key": "vessel-key" },
+    { "id": "lore",     "cli": "claude", "active": true,  "instances": 1, "model_backend": "accounts/fireworks/models/kimi-k2p5", "routing_key": "lore-key" }
   ]
 }
  

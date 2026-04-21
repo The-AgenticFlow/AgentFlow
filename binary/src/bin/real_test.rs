@@ -3,9 +3,9 @@ use agent_nexus::NexusNode;
 use agent_vessel::VesselNode;
 use anyhow::Result;
 use config::{
-    ACTION_CONFLICTS_DETECTED, ACTION_DEPLOYED, ACTION_DEPLOY_FAILED, ACTION_FAILED,
-    ACTION_MERGE_PRS, ACTION_NO_WORK, ACTION_PR_OPENED, ACTION_WORK_ASSIGNED, KEY_PENDING_PRS,
-    KEY_TICKETS, KEY_WORKER_SLOTS,
+    ACTION_CI_FIX_NEEDED, ACTION_CONFLICTS_DETECTED, ACTION_DEPLOYED, ACTION_DEPLOY_FAILED,
+    ACTION_FAILED, ACTION_MERGE_PRS, ACTION_NO_WORK, ACTION_PR_OPENED, ACTION_WORK_ASSIGNED,
+    KEY_PENDING_PRS, KEY_TICKETS, KEY_WORKER_SLOTS,
 };
 use pair_harness::WorkspaceManager;
 use pocketflow_core::{Action, Flow, SharedStore};
@@ -115,6 +115,7 @@ async fn main() -> Result<()> {
             vec![
                 (ACTION_DEPLOYED, "nexus"),
                 (ACTION_DEPLOY_FAILED, "nexus"),
+                (ACTION_CI_FIX_NEEDED, "forge_pair"),
                 ("merge_blocked", "nexus"),
                 (ACTION_CONFLICTS_DETECTED, "forge_pair"),
                 ("no_work", "nexus"),

@@ -7,5 +7,5 @@
 pub mod rest;
 pub mod schemas;
 
-pub use rest::GithubRestClient;
+pub use rest::{CiFailureDetail, FailedCheck, GitHubIssueResponse, GithubRestClient};
 pub use schemas::github_mcp_cmd;

@@ -46,23 +46,14 @@ impl SentinelMode {
 
 /// Manages FORGE and SENTINEL processes.
 pub struct ProcessManager {
-    /// Path to the Claude binary
     claude_path: PathBuf,
-    /// GitHub token for MCP tools
     github_token: String,
-    /// Optional Redis URL for shared store (fallback to filesystem if None)
     redis_url: Option<String>,
-    /// Optional LiteLLM proxy URL for per-agent model routing
     proxy_url: Option<String>,
-    /// Optional API key for authenticating with a hosted LiteLLM proxy.
-    /// When set, ANTHROPIC_API_KEY is set to this value (the proxy handles auth + routing).
-    /// When not set, ANTHROPIC_API_KEY is set to the routing key (e.g., "forge-key")
-    /// for self-hosted LiteLLM where the routing key IS the auth.
     proxy_api_key: Option<String>,
 }
 
 impl ProcessManager {
-    /// Create a new process manager without Redis (uses filesystem state).
     pub fn new(github_token: impl Into<String>) -> Self {
         let claude_path = std::env::var("CLAUDE_PATH").unwrap_or_else(|_| "claude".to_string());
         let claude_path = PathBuf::from(claude_path);
@@ -81,7 +72,6 @@ impl ProcessManager {
         }
     }
 
-    /// Create a process manager with Redis backend.
     pub fn with_redis(github_token: impl Into<String>, redis_url: impl Into<String>) -> Self {
         let claude_path = std::env::var("CLAUDE_PATH").unwrap_or_else(|_| "claude".to_string());
         let claude_path = PathBuf::from(claude_path);
@@ -100,7 +90,6 @@ impl ProcessManager {
         }
     }
 
-    /// Create a process manager with proxy and optional Redis.
     pub fn with_proxy(
         github_token: impl Into<String>,
         redis_url: Option<String>,
@@ -209,6 +198,10 @@ impl ProcessManager {
         self.proxy_api_key.as_deref()
     }
 
+    fn plugin_dir(target: &Path) -> PathBuf {
+        target.join(".claude").join("plugins").join("orchestration")
+    }
+
     /// Spawn a FORGE process (long-running).
     pub async fn spawn_forge(
         &self,
@@ -227,13 +220,15 @@ impl ProcessManager {
         // Build the initial prompt for FORGE
         let initial_prompt = self.build_forge_prompt(shared);
         let settings_path = worktree.join(".claude").join("settings.json");
+        let plugin_dir = Self::plugin_dir(worktree);
 
         let mut cmd = Command::new(&self.claude_path);
-        cmd.arg("--bare")
-            .arg("--print")
+        cmd.arg("--print")
             .arg("--dangerously-skip-permissions")
             .arg("--settings")
             .arg(&settings_path)
+            .arg("--plugin-dir")
+            .arg(&plugin_dir)
             .arg("--add-dir")
             .arg(shared)
             .env("SPRINTLESS_PAIR_ID", pair_id)
@@ -266,7 +261,7 @@ impl ProcessManager {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        // Set Redis URL if provided, otherwise use filesystem-based state in shared directory
+        // Set Redis URL if provided, otherwise use filesystem-based state
         if let Some(redis_url) = &self.redis_url {
             cmd.env("SPRINTLESS_REDIS_URL", redis_url);
         } else {
@@ -313,7 +308,6 @@ impl ProcessManager {
         Ok(child)
     }
 
-    /// Spawn a FORGE process in resume mode (after context reset).
     pub async fn spawn_forge_resume(
         &self,
         pair_id: &str,
@@ -327,11 +321,9 @@ impl ProcessManager {
             "Spawning FORGE process (resume mode)"
         );
 
-        // Same as regular spawn, but the session_start hook will detect HANDOFF.md
         self.spawn_forge(pair_id, ticket_id, worktree, shared).await
     }
 
-    /// Spawn a FORGE process for PR creation after final SENTINEL approval.
     pub async fn spawn_forge_for_pr(
         &self,
         pair_id: &str,
@@ -345,16 +337,17 @@ impl ProcessManager {
             "Spawning FORGE process (PR creation mode)"
         );
 
-        // Build prompt for PR creation
         let initial_prompt = self.build_forge_pr_prompt(shared);
         let settings_path = worktree.join(".claude").join("settings.json");
+        let plugin_dir = Self::plugin_dir(worktree);
 
         let mut cmd = Command::new(&self.claude_path);
-        cmd.arg("--bare")
-            .arg("--print")
+        cmd.arg("--print")
             .arg("--dangerously-skip-permissions")
             .arg("--settings")
             .arg(&settings_path)
+            .arg("--plugin-dir")
+            .arg(&plugin_dir)
             .arg("--add-dir")
             .arg(shared)
             .env("SPRINTLESS_PAIR_ID", pair_id)
@@ -387,7 +380,6 @@ impl ProcessManager {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        // Set Redis URL if provided, otherwise use filesystem-based state
         if let Some(redis_url) = &self.redis_url {
             cmd.env("SPRINTLESS_REDIS_URL", redis_url);
         } else {
@@ -412,7 +404,6 @@ impl ProcessManager {
                 .context("Failed to close FORGE stdin")?;
         }
 
-        // Capture and log stdout/stderr in background
         let log_dir = shared.join("logs");
         tokio::fs::create_dir_all(&log_dir).await?;
 
@@ -473,15 +464,17 @@ impl ProcessManager {
         // Build the initial prompt for SENTINEL based on mode
         let initial_prompt = self.build_sentinel_prompt(shared, &mode);
         let settings_path = shared.join(".claude").join("settings.json");
+        let plugin_dir = Self::plugin_dir(shared);
 
         let mut cmd = Command::new(&self.claude_path);
-        cmd.arg("--bare")
-            .arg("--print")
+        cmd.arg("--print")
             .arg("--output-format")
             .arg("json")
             .arg("--dangerously-skip-permissions")
             .arg("--settings")
             .arg(&settings_path)
+            .arg("--plugin-dir")
+            .arg(&plugin_dir)
             .arg("--add-dir")
             .arg(worktree)
             .args(["--no-session-persistence"])
@@ -628,6 +621,16 @@ impl ProcessManager {
                 IMPORTANT - Directory Structure:\n\
                 - CURRENT DIRECTORY (worktree): Write ALL source code, tests, package.json here\n\
                 - SHARED DIRECTORY ({}): Read/write PLAN.md, WORKLOG.md, STATUS.json here\n\n\
+                VALID STATUS.json VALUES — you MUST use one of these exact strings in the \"status\" field:\n\
+                - \"PR_OPENED\" — work complete, PR created (include pr_url, pr_number, branch)\n\
+                - \"COMPLETE\" — all work done, PR creation deferred to harness\n\
+                - \"BLOCKED\" — cannot proceed (include reason, blockers)\n\
+                - \"FUEL_EXHAUSTED\" — budget/tokens exhausted\n\
+                - \"PENDING_REVIEW\" — work paused, waiting for review\n\
+                - \"AWAITING_SENTINEL_REVIEW\" — segment done, waiting for SENTINEL\n\
+                - \"APPROVED_READY\" — changes requested by SENTINEL addressed\n\
+                - \"SEGMENT_N_DONE\" — segment N complete (e.g. SEGMENT_1_DONE)\n\
+                Do NOT use any other status value — it will be treated as BLOCKED and your work wasted.\n\n\
                 Read the handoff document and continue from the exact next step:\n\n\
                 --- HANDOFF.md ---\n{}\n\n\
                 Continue exactly where the previous session left off. Do not repeat work already done.",
@@ -653,6 +656,10 @@ impl ProcessManager {
                     IMPORTANT - Directory Structure:\n\
                     - CURRENT DIRECTORY (worktree): Source code goes here\n\
                     - SHARED DIRECTORY ({}): PLAN.md, WORKLOG.md, STATUS.json go here\n\n\
+                    VALID STATUS.json VALUES — use only these exact strings:\n\
+                    \"PR_OPENED\", \"COMPLETE\", \"BLOCKED\", \"FUEL_EXHAUSTED\", \"PENDING_REVIEW\",\n\
+                    \"AWAITING_SENTINEL_REVIEW\", \"APPROVED_READY\", \"SEGMENT_N_DONE\"\n\
+                    Do NOT invent status values — they will be treated as BLOCKED.\n\n\
                     Use GitHub MCP to fetch the issue. Read codebase in current directory. \
                     Write {}/PLAN.md with:\n\
                     - ## Understanding: What we're building\n\
@@ -679,6 +686,16 @@ impl ProcessManager {
                     IMPORTANT - Directory Structure:\n\
                     - CURRENT DIRECTORY (worktree): Write ALL source code, tests, package.json here\n\
                     - SHARED DIRECTORY ({}): Write WORKLOG.md, STATUS.json here\n\n\
+                    VALID STATUS.json VALUES — use only these exact strings in the \"status\" field:\n\
+                    - \"PR_OPENED\" — work complete, PR created (include pr_url, pr_number, branch)\n\
+                    - \"COMPLETE\" — all work done, PR creation deferred to harness\n\
+                    - \"BLOCKED\" — cannot proceed (include reason, blockers)\n\
+                    - \"FUEL_EXHAUSTED\" — budget/tokens exhausted\n\
+                    - \"PENDING_REVIEW\" — work paused, waiting for review\n\
+                    - \"AWAITING_SENTINEL_REVIEW\" — segment done, waiting for SENTINEL\n\
+                    - \"APPROVED_READY\" — changes requested by SENTINEL addressed\n\
+                    - \"SEGMENT_N_DONE\" — segment N complete (e.g. SEGMENT_1_DONE)\n\
+                    Do NOT use any other status value — it will be treated as BLOCKED and your work wasted.\n\n\
                     IMPLEMENTATION WORKFLOW (one segment at a time):\n\
                     1. Implement ONE segment from PLAN.md\n\
                     2. Write tests for that segment\n\
@@ -743,12 +760,17 @@ impl ProcessManager {
             IMPORTANT - Directory Structure:\n\
             - CURRENT DIRECTORY (worktree): Write ALL source code, tests, package.json here\n\
             - SHARED DIRECTORY ({}): Write PLAN.md, WORKLOG.md, STATUS.json here\n\n\
+            VALID STATUS.json VALUES — use only these exact strings in the \"status\" field:\n\
+            \"PR_OPENED\", \"COMPLETE\", \"BLOCKED\", \"FUEL_EXHAUSTED\", \"PENDING_REVIEW\",\n\
+            \"AWAITING_SENTINEL_REVIEW\", \"APPROVED_READY\", \"SEGMENT_N_DONE\"\n\
+            Do NOT invent status values — any other value will be treated as BLOCKED.\n\n\
             STEPS (do these NOW):\n\
             1. Read {}/TICKET.md and {}/TASK.md from the shared directory\n\
             2. Read the codebase in current directory: README.md, package.json/Cargo.toml, src/\n\
             3. Write PLAN.md to shared directory with:\n\
                - ## Understanding: What you're building\n\
                - ## Segments: 1-3 files each, specific file paths in CURRENT DIRECTORY\n\
+               - Do NOT create a verification-only segment whose only work is running lint/typecheck/tests\n\
                - ## Files Changed: List every file you'll touch (all in current directory)\n\
                - ## Risks: What could go wrong\n\n\
              Write PLAN.md to shared directory now. Do NOT write any code yet - only the plan.",
@@ -779,6 +801,10 @@ impl ProcessManager {
             DIRECTORY STRUCTURE:\n\
             - CURRENT DIRECTORY (worktree): Source code is here\n\
             - SHARED DIRECTORY ({}): Write STATUS.json here\n\n\
+            VALID STATUS.json VALUES — use only these exact strings:\n\
+            \"PR_OPENED\", \"COMPLETE\", \"BLOCKED\", \"FUEL_EXHAUSTED\", \"PENDING_REVIEW\",\n\
+            \"AWAITING_SENTINEL_REVIEW\", \"APPROVED_READY\", \"SEGMENT_N_DONE\"\n\
+            Do NOT use any other status value — it will be treated as BLOCKED.\n\n\
             PR CREATION STEPS:\n\
             1. Ensure all changes committed: 'git status' then commit if needed\n\
             2. Push branch: 'git push -u origin HEAD'\n\
@@ -826,6 +852,7 @@ impl ProcessManager {
                      - ## Files Changed (specific file paths)\n\
                      - ## Risks (identified risks)\n\n\
                      APPROVE if all sections exist and are specific (real file paths, real criteria).\n\
+                     REJECT any segment that is only verification commands and has no file list.\n\
                      REJECT if generic/placeholder content (e.g. '[Task 1 description]').\n\n\
                      ESTIMATE TIMEOUTS based on these complexity factors:\n\
                      - Number of segments (more segments = more eval time)\n\
@@ -1059,6 +1086,7 @@ mod tests {
         assert!(prompt.contains("--- TICKET.md ---"));
         assert!(prompt.contains("Write ONLY to /tmp/shared/CONTRACT.md"));
         assert!(prompt.contains("status: AGREED | ISSUES"));
+        assert!(prompt.contains("REJECT any segment that is only verification commands"));
         assert!(prompt.contains("REJECT if generic/placeholder content"));
         assert!(prompt.contains("definition_of_done:"));
         assert!(prompt.contains("timeout_profile:"));
@@ -1066,6 +1094,20 @@ mod tests {
         assert!(prompt.contains("segment_eval_secs:"));
         assert!(prompt.contains("final_review_secs:"));
         assert!(prompt.contains("complexity: low | medium | high"));
+    }
+
+    #[test]
+    fn test_new_session_prompt_discourages_verification_only_segments() {
+        let manager = ProcessManager::new("ghp_test");
+        let dir = tempfile::tempdir().unwrap();
+        let ticket_path = dir.path().join("TICKET.md");
+        let task_path = dir.path().join("TASK.md");
+        std::fs::write(&ticket_path, "# Ticket").unwrap();
+        std::fs::write(&task_path, "Implement it").unwrap();
+
+        let prompt = manager.new_session_prompt(&ticket_path, &task_path, Path::new("/tmp/shared"));
+
+        assert!(prompt.contains("Do NOT create a verification-only segment"));
     }
 
     #[test]

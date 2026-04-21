@@ -7,7 +7,8 @@ use anyhow::Result;
 use async_trait::async_trait;
 use config::{
     state::{KEY_PENDING_PRS, KEY_TICKETS, KEY_WORKER_SLOTS},
-    Ticket, TicketStatus, WorkerSlot, WorkerStatus, ACTION_CONFLICTS_DETECTED,
+    Ticket, TicketStatus, WorkerSlot, WorkerStatus, ACTION_CI_FIX_NEEDED,
+    ACTION_CONFLICTS_DETECTED,
 };
 use pocketflow_core::{Action, CiStatus, Node, PrInfo, SharedStore};
 use serde_json::{json, Value};
@@ -39,6 +40,15 @@ const ENV_WORKSPACE_ROOT: &str = "AGENTFLOW_WORKSPACE_ROOT";
 
 /// Maximum number of conflict resolution attempts before giving up.
 const MAX_CONFLICT_RESOLUTION_ATTEMPTS: u32 = 3;
+
+/// Maximum number of CI fix attempts before giving up.
+const MAX_CI_FIX_ATTEMPTS: u32 = 3;
+
+/// Lightweight struct to carry PR identification info for CI_FIX.md writing.
+struct CiFixPrInfo {
+    pr_number: u64,
+    head_branch: String,
+}
 
 impl VesselNode {
     pub fn new(config: VesselConfig) -> Self {
@@ -184,6 +194,7 @@ impl Node for VesselNode {
         let mut any_success = false;
         let mut any_failure = false;
         let mut any_conflicts = false;
+        let mut any_ci_fix = false;
         let mut failed_ticket_ids: Vec<String> = Vec::new();
 
         for outcome in outcomes {
@@ -212,23 +223,120 @@ impl Node for VesselNode {
                     ticket_id,
                     pr_number,
                     reason,
+                    failure_detail,
                 } => {
                     VesselNotifier::emit_ci_failed(store, ticket_id.as_deref(), *pr_number, reason)
                         .await;
                     let tid = ticket_id
                         .clone()
                         .unwrap_or_else(|| format!("T-{}", pr_number));
-                    if !failed_ticket_ids.contains(&tid) {
-                        self.mark_ticket_failed(
-                            store,
-                            &tid,
-                            &format!("CI failed for PR #{}", pr_number),
-                        )
+
+                    let current_ci_attempts = self
+                        .get_ci_fix_attempts(store, *pr_number)
                         .await;
-                        failed_ticket_ids.push(tid);
+
+                    if current_ci_attempts >= MAX_CI_FIX_ATTEMPTS {
+                        warn!(
+                            pr_number,
+                            ticket_id = %tid,
+                            attempts = current_ci_attempts,
+                            "Max CI fix attempts exceeded — marking ticket as failed"
+                        );
+                        if !failed_ticket_ids.contains(&tid) {
+                            self.mark_ticket_failed(
+                                store,
+                                &tid,
+                                &format!(
+                                    "CI failed for PR #{} after {} fix attempts",
+                                    pr_number, current_ci_attempts
+                                ),
+                            )
+                            .await;
+                            failed_ticket_ids.push(tid);
+                        }
+                        self.remove_from_pending_prs(store, *pr_number).await;
+                        any_failure = true;
+                        continue;
                     }
+
+                    let worker_id = pending_prs
+                        .iter()
+                        .find(|p| p["number"].as_u64() == Some(*pr_number))
+                        .and_then(|pr| {
+                            let wid = pr["worker_id"].as_str().unwrap_or("");
+                            if !wid.is_empty() {
+                                return Some(wid.to_string());
+                            }
+                            Self::derive_worker_id_from_branch(
+                                pr["head_branch"].as_str().unwrap_or(""),
+                            )
+                        });
+
+                    let pr_entry = pending_prs
+                        .iter()
+                        .find(|p| p["number"].as_u64() == Some(*pr_number));
+                    let head_branch = pr_entry
+                        .and_then(|p| p["head_branch"].as_str().map(|s| s.to_string()))
+                        .unwrap_or_else(|| {
+                            ticket_id
+                                .as_deref()
+                                .map(|tid| format!("unknown-pair/{}", tid))
+                                .unwrap_or_else(|| format!("unknown/{}", pr_number))
+                        });
+
+                    let ci_fix_md_written = self
+                        .write_ci_fix_md(&CiFixPrInfo {
+                            pr_number: *pr_number,
+                            head_branch: head_branch.clone(),
+                        }, reason, failure_detail.as_ref())
+                        .await;
+
+                    if ci_fix_md_written {
+                        info!(
+                            pr_number,
+                            ticket_id = %tid,
+                            "Wrote CI_FIX.md — routing to forge_pair for CI fix"
+                        );
+                    } else {
+                        warn!(
+                            pr_number,
+                            ticket_id = %tid,
+                            "CI_FIX.md NOT written — CI fix may be incomplete"
+                        );
+                    }
+
+                    let worker_reassigned = if let Some(ref wid) = worker_id {
+                        self.assign_worker_for_ci_fix(store, wid, &tid).await;
+                        true
+                    } else {
+                        false
+                    };
+
                     self.remove_from_pending_prs(store, *pr_number).await;
-                    any_failure = true;
+
+                    if worker_reassigned {
+                        self.increment_ci_fix_attempts(store, *pr_number).await;
+                        any_ci_fix = true;
+                    } else {
+                        warn!(
+                            pr_number,
+                            ticket_id = %tid,
+                            "No worker available for CI fix — marking ticket as failed"
+                        );
+                        if !failed_ticket_ids.contains(&tid) {
+                            self.mark_ticket_failed(
+                                store,
+                                &tid,
+                                &format!(
+                                    "CI failed for PR #{} — no worker available for fix",
+                                    pr_number
+                                ),
+                            )
+                            .await;
+                            failed_ticket_ids.push(tid);
+                        }
+                        any_failure = true;
+                    }
                 }
                 VesselOutcome::MergeBlocked {
                     ticket_id,
@@ -265,17 +373,104 @@ impl Node for VesselNode {
                     let tid = ticket_id
                         .clone()
                         .unwrap_or_else(|| format!("T-{}", pr_number));
-                    if !failed_ticket_ids.contains(&tid) {
-                        self.mark_ticket_failed(
-                            store,
-                            &tid,
-                            &format!("CI timed out for PR #{}", pr_number),
-                        )
+
+                    let current_ci_attempts = self
+                        .get_ci_fix_attempts(store, *pr_number)
                         .await;
-                        failed_ticket_ids.push(tid);
+
+                    if current_ci_attempts >= MAX_CI_FIX_ATTEMPTS {
+                        warn!(
+                            pr_number,
+                            ticket_id = %tid,
+                            attempts = current_ci_attempts,
+                            "Max CI fix attempts exceeded after timeout — marking ticket as failed"
+                        );
+                        if !failed_ticket_ids.contains(&tid) {
+                            self.mark_ticket_failed(
+                                store,
+                                &tid,
+                                &format!(
+                                    "CI timed out for PR #{} after {} fix attempts",
+                                    pr_number, current_ci_attempts
+                                ),
+                            )
+                            .await;
+                            failed_ticket_ids.push(tid);
+                        }
+                        self.remove_from_pending_prs(store, *pr_number).await;
+                        any_failure = true;
+                        continue;
                     }
+
+                    let pr_entry = pending_prs
+                        .iter()
+                        .find(|p| p["number"].as_u64() == Some(*pr_number));
+                    let worker_id = pr_entry
+                        .and_then(|p| {
+                            let wid = p["worker_id"].as_str().unwrap_or("");
+                            if !wid.is_empty() {
+                                return Some(wid.to_string());
+                            }
+                            Self::derive_worker_id_from_branch(
+                                p["head_branch"].as_str().unwrap_or(""),
+                            )
+                        });
+                    let head_branch = pr_entry
+                        .and_then(|p| p["head_branch"].as_str().map(|s| s.to_string()))
+                        .unwrap_or_else(|| {
+                            ticket_id
+                                .as_deref()
+                                .map(|tid| format!("unknown-pair/{}", tid))
+                                .unwrap_or_else(|| format!("unknown/{}", pr_number))
+                        });
+
+                    let ci_fix_md_written = self
+                        .write_ci_fix_md(&CiFixPrInfo {
+                            pr_number: *pr_number,
+                            head_branch: head_branch.clone(),
+                        }, "CI timed out — possible stuck or flaky CI run", None)
+                        .await;
+
+                    if ci_fix_md_written {
+                        info!(
+                            pr_number,
+                            ticket_id = %tid,
+                            "Wrote CI_FIX.md — routing to forge_pair for CI timeout fix"
+                        );
+                    }
+
+                    let worker_reassigned = if let Some(ref wid) = worker_id {
+                        self.assign_worker_for_ci_fix(store, wid, &tid).await;
+                        true
+                    } else {
+                        false
+                    };
+
                     self.remove_from_pending_prs(store, *pr_number).await;
-                    any_failure = true;
+
+                    if worker_reassigned {
+                        self.increment_ci_fix_attempts(store, *pr_number).await;
+                        any_ci_fix = true;
+                    } else {
+                        warn!(
+                            pr_number,
+                            ticket_id = %tid,
+                            "No worker available for CI timeout fix — marking ticket as failed"
+                        );
+                        if !failed_ticket_ids.contains(&tid) {
+                            self.mark_ticket_failed(
+                                store,
+                                &tid,
+                                &format!(
+                                    "CI timed out for PR #{} — no worker available for fix",
+                                    pr_number
+                                ),
+                            )
+                            .await;
+                            failed_ticket_ids.push(tid);
+                        }
+                        any_failure = true;
+                    }
                 }
                 VesselOutcome::CiMissing {
                     ticket_id,
@@ -399,6 +594,8 @@ impl Node for VesselNode {
 
         if any_conflicts {
             Ok(Action::new(ACTION_CONFLICTS_DETECTED))
+        } else if any_ci_fix {
+            Ok(Action::new(ACTION_CI_FIX_NEEDED))
         } else if any_success {
             Ok(Action::DEPLOYED.into())
         } else if any_failure {
@@ -447,11 +644,35 @@ impl VesselNode {
                     }),
                 }
             }
-            CiPollResult::Status(status) => Ok(VesselOutcome::CiFailed {
-                ticket_id,
-                pr_number,
-                reason: format!("CI status: {:?}", status),
-            }),
+            CiPollResult::Status(status) => {
+                let detail_result = self
+                    .poller
+                    .client()
+                    .get_failed_checks_detail_structured(owner, repo, &pr_info.head_sha)
+                    .await;
+
+                let (reason, failure_detail) = match detail_result {
+                    Ok(detail) => {
+                        let reason = if detail.failed_checks.is_empty() {
+                            format!("CI status: {:?}", status)
+                        } else {
+                            let check_names: Vec<&str> = detail.failed_checks.iter().map(|c| c.name.as_str()).collect();
+                            format!("CI status: {:?} — failed checks: {}", status, check_names.join(", "))
+                        };
+                        (reason, Some(detail))
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Failed to get detailed CI failure info — using basic reason");
+                        (format!("CI status: {:?}", status), None)
+                    }
+                };
+                Ok(VesselOutcome::CiFailed {
+                    ticket_id,
+                    pr_number,
+                    reason,
+                    failure_detail,
+                })
+            }
             CiPollResult::Conflicts => {
                 warn!(
                     pr_number,
@@ -701,12 +922,27 @@ impl VesselNode {
             return false;
         }
         let pair_id = parts[0];
+        let ticket_id = parts[1];
 
         let shared_dir = PathBuf::from(&workspace_root)
             .join("orchestration")
             .join("pairs")
             .join(pair_id)
+            .join(ticket_id)
             .join("shared");
+
+        // Ensure the shared directory exists before writing CONFLICT_RESOLUTION.md.
+        if !shared_dir.exists() {
+            if let Err(e) = tokio::fs::create_dir_all(&shared_dir).await {
+                warn!(
+                    path = %shared_dir.display(),
+                    error = %e,
+                    "Failed to create shared directory for CONFLICT_RESOLUTION.md"
+                );
+                return false;
+            }
+            info!(path = %shared_dir.display(), "Created shared directory for CONFLICT_RESOLUTION.md");
+        }
 
         let files_list = if conflicted_files.is_empty() {
             "No specific conflicted files detected — resolve all conflict markers.".to_string()
@@ -925,6 +1161,219 @@ impl VesselNode {
         }
     }
 
+    async fn assign_worker_for_ci_fix(
+        &self,
+        store: &SharedStore,
+        worker_id: &str,
+        ticket_id: &str,
+    ) {
+        let mut slots: HashMap<String, WorkerSlot> =
+            store.get_typed(KEY_WORKER_SLOTS).await.unwrap_or_default();
+
+        if let Some(slot) = slots.get_mut(worker_id) {
+            let issue_url = match &slot.status {
+                WorkerStatus::Done { ticket_id: tid, .. } => {
+                    let tickets: Vec<Ticket> =
+                        store.get_typed(KEY_TICKETS).await.unwrap_or_default();
+                    tickets
+                        .iter()
+                        .find(|t| t.id == *tid)
+                        .and_then(|t| t.issue_url.clone())
+                }
+                WorkerStatus::Idle => {
+                    let tickets: Vec<Ticket> =
+                        store.get_typed(KEY_TICKETS).await.unwrap_or_default();
+                    tickets
+                        .iter()
+                        .find(|t| t.id == ticket_id)
+                        .and_then(|t| t.issue_url.clone())
+                }
+                _ => None,
+            };
+            info!(
+                worker_id,
+                ticket_id,
+                old_status = ?slot.status,
+                "Re-assigning worker for CI fix (→ Assigned)"
+            );
+            slot.status = WorkerStatus::Assigned {
+                ticket_id: ticket_id.to_string(),
+                issue_url,
+            };
+            store.set(KEY_WORKER_SLOTS, json!(slots)).await;
+        } else {
+            warn!(
+                worker_id,
+                ticket_id, "Worker slot not found — cannot assign for CI fix"
+            );
+        }
+
+        let mut tickets: Vec<Ticket> = store.get_typed(KEY_TICKETS).await.unwrap_or_default();
+        if let Some(ticket) = tickets.iter_mut().find(|t| t.id == ticket_id) {
+            if !matches!(ticket.status, TicketStatus::InProgress { .. }) {
+                info!(
+                    ticket_id,
+                    old_status = ?ticket.status,
+                    "Updating ticket status to InProgress for CI fix"
+                );
+                ticket.status = TicketStatus::InProgress {
+                    worker_id: worker_id.to_string(),
+                };
+                store.set(KEY_TICKETS, json!(tickets)).await;
+            }
+        }
+    }
+
+    async fn increment_ci_fix_attempts(&self, store: &SharedStore, pr_number: u64) {
+        let key = format!("_ci_fix_attempts_{}", pr_number);
+        let current: u32 = store.get_typed::<u32>(&key).await.unwrap_or(0);
+        let next = current + 1;
+        info!(
+            pr_number,
+            attempts = next,
+            max = MAX_CI_FIX_ATTEMPTS,
+            "Incremented CI fix attempt counter"
+        );
+        store.set(&key, json!(next)).await;
+    }
+
+    async fn get_ci_fix_attempts(&self, store: &SharedStore, pr_number: u64) -> u32 {
+        let key = format!("_ci_fix_attempts_{}", pr_number);
+        store.get_typed::<u32>(&key).await.unwrap_or(0)
+    }
+
+    async fn write_ci_fix_md(
+        &self,
+        pr_placeholder: &CiFixPrInfo,
+        reason: &str,
+        failure_detail: Option<&github::CiFailureDetail>,
+    ) -> bool {
+        let workspace_root = match std::env::var(ENV_WORKSPACE_ROOT).ok() {
+            Some(root) => root,
+            None => {
+                warn!("AGENTFLOW_WORKSPACE_ROOT not set — cannot write CI_FIX.md");
+                return false;
+            }
+        };
+
+        let branch = &pr_placeholder.head_branch;
+        let parts: Vec<&str> = branch.splitn(2, '/').collect();
+        if parts.len() != 2 {
+            warn!(
+                branch,
+                "Cannot parse branch for pair_id — skipping CI_FIX.md"
+            );
+            return false;
+        }
+        let pair_id = parts[0];
+        let ticket_id = parts[1];
+
+        let shared_dir = PathBuf::from(&workspace_root)
+            .join("orchestration")
+            .join("pairs")
+            .join(pair_id)
+            .join(ticket_id)
+            .join("shared");
+
+        // Ensure the shared directory exists before writing CI_FIX.md.
+        // The directory may not exist yet if the pair hasn't been provisioned
+        // for this ticket, or if the workspace was cleaned up.
+        if !shared_dir.exists() {
+            if let Err(e) = tokio::fs::create_dir_all(&shared_dir).await {
+                warn!(
+                    path = %shared_dir.display(),
+                    error = %e,
+                    "Failed to create shared directory for CI_FIX.md"
+                );
+                return false;
+            }
+            info!(path = %shared_dir.display(), "Created shared directory for CI_FIX.md");
+        }
+
+        let local_commands = failure_detail
+            .map(|d| d.local_reproduce_commands().join("\n"))
+            .unwrap_or_else(|| "Check .github/workflows/ for the CI commands to run locally".to_string());
+
+        let job_log_section = match failure_detail {
+            Some(d) if !d.job_logs.is_empty() => {
+                let logs = d
+                    .job_logs
+                    .iter()
+                    .map(|(name, log)| format!("### Job: {}\n```\n{}\n```", name, log))
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+                format!(
+                    "\n## Job Log Output (for reference)\n\n\
+                     {}\n\n\
+                     **Do NOT try to fix errors from this log alone.** Run the commands locally first.",
+                    logs
+                )
+            }
+            _ => String::new(),
+        };
+
+        let content = format!(
+            "# CI Fix Required\n\n\
+             VESSEL detected that CI checks failed for PR #{}.\n\n\
+             ## Failed Checks\n\n{}\n\n\
+             ## How to Fix — Run Checks Locally\n\n\
+             **IMPORTANT: Do NOT push without running ALL checks locally first.**\n\n\
+             1. Pull the latest: `git pull`\n\n\
+             2. **Install any missing tools first.** If a command is not found, install it:\n\
+                - Python/pip missing: `sudo apt-get update && sudo apt-get install -y python3 python3-pip python3-venv`\n\
+                - Then create venv: `python3 -m venv .venv && source .venv/bin/activate`\n\
+                - npm missing: `sudo apt-get install -y nodejs npm` or use `nvm`\n\
+                - Always install project deps: `pip install -r requirements.txt` or `npm ci`\n\n\
+             3. Run each failing check locally ONE AT A TIME. Fix errors before moving to the next:\n\n\
+             ```\n{}\n```\n\n\
+             4. After fixing all errors, run ALL commands again to confirm nothing is broken:\n\n\
+             ```\n{}\n```\n\n\
+             5. Only after ALL checks pass locally: `git add -A && git commit -m \"fix CI failures\" && git push`\n\n\
+             6. Write STATUS.json with `\"status\": \"PR_OPENED\"` and your PR number\n\n\
+             ## WORKLOG Updates — CRITICAL\n\n\
+             You MUST update WORKLOG.md in the shared directory as you work. The watchdog monitors\n\
+             WORKLOG.md — if you don't update it, your pair will be killed after 20 minutes of silence.\n\n\
+             Update WORKLOG.md at these points:\n\
+             - After installing dependencies (write what you installed)\n\
+             - After each check you run (write pass/fail and what you fixed)\n\
+             - After pushing your fix (write what was fixed and pushed)\n\n\
+             Example WORKLOG entry:\n\
+             ```\n\
+             ## CI Fix Progress\n\
+             - Installed python3, pip, ruff via apt + pip\n\
+             - Ran `ruff check .` — 12 errors found\n\
+             - Fixed I001 (import sort) in app/auth.py\n\
+             - Fixed UP017 (UTC alias) in app/auth.py and app/models.py\n\
+             - Fixed B008 (Depends default) in app/auth.py\n\
+             - Fixed B904 (raise from) in app/auth.py\n\
+             - Ran `ruff check .` — 0 errors\n\
+             - Ran `python -m pytest -x -q` — all pass\n\
+             - Pushed fix commit\n\
+             ```\n\n\
+             ## Rules\n\n\
+             - Do NOT change the PR description or title\n\
+             - Do NOT push blind fixes — always verify locally first\n\
+             - Fix ALL errors before pushing — do not fix one and push, CI will just fail on the next\n\
+             - If you cannot reproduce locally, pull first then try again\n\
+             - After you push, VESSEL will re-monitor CI automatically\n\
+             - If a tool is missing, INSTALL IT — do not skip the check just because the tool isn't installed{}",
+            pr_placeholder.pr_number,
+            reason,
+            local_commands,
+            local_commands,
+            job_log_section,
+        );
+
+        let path = shared_dir.join("CI_FIX.md");
+        if let Err(e) = tokio::fs::write(&path, &content).await {
+            warn!(path = %path.display(), error = %e, "Failed to write CI_FIX.md");
+            false
+        } else {
+            info!(path = %path.display(), "Wrote CI_FIX.md for forge CI fix");
+            true
+        }
+    }
+
     /// Reconcile startup: check for PRs that are already merged on GitHub.
     pub async fn reconcile(&self, store: &SharedStore) -> Result<()> {
         info!("Running VESSEL startup reconciliation");
@@ -1074,6 +1523,7 @@ mod tests {
                 ticket_id: Some("T-42".to_string()),
                 pr_number: 42,
                 reason: "Tests failed".to_string(),
+                failure_detail: None,
             }],
             "has_work": true,
         });

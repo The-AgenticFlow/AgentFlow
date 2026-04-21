@@ -92,6 +92,24 @@ This guide explains how to set up your environment, run the project in different
 
 **Key priority order**: `PROXY_API_KEY` > `GATEWAY_API_KEY` > `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` / `OPENAI_API_KEY`. When `PROXY_URL` is set, the proxy client is tried first. Direct API key clients are appended as fallbacks, so a transient proxy error (503, timeout) doesn't block the orchestration pipeline.
 
+## 🔒 Secret Protection
+
+The system enforces multiple layers of protection against pushing secrets to GitHub. These protections are **generic** — they apply to any file anywhere in the worktree, not just known directories like `.claude/`:
+
+1. **Worktree .gitignore** — Known credential directories (`.claude/`, `.env.local`) are automatically added to each worktree's `.gitignore` during pair provisioning. Any directory containing a redacted file is also dynamically added.
+
+2. **Whole-worktree secret scanning** — Before any commit in the push/PR flow, `scan_and_scrub_secrets()` recursively scans **all** text files in the worktree for known secret patterns (GitHub PATs, AWS keys, OpenAI keys, etc.) and replaces them with placeholder references. This catches secrets in any file — source code, config, env files, Terraform, etc.
+
+3. **Safe git add** — `git_add_safe()` checks all tracked files (`git ls-files`) for secrets and untracks any that contain them before staging, preventing already-tracked secret files from being committed regardless of directory.
+
+4. **Push rejection recovery** — If GitHub rejects a push due to secret scanning (GH013), the agent detects this, scans the entire worktree, redacts secrets, untracks offending files, rewrites git history to remove those files from prior commits, then retries the push. This prevents the infinite retry loop where NEXUS would blindly re-approve the same failing action.
+
+5. **Accurate blocked reasons** — When a push fails, the blocked reason now contains the actual GitHub error (e.g., "Push rejected: secrets detected in git history — GH013: ...") instead of the generic "needs push/PR creation", enabling NEXUS to make informed decisions.
+
+6. **Force-push policy** — `--force-with-lease` is only used for genuine non-fast-forward rejections, never for secret scanning violations.
+
+See [`orchestration/agent/standards/SECURITY.md`](orchestration/agent/standards/SECURITY.md) for the full security policy.
+
 ## 🚀 Running the Project
 
 **New contributors**: Read the **[live flow walkthrough](docs/demo.md)** first — it explains what you will see in the logs at each stage and where files end up on disk.

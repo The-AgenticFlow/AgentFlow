@@ -441,13 +441,14 @@ AgentFlow uses a specific directory structure for work completion:
     └── workers/
         └── forge-1/
             ├── worker.log          # Detailed logs
-            └── shared/             # Status and evaluation files
-                ├── PLAN.md         # Initial implementation plan
-                ├── WORKLOG.md      # Progress tracking
-                ├── CONTRACT.md     # SENTINEL-approved contract (if enabled)
-                ├── segment-N-eval.md # SENTINEL segment reviews (if enabled)
-                ├── final-review.md # SENTINEL final review (if enabled)
-                └── STATUS.json     # Final work status
+            └── T-005/             # Ticket-scoped artifacts
+                └── shared/             # Status and evaluation files
+                    ├── PLAN.md         # Initial implementation plan
+                    ├── WORKLOG.md      # Progress tracking
+                    ├── CONTRACT.md     # SENTINEL-approved contract (if enabled)
+                    ├── segment-N-eval.md # SENTINEL segment reviews (if enabled)
+                    ├── final-review.md # SENTINEL final review (if enabled)
+                    └── STATUS.json     # Final work status
 ```
 
 ### 2. Check the Code Files
@@ -767,12 +768,13 @@ AgentFlow/                                    # Orchestrator project
             └── workers/
                 ├── forge-1/
                 │   ├── worker.log            # Detailed Claude Code logs
-                │   └── shared/               # Status & evaluation files
-                │       ├── PLAN.md           # Implementation plan
-                │       ├── WORKLOG.md        # Progress tracking
-                │       ├── CONTRACT.md       # SENTINEL approval (if enabled)
-                │       ├── segment-N-eval.md # SENTINEL reviews (if enabled)
-                │       ├── final-review.md   # Final review (if enabled)
+                │   └── T-005/                 # Ticket-scoped artifacts
+                │       └── shared/               # Status & evaluation files
+                │           ├── PLAN.md           # Implementation plan
+                │           ├── WORKLOG.md        # Progress tracking
+                │           ├── CONTRACT.md       # SENTINEL approval (if enabled)
+                │           ├── segment-N-eval.md # SENTINEL reviews (if enabled)
+                │           ├── final-review.md   # Final review (if enabled)
                 │       └── STATUS.json       # ⭐ Work completion status
                 └── forge-2/
                     ├── worker.log

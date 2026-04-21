@@ -43,6 +43,106 @@ fn ci_setup_ticket_active(tickets: &[Ticket]) -> bool {
         .any(|t| is_ci_setup_ticket(t) && t.is_assignable())
 }
 
+/// Attempt to normalize an unrecognized STATUS.json status to a known canonical status.
+/// This mirrors the keyword-based fuzzy matching in the pair harness so Nexus can
+/// re-map blocked tickets without requiring the pair to re-run.
+fn remap_unrecognized_status(raw: &str) -> Option<&'static str> {
+    let upper = raw.trim().to_uppercase();
+
+    // Same priority ordering as pair_harness::normalize_status keyword matching.
+    // More-specific matches checked before less-specific ones.
+
+    // PR-related keywords
+    if (upper.contains("PR") || upper.contains("PULL_REQUEST"))
+        && (upper.contains("OPEN") || upper.contains("CREAT") || upper.contains("SUBMIT"))
+    {
+        return Some("PR_OPENED");
+    }
+    if upper.contains("EXHAUST") || upper.contains("FUEL") || upper.contains("BUDGET") {
+        return Some("FUEL_EXHAUSTED");
+    }
+    // Sentinel checked before generic REVIEW (more specific)
+    if upper.contains("SENTINEL") {
+        return Some("AWAITING_SENTINEL_REVIEW");
+    }
+    if upper.contains("APPROVE") || (upper.contains("READY") && !upper.contains("PR")) {
+        return Some("APPROVED_READY");
+    }
+    // Review keywords — exclude if completion keywords also present
+    let has_completion_keyword = upper.contains("DONE")
+        || upper.contains("COMPLETE")
+        || upper.contains("FINISH")
+        || upper.contains("SUCCESS");
+    if !has_completion_keyword
+        && (upper.contains("REVIEW")
+            || upper.contains("WAIT")
+            || upper.contains("PAUSE")
+            || upper.contains("HOLD"))
+    {
+        return Some("PENDING_REVIEW");
+    }
+    if upper.contains("DONE")
+        || upper.contains("COMPLETE")
+        || upper.contains("FINISH")
+        || upper.contains("SUCCESS")
+    {
+        return Some("COMPLETE");
+    }
+    if upper.contains("BLOCK")
+        || upper.contains("FAIL")
+        || upper.contains("ERROR")
+        || upper.contains("STUCK")
+        || upper.contains("ABORT")
+        || upper.contains("ABANDON")
+        || upper.contains("CANNOT")
+    {
+        return Some("BLOCKED");
+    }
+    if upper.contains("SEGMENT") {
+        return Some("SEGMENT_N_DONE");
+    }
+    None
+}
+
+/// Auto-resolve tickets that failed due to unrecognized STATUS.json statuses.
+/// When FORGE writes an unrecognized status, the pair harness treats it as Blocked.
+/// Nexus can re-map the raw status to a known canonical status and reset the ticket
+/// so the worker can be re-assigned without the cycle stalling.
+fn auto_resolve_unrecognized_statuses(tickets: &mut [Ticket]) -> usize {
+    let mut resolved = 0;
+    for ticket in tickets.iter_mut() {
+        if let TicketStatus::Failed { reason, worker_id: _, attempts: _ } = &ticket.status {
+            if reason.starts_with("Unrecognized STATUS.json status:") {
+                // Parse the raw status from the reason string:
+                // "Unrecognized STATUS.json status: AWAITING_REVIEW (normalized: AWAITING_REVIEW)"
+                let raw_status = reason
+                    .strip_prefix("Unrecognized STATUS.json status: ")
+                    .and_then(|s| s.split(" (normalized:").next())
+                    .unwrap_or("")
+                    .trim();
+
+                if let Some(remapped) = remap_unrecognized_status(raw_status) {
+                    info!(
+                        ticket_id = %ticket.id,
+                        raw_status = raw_status,
+                        remapped = remapped,
+                        "Auto-resolving unrecognized STATUS.json status"
+                    );
+                    // Non-terminal statuses (PENDING_REVIEW, AWAITING_SENTINEL_REVIEW,
+                    // APPROVED_READY, SEGMENT_N_DONE) mean the agent was trying to signal
+                    // it needed more work/review — reset ticket so it can be re-assigned.
+                    // Terminal statuses (COMPLETE, PR_OPENED) mean the work was actually
+                    // done — also reset to Open for re-assignment (the pair will detect
+                    // existing PR/progress).
+                    ticket.status = TicketStatus::Open;
+                    resolved += 1;
+                }
+            }
+        }
+    }
+    resolved
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct UnmergedPr {
     pub pr_number: u64,
@@ -76,15 +176,6 @@ pub struct FlowRecovery {
     pub needs_recovery: bool,
 }
 
-#[derive(Debug, Deserialize)]
-struct GitHubIssue {
-    number: u64,
-    title: String,
-    body: Option<String>,
-    html_url: String,
-    pull_request: Option<serde_json::Value>,
-}
-
 pub struct NexusNode {
     pub persona_path: PathBuf,
     pub registry_path: PathBuf,
@@ -111,26 +202,14 @@ impl NexusNode {
             }
         };
 
-        let url = format!(
-            "https://api.github.com/repos/{}/{}/issues?state=open",
-            owner, repo_name
-        );
-
-        let client = reqwest::Client::new();
-        let resp = client
-            .get(&url)
-            .header("Authorization", format!("Bearer {}", token))
-            .header("User-Agent", "agent-nexus")
-            .header("Accept", "application/vnd.github+json")
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            warn!(status = %resp.status(), "GitHub API request failed during issue sync");
-            return Ok(());
-        }
-
-        let gh_issues: Vec<GitHubIssue> = resp.json().await?;
+        let client = github::GithubRestClient::new(&token);
+        let gh_issues = match client.list_open_issues(owner, repo_name).await {
+            Ok(issues) => issues,
+            Err(e) => {
+                warn!(error = %e, "GitHub API request failed during issue sync");
+                return Ok(());
+            }
+        };
 
         let mut tickets: Vec<Ticket> = store.get_typed(KEY_TICKETS).await.unwrap_or_default();
 
@@ -215,14 +294,26 @@ impl NexusNode {
                             if reason.contains("Merge conflicts")
                                 || reason.contains("merge conflict")
                                 || reason.contains("conflict rework")
+                                || reason.contains("CI failed")
+                                || reason.contains("CI timed out")
+                                || reason.contains("no worker available for fix")
+                                || reason.contains("fix attempts")
                             {
                                 info!(
                                     pr_number = pr.number,
                                     ticket_id = %tid,
-                                    "Skipping re-add of PR for ticket with merge conflict failure — worker will be assigned for rework"
+                                    "Skipping re-add of PR for ticket with CI or conflict failure — worker will be assigned for rework"
                                 );
                                 continue;
                             }
+                        }
+                        if matches!(ticket.status, TicketStatus::InProgress { .. }) {
+                            info!(
+                                pr_number = pr.number,
+                                ticket_id = %tid,
+                                "Skipping re-add of PR for ticket with InProgress status — CI fix already in flight"
+                            );
+                            continue;
                         }
                     }
                 }
@@ -282,11 +373,15 @@ impl NexusNode {
                                 if reason.contains("Merge conflicts")
                                     || reason.contains("merge conflict")
                                     || reason.contains("conflict rework")
+                                    || reason.contains("CI failed")
+                                    || reason.contains("CI timed out")
+                                    || reason.contains("no worker available for fix")
+                                    || reason.contains("fix attempts")
                                 {
                                     info!(
                                         ticket_id = tid,
                                         pr_number = pr.number,
-                                        "Ticket has merge conflict failure — NOT overriding to Completed, retaining Failed for rework assignment"
+                                        "Ticket has CI or conflict failure — NOT overriding to Completed, retaining Failed for rework assignment"
                                     );
                                 } else {
                                     info!(
@@ -316,6 +411,13 @@ impl NexusNode {
                                     outcome: "pr_opened".to_string(),
                                 };
                                 tickets_changed = true;
+                            }
+                            TicketStatus::InProgress { .. } => {
+                                info!(
+                                    ticket_id = tid,
+                                    pr_number = pr.number,
+                                    "Ticket has open PR but is InProgress (CI fix in flight) — NOT overriding to Completed"
+                                );
                             }
                             _ => {}
                         }
@@ -670,6 +772,12 @@ impl Node for NexusNode {
 
         let mut tickets: Vec<Ticket> = store.get_typed(KEY_TICKETS).await.unwrap_or_default();
 
+        let resolved = auto_resolve_unrecognized_statuses(&mut tickets);
+        if resolved > 0 {
+            info!(resolved, "Auto-resolved tickets with unrecognized STATUS.json statuses");
+            store.set(KEY_TICKETS, json!(tickets)).await;
+        }
+
         self.ensure_ci_setup_ticket(store, &mut tickets, &ci_readiness);
         Self::prioritize_ci_first(&mut tickets);
 
@@ -904,5 +1012,90 @@ impl Node for NexusNode {
         }
 
         Ok(Action::new(decision.action))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_remap_unrecognized_status_review_keywords() {
+        assert_eq!(remap_unrecognized_status("AWAITING_REVIEW"), Some("PENDING_REVIEW"));
+        assert_eq!(remap_unrecognized_status("REVIEW_PENDING"), Some("PENDING_REVIEW"));
+        assert_eq!(remap_unrecognized_status("WAITING_FOR_APPROVAL"), Some("PENDING_REVIEW"));
+        assert_eq!(remap_unrecognized_status("ON_HOLD"), Some("PENDING_REVIEW"));
+        assert_eq!(remap_unrecognized_status("SENTINEL_REVIEW_NEEDED"), Some("AWAITING_SENTINEL_REVIEW"));
+    }
+
+    #[test]
+    fn test_remap_unrecognized_status_done_keywords() {
+        assert_eq!(remap_unrecognized_status("ALL_DONE"), Some("COMPLETE"));
+        assert_eq!(remap_unrecognized_status("IMPLEMENTATION_COMPLETE"), Some("COMPLETE"));
+        assert_eq!(remap_unrecognized_status("FINISHED_WORK"), Some("COMPLETE"));
+    }
+
+    #[test]
+    fn test_remap_unrecognized_status_blocked_keywords() {
+        assert_eq!(remap_unrecognized_status("BUILD_FAILED"), Some("BLOCKED"));
+        assert_eq!(remap_unrecognized_status("ERROR_OCCURRED"), Some("BLOCKED"));
+        assert_eq!(remap_unrecognized_status("CANNOT_PROCEED_FURTHER"), Some("BLOCKED"));
+    }
+
+    #[test]
+    fn test_remap_unrecognized_status_pr_keywords() {
+        assert_eq!(remap_unrecognized_status("PR_OPEN_PENDING"), Some("PR_OPENED"));
+        assert_eq!(remap_unrecognized_status("PULL_REQUEST_CREATED"), Some("PR_OPENED"));
+    }
+
+    #[test]
+    fn test_remap_unrecognized_status_fuel_keywords() {
+        assert_eq!(remap_unrecognized_status("BUDGET_EXCEEDED"), Some("FUEL_EXHAUSTED"));
+        assert_eq!(remap_unrecognized_status("FUEL_DEPLETED"), Some("FUEL_EXHAUSTED"));
+    }
+
+    #[test]
+    fn test_remap_unrecognized_status_no_match() {
+        assert_eq!(remap_unrecognized_status("MYSTERY"), None);
+        assert_eq!(remap_unrecognized_status("GIBBERISH"), None);
+    }
+
+    #[test]
+    fn test_auto_resolve_unrecognized_statuses() {
+        let mut tickets = vec![
+            Ticket {
+                id: "T-001".to_string(),
+                title: "Test ticket".to_string(),
+                body: String::new(),
+                priority: 0,
+                branch: None,
+                issue_url: None,
+                attempts: 0,
+                status: TicketStatus::Failed {
+                    worker_id: "forge-1".to_string(),
+                    reason: "Unrecognized STATUS.json status: AWAITING_REVIEW (normalized: AWAITING_REVIEW)".to_string(),
+                    attempts: 1,
+                },
+            },
+            Ticket {
+                id: "T-002".to_string(),
+                title: "Other ticket".to_string(),
+                body: String::new(),
+                priority: 0,
+                branch: None,
+                issue_url: None,
+                attempts: 0,
+                status: TicketStatus::Failed {
+                    worker_id: "forge-2".to_string(),
+                    reason: "fuel_exhausted".to_string(),
+                    attempts: 1,
+                },
+            },
+        ];
+
+        let resolved = auto_resolve_unrecognized_statuses(&mut tickets);
+        assert_eq!(resolved, 1);
+        assert!(matches!(tickets[0].status, TicketStatus::Open));
+        assert!(matches!(tickets[1].status, TicketStatus::Failed { .. }));
     }
 }

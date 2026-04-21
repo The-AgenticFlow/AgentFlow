@@ -15,9 +15,20 @@ Signal terminal status to the harness. Use when work is complete or blocked.
 
 ## Status Values
 
+### Terminal statuses (ends the pair lifecycle)
 - `PR_OPENED` - Work complete, PR created
+- `COMPLETE` - All work done, PR creation deferred to harness
 - `BLOCKED` - Cannot proceed, needs intervention
 - `FUEL_EXHAUSTED` - Budget/tokens exhausted, need more allocation
+
+### Non-terminal statuses (continues the event loop)
+- `PENDING_REVIEW` - Work paused, waiting for review
+- `AWAITING_SENTINEL_REVIEW` - Segment done, waiting for SENTINEL evaluation
+- `APPROVED_READY` - Changes requested by SENTINEL have been addressed
+- `SEGMENT_N_DONE` - Segment N complete (e.g. `SEGMENT_1_DONE`)
+
+### IMPORTANT
+Do NOT use any other status value. Values like `AWAITING_REVIEW`, `DONE`, `FINISHED`, `SUCCESS`, `IMPLEMENTATION_COMPLETE` will be treated as `BLOCKED` and your work will be wasted.
 
 ## What it does
 
@@ -30,7 +41,7 @@ Signal terminal status to the harness. Use when work is complete or blocked.
 
 ```json
 {
-  "status": "PR_OPENED | BLOCKED | FUEL_EXHAUSTED",
+  "status": "PR_OPENED | COMPLETE | BLOCKED | FUEL_EXHAUSTED | PENDING_REVIEW | AWAITING_SENTINEL_REVIEW | APPROVED_READY | SEGMENT_N_DONE",
   "pair": "pair-{N}",
   "ticket_id": "T-{id}",
   "branch": "forge-{N}/T-{id}",

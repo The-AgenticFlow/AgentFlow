@@ -58,21 +58,28 @@ pub struct PairConfig {
 }
 
 impl PairConfig {
+    fn shared_path(project_root: &std::path::Path, pair_id: &str, ticket_id: &str) -> PathBuf {
+        project_root
+            .join("orchestration")
+            .join("pairs")
+            .join(pair_id)
+            .join(ticket_id)
+            .join("shared")
+    }
+
     /// Create a new pair configuration with filesystem-based state.
     pub fn new(
         pair_id: impl Into<String>,
+        ticket_id: impl Into<String>,
         project_root: &std::path::Path,
         github_token: impl Into<String>,
     ) -> Self {
         let pair_id = pair_id.into();
+        let ticket_id = ticket_id.into();
         Self {
             project_root: project_root.to_path_buf(),
             worktree: project_root.join("worktrees").join(&pair_id),
-            shared: project_root
-                .join("orchestration")
-                .join("pairs")
-                .join(&pair_id)
-                .join("shared"),
+            shared: Self::shared_path(project_root, &pair_id, &ticket_id),
             pair_id,
             redis_url: None,
             proxy_url: None,
@@ -85,19 +92,17 @@ impl PairConfig {
     /// Create a pair configuration with Redis backend.
     pub fn with_redis(
         pair_id: impl Into<String>,
+        ticket_id: impl Into<String>,
         project_root: &std::path::Path,
         redis_url: impl Into<String>,
         github_token: impl Into<String>,
     ) -> Self {
         let pair_id = pair_id.into();
+        let ticket_id = ticket_id.into();
         Self {
             project_root: project_root.to_path_buf(),
             worktree: project_root.join("worktrees").join(&pair_id),
-            shared: project_root
-                .join("orchestration")
-                .join("pairs")
-                .join(&pair_id)
-                .join("shared"),
+            shared: Self::shared_path(project_root, &pair_id, &ticket_id),
             pair_id,
             redis_url: Some(redis_url.into()),
             proxy_url: None,
@@ -109,20 +114,18 @@ impl PairConfig {
 
     pub fn with_proxy(
         pair_id: impl Into<String>,
+        ticket_id: impl Into<String>,
         project_root: &std::path::Path,
         redis_url: Option<String>,
         proxy_url: impl Into<String>,
         github_token: impl Into<String>,
     ) -> Self {
         let pair_id = pair_id.into();
+        let ticket_id = ticket_id.into();
         Self {
             project_root: project_root.to_path_buf(),
             worktree: project_root.join("worktrees").join(&pair_id),
-            shared: project_root
-                .join("orchestration")
-                .join("pairs")
-                .join(&pair_id)
-                .join("shared"),
+            shared: Self::shared_path(project_root, &pair_id, &ticket_id),
             pair_id,
             redis_url,
             proxy_url: Some(proxy_url.into()),
@@ -236,7 +239,7 @@ pub struct StatusJson {
     pub pair: Option<String>,
     /// Ticket identifier - can be "ticket" or "ticket_id" in STATUS.json
     /// FORGE may omit this field; we fall back to the pair's known ticket_id.
-    #[serde(alias = "ticket", default)]
+    #[serde(alias = "ticket", alias = "task_id", default)]
     pub ticket_id: Option<String>,
     /// PR URL (if PR_OPENED)
     #[serde(skip_serializing_if = "Option::is_none")]

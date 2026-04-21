@@ -4,7 +4,7 @@
 
 The `ForgePairNode` integrates the full event-driven FORGE-SENTINEL lifecycle into the PocketFlow workflow engine.
 
-**Note:** This implementation uses **filesystem-based state** by default, eliminating the need for Redis. State is stored in the shared directory at `orchestration/pairs/{pair-id}/shared/state.json`.
+**Note:** This implementation uses **filesystem-based state** by default, eliminating the need for Redis. State is stored in the shared directory at `orchestration/pairs/{pair-id}/{ticket-id}/shared/state.json`.
 
 ## Architecture
 
@@ -114,8 +114,10 @@ The node returns outcomes mapped to worker status:
 | `PairOutcome` | Worker Status | Description |
 |---------------|---------------|-------------|
 | `PrOpened` | `Done` | PR successfully opened |
-| `Blocked` | `Suspended` | Needs human intervention |
+| `Blocked` | `Suspended` | Needs human intervention (includes actual error detail) |
 | `FuelExhausted` | `Idle` | Max resets exceeded |
+
+**Note on blocked reasons:** When a push fails, the blocked reason contains the actual error from GitHub (e.g., `"Push rejected: secrets detected in git history — GH013: ..."`) rather than the generic `"needs push/PR creation"`. This allows NEXUS to make informed decisions instead of blindly re-approving the same failing action.
 
 ### Configuration
 
@@ -125,7 +127,7 @@ The `PairConfig` is automatically created with:
 PairConfig {
     pair_id: worker_id,          // e.g., "forge-1"
     worktree: workspace_root/worktrees/forge-1/,
-    shared: workspace_root/orchestration/pairs/forge-1/shared/,
+    shared: workspace_root/orchestration/pairs/forge-1/T-42/shared/,
     redis_url: "redis://localhost:6379",
     github_token: "ghp_...",
     max_resets: 10,              // Default
@@ -283,8 +285,66 @@ See [`crates/pair-harness/tests/full_e2e.rs`](../crates/pair-harness/tests/full_
 | Scalability | Long-running process model |
 | Observability | Detailed segment evaluations |
 
+## Push Error Recovery
+
+When FORGE completes work but the pair exits without a PR (e.g., `PairOutcome::Blocked` with reason "needs push/PR creation"), `ForgePairNode` attempts to push and create the PR itself. This flow now handles errors intelligently:
+
+### Secret Scanning Rejection (GH013)
+
+The protection is **generic** — it covers any file in the worktree that contains secrets, not just `.claude/`:
+
+```
+git push → rejected: GH013 "Push cannot contain secrets"
+  (e.g., any file containing a GitHub PAT, AWS key, etc.)
+↓
+scan_and_scrub_secrets():
+  - Recursively scan ALL text files in worktree for known secret patterns
+  - Replace literal values with placeholders
+  - Dynamically add directories with secrets to .gitignore
+↓
+git_add_safe():
+  - untrack_secret_containing_files(): check all git ls-files for secrets
+  - git rm --cached <any-secret-file> (not just .claude/)
+  - git add -A
+↓
+Commit scrubbed state
+↓
+rewrite_secret_commits():
+  - list_secret_containing_tracked_files(): find ALL tracked files with secrets
+  - git filter-branch to remove them from history
+↓
+Retry push
+↓
+Success → continue to PR creation
+Failure → blocked with full error detail
+```
+
+### Non-Fast-Forward Rejection
+
+Only genuine non-fast-forward rejections trigger `--force-with-lease`. Secret scanning rejections are never force-pushed.
+
+### Generic Push Failure
+
+The worker is immediately blocked with the full stderr in the reason string.
+
+### Key Code References
+
+| Function | Location | Purpose |
+|----------|----------|---------|
+| `scan_and_scrub_secrets()` | `agent-forge/src/lib.rs` | Recursively scan all text files in worktree for secrets |
+| `scan_dir_for_secrets()` | `agent-forge/src/lib.rs` | Recursive directory walker with skip-list |
+| `redact_patterns()` | `agent-forge/src/lib.rs` | Regex-based secret pattern matching |
+| `contains_secrets()` | `agent-forge/src/lib.rs` | Lightweight check (same patterns, no modification) |
+| `git_add_safe()` | `agent-forge/src/lib.rs` | Untrack secret-containing files then git add -A |
+| `untrack_secret_containing_files()` | `agent-forge/src/lib.rs` | Check all tracked files for secrets and untrack |
+| `rewrite_secret_commits()` | `agent-forge/src/lib.rs` | Remove all secret-containing files from git history |
+| `list_secret_containing_tracked_files()` | `agent-forge/src/lib.rs` | Find all tracked files that contain secrets |
+| `ensure_exclusions()` | `agent-forge/src/lib.rs` | Dynamically add directories to .gitignore |
+| `ensure_worktree_gitignore()` | `pair-harness/src/provision.rs` | Add known credential dirs (.claude/) to worktree .gitignore |
+
 ## Future Enhancements
 
+- [x] **Secret Protection**: Scrub secrets before push, rewrite history on GH013, accurate blocked reasons
 - [ ] **Parallel Segment Evaluation**: Evaluate multiple segments concurrently
 - [ ] **Smart Checkpointing**: More granular HANDOFF.md state
 - [ ] **Dynamic Watchdog**: Adjust timeout based on segment complexity

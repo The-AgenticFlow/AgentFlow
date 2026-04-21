@@ -50,6 +50,7 @@ pub enum VesselOutcome {
         ticket_id: Option<String>,
         pr_number: u64,
         reason: String,
+        failure_detail: Option<github::CiFailureDetail>,
     },
     /// CI passed but merge failed (conflict, etc.)
     MergeBlocked {

@@ -50,7 +50,7 @@ INFO agent_nexus: Nexus: Assigning ticket to worker   worker_id="forge-1" ticket
 For each assigned worker, the `ForgePairNode` creates an isolated environment:
 
 - **Git worktree** — A separate working copy at `~/.agentflow/workspaces/<owner>-<repo>/worktrees/forge-1/` on its own branch (`forge-1/T-005`). This lets multiple workers operate independently without conflicts.
-- **Shared directory** — A `orchestration/pairs/forge-1/shared/` directory where FORGE and SENTINEL communicate through files. This is the heart of the pair harness.
+- **Shared directory** — A `orchestration/pairs/forge-1/T-005/shared/` directory where FORGE and SENTINEL communicate through files. This is the heart of the pair harness, scoped per ticket.
 
 ```
 workspace/
@@ -169,7 +169,7 @@ The shared directory is how FORGE and SENTINEL communicate. Here is what each fi
   - `agent_nexus` — orchestration decisions
   - `pair_harness::pair` — lifecycle transitions
   - `pair_harness::process` — process spawn/exit events
-- **Inspect the shared directory**: `ls ~/.agentflow/workspaces/<repo>/orchestration/pairs/forge-1/shared/` shows you exactly where the pair is in the lifecycle.
+- **Inspect the shared directory**: `ls ~/.agentflow/workspaces/<repo>/orchestration/pairs/forge-1/T-005/shared/` shows you exactly where the pair is in the lifecycle.
 - **Check worktree diffs**: `git -C ~/.agentflow/workspaces/<repo>/worktrees/forge-1 log --oneline` shows what FORGE has committed.
 
 ## Troubleshooting

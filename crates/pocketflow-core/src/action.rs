@@ -26,6 +26,7 @@ impl Action {
     // ── VESSEL actions ─────────────────────────────────────────────────
     pub const DEPLOYED: &'static str = "deployed";
     pub const DEPLOY_FAILED: &'static str = "deploy_failed";
+    pub const CI_FIX_NEEDED: &'static str = "ci_fix_needed";
 
     // ── LORE actions ───────────────────────────────────────────────────
     pub const DOCUMENTED: &'static str = "documented";

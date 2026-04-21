@@ -6,6 +6,7 @@ use std::path::Path;
 fn test_pair_config_with_proxy() {
     let config = PairConfig::with_proxy(
         "pair-1",
+        "T-1",
         Path::new("/tmp/project"),
         Some("redis://localhost:6379".to_string()),
         "http://proxy:4000",
@@ -19,7 +20,7 @@ fn test_pair_config_with_proxy() {
 
 #[test]
 fn test_pair_config_without_proxy() {
-    let config = PairConfig::new("pair-1", Path::new("/tmp/project"), "ghp_test");
+    let config = PairConfig::new("pair-1", "T-1", Path::new("/tmp/project"), "ghp_test");
 
     assert!(config.proxy_url.is_none());
 }

@@ -85,7 +85,34 @@ impl Provisioner {
             }
         });
 
-        self.write_json(&settings_path, &settings)
+        self.write_json(&settings_path, &settings)?;
+
+        self.ensure_worktree_gitignore(worktree)
+    }
+
+    fn ensure_worktree_gitignore(&self, worktree: &Path) -> Result<()> {
+        let gitignore_path = worktree.join(".gitignore");
+        let claude_entry = ".claude/";
+
+        let existing = fs::read_to_string(&gitignore_path).unwrap_or_default();
+
+        if !existing.lines().any(|l| l.trim() == claude_entry) {
+            let updated = if existing.is_empty() {
+                format!("{}\n", claude_entry)
+            } else if existing.ends_with('\n') {
+                format!("{}{}\n", existing, claude_entry)
+            } else {
+                format!("{}\n{}\n", existing, claude_entry)
+            };
+            fs::write(&gitignore_path, updated)
+                .context("Failed to update .gitignore with .claude/ exclusion")?;
+            info!(
+                path = %gitignore_path.display(),
+                "Added .claude/ to worktree .gitignore"
+            );
+        }
+
+        Ok(())
     }
 
     /// Create SENTINEL's settings.json with read-only permissions.

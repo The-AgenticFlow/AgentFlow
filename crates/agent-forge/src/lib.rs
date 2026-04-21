@@ -313,7 +313,7 @@ impl BatchNode for ForgeNode {
                             opened_prs.push(json!({
                                 "number": pr_number,
                                 "ticket_id": ticket_id,
-                                "branch": branch,
+                                "head_branch": branch,
                                 "worker_id": worker_id,
                             }));
                         }
@@ -672,6 +672,8 @@ impl ForgePairNode {
             ));
         }
 
+        Self::scan_and_scrub_secrets(&worktree_path)?;
+
         let has_changes = StdCommand::new("git")
             .args(["status", "--porcelain"])
             .current_dir(&worktree_path)
@@ -684,11 +686,7 @@ impl ForgePairNode {
                 worker = worker_id,
                 "Committing uncommitted changes before push"
             );
-            StdCommand::new("git")
-                .args(["add", "-A"])
-                .current_dir(&worktree_path)
-                .output()
-                .context("Failed to git add")?;
+            Self::git_add_safe(&worktree_path)?;
 
             StdCommand::new("git")
                 .args([
@@ -721,10 +719,45 @@ impl ForgePairNode {
 
         if !push_output.status.success() {
             let stderr = String::from_utf8_lossy(&push_output.stderr);
-            if stderr.contains("non-fast-forward")
-                || stderr.contains("rejected")
-                || stderr.contains("fetch first")
-            {
+
+            if stderr.contains("GH013") || stderr.contains("Push cannot contain secrets") || stderr.contains("secret-scanning") {
+                info!(
+                    worker = worker_id,
+                    branch = %branch_name,
+                    "Push rejected due to secret scanning — scrubbing secrets and rewriting history"
+                );
+
+                Self::scan_and_scrub_secrets(&worktree_path)?;
+                Self::git_add_safe(&worktree_path)?;
+
+                let has_fixup = StdCommand::new("git")
+                    .args(["status", "--porcelain"])
+                    .current_dir(&worktree_path)
+                    .output()
+                    .map(|o| !o.stdout.is_empty())
+                    .unwrap_or(false);
+
+                if has_fixup {
+                    StdCommand::new("git")
+                        .args(["commit", "-m", &format!("{}: scrub secrets from tracked files", ticket_id)])
+                        .current_dir(&worktree_path)
+                        .output()
+                        .context("Failed to commit secret scrub")?;
+                }
+
+                Self::rewrite_secret_commits(&worktree_path)?;
+
+                let retry_push = StdCommand::new("git")
+                    .args(["push", "-u", "origin", &branch_name])
+                    .current_dir(&worktree_path)
+                    .output()
+                    .context("Failed to retry push after secret scrub")?;
+
+                if !retry_push.status.success() {
+                    let retry_stderr = String::from_utf8_lossy(&retry_push.stderr);
+                    return Err(anyhow!("Push still rejected after secret scrub: {}", retry_stderr));
+                }
+            } else if stderr.contains("non-fast-forward") || stderr.contains("fetch first") {
                 info!(worker = worker_id, branch = %branch_name, "Normal push rejected — force-pushing with --force-with-lease");
                 let force_push = StdCommand::new("git")
                     .args(["push", "-u", "origin", &branch_name, "--force-with-lease"])
@@ -734,10 +767,15 @@ impl ForgePairNode {
 
                 if !force_push.status.success() {
                     let force_stderr = String::from_utf8_lossy(&force_push.stderr);
+                    if force_stderr.contains("GH013") || force_stderr.contains("Push cannot contain secrets") {
+                        return Err(anyhow!("Force-push rejected by secret scanning — secrets remain in git history. Error: {}", force_stderr));
+                    }
                     return Err(anyhow!("Failed to force-push branch: {}", force_stderr));
                 }
-            } else if !stderr.contains("already exists") && !stderr.contains("up-to-date") {
+            } else if !stderr.contains("already exists") && !stderr.contains("up-to-date") && !stderr.contains("rejected") {
                 return Err(anyhow!("Failed to push branch: {}", stderr));
+            } else if stderr.contains("rejected") && !stderr.contains("non-fast-forward") && !stderr.contains("GH013") {
+                return Err(anyhow!("Push rejected: {}", stderr));
             }
         }
 
@@ -847,6 +885,322 @@ impl ForgePairNode {
         info!(pr_url = %pr.html_url, pr_number = pr.number, "PR created via GitHub API");
         Ok((pr.html_url, pr.number, branch_name))
     }
+
+    fn scan_and_scrub_secrets(worktree_path: &std::path::Path) -> Result<()> {
+        info!(
+            path = %worktree_path.display(),
+            "Scanning worktree for secrets before commit"
+        );
+
+        let token_env = std::env::var("GITHUB_TOKEN")
+            .or_else(|_| std::env::var("GITHUB_PERSONAL_ACCESS_TOKEN"))
+            .unwrap_or_default();
+
+        let mut dirty_files: Vec<std::path::PathBuf> = Vec::new();
+        Self::scan_dir_for_secrets(worktree_path, worktree_path, &token_env, &mut dirty_files)?;
+
+        if !dirty_files.is_empty() {
+            info!(
+                count = dirty_files.len(),
+                "Found and redacted secrets in files across worktree"
+            );
+        }
+
+        Self::ensure_exclusions(worktree_path, &dirty_files)?;
+
+        Ok(())
+    }
+
+    fn scan_dir_for_secrets(
+        base: &std::path::Path,
+        dir: &std::path::Path,
+        token_env: &str,
+        dirty_files: &mut Vec<std::path::PathBuf>,
+    ) -> Result<()> {
+        let skip_dirs = [".git", "node_modules", "target", "__pycache__", ".next", "dist", "build"];
+
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        if skip_dirs.contains(&name) {
+                            continue;
+                        }
+                    }
+                    Self::scan_dir_for_secrets(base, &path, token_env, dirty_files)?;
+                } else if path.is_file() {
+                    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                    let is_text = matches!(ext,
+                        "json" | "yaml" | "yml" | "toml" | "env" | "ini" | "cfg" |
+                        "md" | "txt" | "rs" | "ts" | "js" | "py" | "go" | "rb" |
+                        "sh" | "bash" | "zsh" | "fish" | "ps1" | "bat" |
+                        "xml" | "html" | "css" | "scss" | "less" |
+                        "tf" | "tfvars" | "hcl" | "properties" | "conf"
+                    ) || path.file_name().is_some_and(|n| {
+                        let n = n.to_str().unwrap_or("");
+                        n == ".env" || n == ".env.local" || n.starts_with(".env.") || n == "credentials" || n == "secrets"
+                    });
+
+                    if !is_text {
+                        continue;
+                    }
+
+                    if let Ok(content) = std::fs::read_to_string(&path) {
+                        let mut modified = content.clone();
+                        if !token_env.is_empty() {
+                            modified = modified.replace(token_env, "${REDACTED_SECRET}");
+                        }
+                        modified = Self::redact_patterns(&modified);
+                        if modified != content {
+                            std::fs::write(&path, &modified)?;
+                            let rel = path.strip_prefix(base).unwrap_or(&path);
+                            info!(path = %rel.display(), "Redacted secrets from file");
+                            dirty_files.push(path.strip_prefix(base).unwrap_or(&path).to_path_buf());
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn ensure_exclusions(
+        worktree_path: &std::path::Path,
+        dirty_files: &[std::path::PathBuf],
+    ) -> Result<()> {
+        let mut entries_to_add: Vec<String> = Vec::new();
+
+        for rel in dirty_files {
+            if let Some(parent) = rel.parent() {
+                let parent_str = parent.to_str().unwrap_or("");
+                if !parent_str.is_empty() && !parent_str.starts_with("..") {
+                    let dir_entry = format!("{}/", parent_str);
+                    if !entries_to_add.contains(&dir_entry) {
+                        entries_to_add.push(dir_entry);
+                    }
+                }
+            }
+        }
+
+        let always_exclude = [".claude/", ".env.local"];
+        for entry in always_exclude {
+            if !entries_to_add.contains(&entry.to_string()) {
+                entries_to_add.push(entry.to_string());
+            }
+        }
+
+        if entries_to_add.is_empty() {
+            return Ok(());
+        }
+
+        let gitignore_path = worktree_path.join(".gitignore");
+        let existing = std::fs::read_to_string(&gitignore_path).unwrap_or_default();
+        let mut updated = existing.clone();
+
+        for entry in entries_to_add {
+            let entry_variants = [entry.as_str(), entry.trim_end_matches('/')];
+            if !updated.lines().any(|l| {
+                let trimmed = l.trim();
+                entry_variants.contains(&trimmed)
+            }) {
+                if updated.is_empty() {
+                    updated = format!("{}\n", entry);
+                } else if updated.ends_with('\n') {
+                    updated = format!("{}{}\n", updated, entry);
+                } else {
+                    updated = format!("{}\n{}\n", updated, entry);
+                }
+            }
+        }
+
+        if updated != existing {
+            std::fs::write(&gitignore_path, updated)?;
+        }
+
+        Ok(())
+    }
+
+    fn redact_patterns(content: &str) -> String {
+        let patterns = [
+            (r#"GITHUB_PERSONAL_ACCESS_TOKEN":\s*"[^"]*""#, 
+             r#"GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_PERSONAL_ACCESS_TOKEN}""#),
+            (r#"ghp_[A-Za-z0-9]{36}"#, 
+             r#"REDACTED_GITHUB_TOKEN"#),
+            (r#"gho_[A-Za-z0-9]{36}"#, 
+             r#"REDACTED_GITHUB_OAUTH"#),
+            (r#"ghu_[A-Za-z0-9]{36}"#, 
+             r#"REDACTED_GITHUB_USER"#),
+            (r#"ghs_[A-Za-z0-9]{36}"#, 
+             r#"REDACTED_GITHUB_SRE"#),
+            (r#"github_pat_[A-Za-z0-9_]{82}"#, 
+             r#"REDACTED_GITHUB_FINE_GRAINED_PAT"#),
+            (r#"sk-[A-Za-z0-9]{20}T3[A-Za-z0-9]{3}"#, 
+             r#"REDACTED_OPENAI_KEY"#),
+            (r#"AKIA[0-9A-Z]{16}"#, 
+             r#"REDACTED_AWS_ACCESS_KEY"#),
+        ];
+
+        let mut result = content.to_string();
+        for (pattern, replacement) in patterns {
+            if let Ok(re) = regex::Regex::new(pattern) {
+                result = re.replace_all(&result, replacement).to_string();
+            }
+        }
+        result
+    }
+
+    fn git_add_safe(worktree_path: &std::path::Path) -> Result<()> {
+        use std::process::Command as StdCommand;
+        use anyhow::Context as _;
+
+        Self::untrack_secret_containing_files(worktree_path)?;
+
+        StdCommand::new("git")
+            .args(["add", "-A"])
+            .current_dir(worktree_path)
+            .output()
+            .context("Failed to git add")?;
+
+        Ok(())
+    }
+
+    fn untrack_secret_containing_files(worktree_path: &std::path::Path) -> Result<()> {
+        use std::process::Command as StdCommand;
+
+        let tracked = StdCommand::new("git")
+            .args(["ls-files"])
+            .current_dir(worktree_path)
+            .output();
+
+        if let Ok(output) = tracked {
+            if output.status.success() {
+                let files = String::from_utf8_lossy(&output.stdout);
+                for file in files.lines() {
+                    let file_path = worktree_path.join(file);
+                    if let Ok(content) = std::fs::read_to_string(&file_path) {
+                        if Self::contains_secrets(&content) {
+                            warn!(
+                                path = file,
+                                "Untracking file that contains secrets"
+                            );
+                            let _ = StdCommand::new("git")
+                                .args(["rm", "--cached", file])
+                                .current_dir(worktree_path)
+                                .output();
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn contains_secrets(content: &str) -> bool {
+        let secret_indicators = [
+            r"ghp_[A-Za-z0-9]{36}",
+            r"gho_[A-Za-z0-9]{36}",
+            r"ghu_[A-Za-z0-9]{36}",
+            r"ghs_[A-Za-z0-9]{36}",
+            r"github_pat_[A-Za-z0-9_]{82}",
+            r"sk-[A-Za-z0-9]{20}T3[A-Za-z0-9]{3}",
+            r"AKIA[0-9A-Z]{16}",
+        ];
+
+        let token_env = std::env::var("GITHUB_TOKEN")
+            .or_else(|_| std::env::var("GITHUB_PERSONAL_ACCESS_TOKEN"))
+            .unwrap_or_default();
+
+        if !token_env.is_empty() && content.contains(&token_env) {
+            return true;
+        }
+
+        for pattern in secret_indicators {
+            if let Ok(re) = regex::Regex::new(pattern) {
+                if re.is_match(content) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    fn rewrite_secret_commits(worktree_path: &std::path::Path) -> Result<()> {
+        use std::process::Command as StdCommand;
+
+        info!(
+            path = %worktree_path.display(),
+            "Attempting to rewrite commits containing secrets via git filter-repo"
+        );
+
+        let secret_files = Self::list_secret_containing_tracked_files(worktree_path);
+
+        if secret_files.is_empty() {
+            info!(path = %worktree_path.display(), "No tracked files contain secrets — no rewrite needed");
+            return Ok(());
+        }
+
+        let paths_arg = secret_files.join(" ");
+
+        let filter = format!(
+            r#"git rm --cached --ignore-unmatch {} 2>/dev/null; true"#,
+            paths_arg
+        );
+
+        let output = StdCommand::new("git")
+            .args(["filter-branch", "--force", "--index-filter", &filter, "--prune-empty", "--", "HEAD"])
+            .current_dir(worktree_path)
+            .output();
+
+        match output {
+            Ok(o) if o.status.success() => {
+                info!(path = %worktree_path.display(), "Successfully rewrote commits to remove secret-containing files from tracking");
+            }
+            Ok(o) => {
+                let stderr = String::from_utf8_lossy(&o.stderr);
+                if stderr.contains("no rewrite") || stderr.contains("nothing to rewrite") {
+                    info!(path = %worktree_path.display(), "No rewrite needed — no secret-containing files in history");
+                } else {
+                    warn!(
+                        path = %worktree_path.display(),
+                        error = %stderr,
+                        "git filter-branch produced warnings but may have succeeded"
+                    );
+                }
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to run git filter-branch — will try alternative approach");
+            }
+        }
+
+        Ok(())
+    }
+
+    fn list_secret_containing_tracked_files(worktree_path: &std::path::Path) -> Vec<String> {
+        use std::process::Command as StdCommand;
+
+        let tracked = StdCommand::new("git")
+            .args(["ls-files"])
+            .current_dir(worktree_path)
+            .output();
+
+        let mut result = Vec::new();
+        if let Ok(output) = tracked {
+            if output.status.success() {
+                let files = String::from_utf8_lossy(&output.stdout);
+                for file in files.lines() {
+                    let file_path = worktree_path.join(file);
+                    if let Ok(content) = std::fs::read_to_string(&file_path) {
+                        if Self::contains_secrets(&content) {
+                            result.push(file.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        result
+    }
 }
 
 #[async_trait]
@@ -904,7 +1258,12 @@ impl BatchNode for ForgePairNode {
 
         let ticket = self.build_ticket(&ticket_id, issue_url.as_deref()).await;
 
-        let config = PairConfig::new(&worker_id, &self.workspace_root, &self.github_token);
+        let config = PairConfig::new(
+            &worker_id,
+            &ticket_id,
+            &self.workspace_root,
+            &self.github_token,
+        );
 
         let mut pair = ForgeSentinelPair::new(config);
         let outcome = pair
@@ -961,11 +1320,24 @@ impl BatchNode for ForgePairNode {
                             }));
                         }
                         Err(e) => {
+                            let error_detail = format!("{:#}", e);
+                            let enriched_reason = if error_detail.contains("GH013") || error_detail.contains("secret") {
+                                format!("Push rejected: secrets detected in git history — {}", error_detail)
+                            } else {
+                                format!("Push failed: {}", error_detail)
+                            };
                             warn!(
                                 worker = worker_id,
-                                error = %e,
-                                "Failed to create PR via GitHub API - returning blocked"
+                                error = %enriched_reason,
+                                "Failed to create PR via GitHub API - returning blocked with error detail"
                             );
+                            return Ok(json!({
+                                "worker_id": worker_id,
+                                "ticket_id": ticket_id,
+                                "outcome": "blocked",
+                                "reason": enriched_reason,
+                                "blockers": blockers,
+                            }));
                         }
                     }
                 }
@@ -1072,7 +1444,7 @@ impl BatchNode for ForgePairNode {
                             opened_prs.push(json!({
                                 "number": pr_number,
                                 "ticket_id": ticket_id,
-                                "branch": branch,
+                                "head_branch": branch,
                                 "worker_id": worker_id,
                             }));
                             info!(pr_number, ticket_id, "Added PR to pending_prs for VESSEL");
@@ -1122,7 +1494,7 @@ impl BatchNode for ForgePairNode {
                                 opened_prs.push(json!({
                                     "number": pr_number,
                                     "ticket_id": ticket_id,
-                                    "branch": branch,
+                                    "head_branch": branch,
                                     "worker_id": worker_id,
                                     "pr_url": pr_url,
                                 }));

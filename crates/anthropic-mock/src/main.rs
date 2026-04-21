@@ -33,9 +33,10 @@ fn resolve_backend_url() -> String {
 
 fn resolve_backend_key() -> Result<String, String> {
     std::env::var("GATEWAY_API_KEY")
+        .or_else(|_| std::env::var("FIREWORKS_API_KEY"))
         .or_else(|_| std::env::var("PROXY_API_KEY"))
         .or_else(|_| std::env::var("OPENAI_API_KEY"))
-        .map_err(|_| "GATEWAY_API_KEY, PROXY_API_KEY, or OPENAI_API_KEY must be set".to_string())
+        .map_err(|_| "GATEWAY_API_KEY, FIREWORKS_API_KEY, PROXY_API_KEY, or OPENAI_API_KEY must be set".to_string())
 }
 
 fn parse_model_map() -> HashMap<String, String> {

@@ -43,7 +43,7 @@ impl TestConfig {
     }
 
     fn pair_config(&self, pair_id: &str) -> PairConfig {
-        PairConfig::new(pair_id, self.temp_dir.path(), "test_token")
+        PairConfig::new(pair_id, "T-42", self.temp_dir.path(), "test_token")
     }
 
     fn test_ticket() -> Ticket {

@@ -129,8 +129,8 @@ setup_test_env() {
     fi
     
     # Create test directories
-    mkdir -p orchestration/pairs/pair-1/shared
-    mkdir -p orchestration/pairs/pair-2/shared
+    mkdir -p orchestration/pairs/pair-1/T-42/shared
+    mkdir -p orchestration/pairs/pair-2/T-43/shared
     mkdir -p orchestration/locks
     mkdir -p worktrees
     
@@ -142,8 +142,8 @@ cleanup_test_env() {
     log_section "CLEANING UP TEST ENVIRONMENT"
     
     # Remove test artifacts (but keep the structure)
-    rm -rf orchestration/pairs/pair-1/shared/*
-    rm -rf orchestration/pairs/pair-2/shared/*
+    rm -rf orchestration/pairs/pair-1/T-42/shared/*
+    rm -rf orchestration/pairs/pair-2/T-43/shared/*
     rm -rf orchestration/locks/*
     
     # Remove worktrees if they exist
@@ -187,14 +187,14 @@ main() {
     # Step 4: Harness provisions pair-1 worktree
     log_harness "pair-1" "Provisioning worktree for T-42..."
     log_harness "pair-1" "  git worktree add worktrees/pair-1 -b forge-1/T-42"
-    log_harness "pair-1" "  Created orchestration/pairs/pair-1/shared/"
+    log_harness "pair-1" "  Created orchestration/pairs/pair-1/T-42/shared/"
     log_harness "pair-1" "  Generated worktrees/pair-1/.claude/settings.json"
     log_harness "pair-1" "  Generated worktrees/pair-1/.claude/mcp.json"
     log_harness "pair-1" "  Symlinked plugin to worktrees/pair-1/.claude/plugins/orchestration"
     
     # Create mock worktree structure
     mkdir -p worktrees/pair-1/.claude/plugins
-    mkdir -p orchestration/pairs/pair-1/shared
+    mkdir -p orchestration/pairs/pair-1/T-42/shared
     
     log_success "pair-1 worktree ready"
     
@@ -203,8 +203,8 @@ main() {
     log_forge "pair-1" "Session started (context window: 200k tokens)"
     log_forge "pair-1" "Hook: session_start.sh"
     log_forge "pair-1" "  NEW SESSION: No handoff found."
-    log_forge "pair-1" "  Reading orchestration/pairs/pair-1/shared/TICKET.md"
-    log_forge "pair-1" "  Reading orchestration/pairs/pair-1/shared/TASK.md"
+    log_forge "pair-1" "  Reading orchestration/pairs/pair-1/T-42/shared/TICKET.md"
+    log_forge "pair-1" "  Reading orchestration/pairs/pair-1/T-42/shared/TASK.md"
     log_success "FORGE-1 spawned"
     
     # Step 6: FORGE-1 writes PLAN.md
@@ -219,7 +219,7 @@ main() {
     log_forge "pair-1" "  Segment 4: Integration tests"
     
     # Create mock PLAN.md
-    cat > orchestration/pairs/pair-1/shared/PLAN.md << 'EOF'
+    cat > orchestration/pairs/pair-1/T-42/shared/PLAN.md << 'EOF'
 # Plan: Add user authentication endpoint
 
 ## Ticket: T-42
@@ -277,7 +277,7 @@ EOF
     log_sentinel "pair-1" "Writing CONTRACT.md (status: AGREED)"
     
     # Create mock CONTRACT.md
-    cat > orchestration/pairs/pair-1/shared/CONTRACT.md << 'EOF'
+    cat > orchestration/pairs/pair-1/T-42/shared/CONTRACT.md << 'EOF'
 # Contract: T-42
 
 ## Status: AGREED
@@ -331,7 +331,7 @@ EOF
     log_success "Segment 1 committed (sha: a3f9b12)"
     
     # Create mock WORKLOG.md
-    cat > orchestration/pairs/pair-1/shared/WORKLOG.md << 'EOF'
+    cat > orchestration/pairs/pair-1/T-42/shared/WORKLOG.md << 'EOF'
 # Worklog: T-42
 
 ## Segment 1: POST /auth/login endpoint
@@ -372,7 +372,7 @@ EOF
     log_sentinel "pair-1" "Writing segment-1-eval.md (verdict: APPROVED)"
     
     # Create mock segment eval
-    cat > orchestration/pairs/pair-1/shared/segment-1-eval.md << 'EOF'
+    cat > orchestration/pairs/pair-1/T-42/shared/segment-1-eval.md << 'EOF'
 # Segment 1 Evaluation
 
 ## Verdict: APPROVED
@@ -425,7 +425,7 @@ EOF
     log_sentinel "pair-1" "  Body: Implements JWT-based authentication..."
     
     # Create mock final review
-    cat > orchestration/pairs/pair-1/shared/final-review.md << 'EOF'
+    cat > orchestration/pairs/pair-1/T-42/shared/final-review.md << 'EOF'
 # Final Review: T-42
 
 ## Verdict: APPROVED
@@ -478,7 +478,7 @@ EOF
     log_forge "pair-1" "  {status: PR_OPENED, pr_url: ..., pr_number: 47}"
     
     # Create mock STATUS.json
-    cat > orchestration/pairs/pair-1/shared/STATUS.json << 'EOF'
+    cat > orchestration/pairs/pair-1/T-42/shared/STATUS.json << 'EOF'
 {
   "status": "PR_OPENED",
   "pr_url": "https://github.com/test-org/test-project/pull/47",
@@ -532,12 +532,12 @@ EOF
     log_section "RUNNING ASSERTIONS"
     
     # Verify files exist
-    assert_file_exists "orchestration/pairs/pair-1/shared/PLAN.md"
-    assert_file_exists "orchestration/pairs/pair-1/shared/CONTRACT.md"
-    assert_file_exists "orchestration/pairs/pair-1/shared/WORKLOG.md"
-    assert_file_exists "orchestration/pairs/pair-1/shared/segment-1-eval.md"
-    assert_file_exists "orchestration/pairs/pair-1/shared/final-review.md"
-    assert_file_exists "orchestration/pairs/pair-1/shared/STATUS.json"
+    assert_file_exists "orchestration/pairs/pair-1/T-42/shared/PLAN.md"
+    assert_file_exists "orchestration/pairs/pair-1/T-42/shared/CONTRACT.md"
+    assert_file_exists "orchestration/pairs/pair-1/T-42/shared/WORKLOG.md"
+    assert_file_exists "orchestration/pairs/pair-1/T-42/shared/segment-1-eval.md"
+    assert_file_exists "orchestration/pairs/pair-1/T-42/shared/final-review.md"
+    assert_file_exists "orchestration/pairs/pair-1/T-42/shared/STATUS.json"
     
     # Verify status
     assert_status "pair-1" "PR_OPENED"

@@ -70,6 +70,24 @@ If you receive a "CONTEXT RESET REQUIRED" message:
 2. This writes `HANDOFF.md` with your current state
 3. Exit cleanly - a fresh FORGE will continue from your handoff
 
+## Valid STATUS.json Status Values
+
+When writing `STATUS.json`, you MUST use one of these exact status strings.
+Any other value will be treated as `BLOCKED` and your work will be wasted.
+
+| Status | When to use |
+|---|---|
+| `PR_OPENED` | Work complete and PR created (include `pr_url`, `pr_number`, `branch`) |
+| `COMPLETE` | All work done but PR creation deferred to harness |
+| `BLOCKED` | Cannot proceed (include `reason` and `blockers`) |
+| `FUEL_EXHAUSTED` | Budget/tokens exhausted |
+| `PENDING_REVIEW` | Work paused, waiting for review |
+| `AWAITING_SENTINEL_REVIEW` | Segment done, waiting for SENTINEL evaluation |
+| `APPROVED_READY` | Changes requested by SENTINEL have been addressed |
+| `SEGMENT_N_DONE` | Segment N complete (e.g. `SEGMENT_1_DONE`) |
+
+Do NOT invent status values. If you need review use `PENDING_REVIEW`. If you need help use `BLOCKED`.
+
 ## When work is complete
 
 When SENTINEL approves all segments and you're ready to finish:

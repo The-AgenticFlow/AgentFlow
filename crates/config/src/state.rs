@@ -98,3 +98,4 @@ pub const ACTION_DEPLOY_FAILED: &str = "deploy_failed";
 pub const ACTION_MERGE_BLOCKED: &str = "merge_blocked";
 pub const ACTION_MERGE_PRS: &str = "merge_prs";
 pub const ACTION_CONFLICTS_DETECTED: &str = "conflicts_detected";
+pub const ACTION_CI_FIX_NEEDED: &str = "ci_fix_needed";

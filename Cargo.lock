@@ -24,6 +24,7 @@ dependencies = [
  "config",
  "pair-harness",
  "pocketflow-core",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",
@@ -42,7 +43,6 @@ dependencies = [
  "config",
  "github",
  "pocketflow-core",
- "reqwest",
  "serde",
  "serde_json",
  "tokio",
@@ -720,6 +720,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "pocketflow-core",
+ "rand 0.8.6",
  "regex",
  "reqwest",
  "serde",

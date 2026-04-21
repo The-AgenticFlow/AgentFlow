@@ -58,14 +58,12 @@ impl AnthropicClient {
 
     fn resolve_api_key(proxy_active: bool) -> Result<String> {
         if proxy_active {
-            // Priority: PROXY_API_KEY > ANTHROPIC_API_KEY > dummy key for no-auth proxies
             if let Ok(key) = std::env::var("PROXY_API_KEY") {
                 return Ok(key);
             }
             if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
                 return Ok(key);
             }
-            // Self-hosted proxies may not need auth
             return Ok("no-key".to_string());
         }
         std::env::var("ANTHROPIC_API_KEY").context("ANTHROPIC_API_KEY not set")

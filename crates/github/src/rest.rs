@@ -9,7 +9,14 @@
 use anyhow::{Context, Result};
 use pocketflow_core::{CiStatus, MergeMethod, MergeResult, PrInfo, PrState};
 use serde::{Deserialize, Serialize};
+use std::fmt;
+use std::time::Duration;
+use tokio::time::sleep;
 use tracing::{debug, warn};
+use rand::Rng;
+
+const MAX_RETRIES: u32 = 3;
+const RETRY_BASE_DELAY: Duration = Duration::from_secs(1);
 
 const GITHUB_API_BASE: &str = "https://api.github.com";
 
@@ -35,17 +42,64 @@ impl GithubRestClient {
         format!("Bearer {}", self.token)
     }
 
-    async fn get_json<T: for<'de> Deserialize<'de>>(&self, url: &str) -> Result<T> {
-        debug!(url, "GitHub API GET");
-        let resp = self
-            .client
+    fn build_get(&self, url: &str) -> reqwest::RequestBuilder {
+        self.client
             .get(url)
             .header("Authorization", self.auth_header())
             .header("Accept", "application/vnd.github+json")
             .header("X-GitHub-Api-Version", "2022-11-28")
-            .send()
-            .await
-            .context("GitHub API request failed")?;
+    }
+
+    fn build_put(&self, url: &str, body: &[u8]) -> reqwest::RequestBuilder {
+        self.client
+            .put(url)
+            .header("Authorization", self.auth_header())
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("Content-Type", "application/json")
+            .body(body.to_vec())
+    }
+
+    async fn send_with_retry<F>(&self, build: F) -> Result<reqwest::Response>
+    where
+        F: Fn() -> reqwest::RequestBuilder,
+    {
+        let mut last_err = None;
+        for attempt in 0..=MAX_RETRIES {
+            match build().send().await {
+                Ok(resp) => {
+                    let status = resp.status();
+                    if status.is_server_error() && attempt < MAX_RETRIES {
+                        warn!(status = %status, attempt, "GitHub API server error, retrying");
+                        let jitter = rand::thread_rng().gen_range(0..500);
+                        let delay = RETRY_BASE_DELAY * 2u32.pow(attempt) + Duration::from_millis(jitter);
+                        sleep(delay).await;
+                        continue;
+                    }
+                    return Ok(resp);
+                }
+                Err(e) => {
+                    let is_connect = e.is_connect() || e.is_timeout() || e.is_request();
+                    if is_connect && attempt < MAX_RETRIES {
+                        warn!(error = %e, attempt, "GitHub API network error, retrying");
+                        let jitter = rand::thread_rng().gen_range(0..500);
+                        let delay = RETRY_BASE_DELAY * 2u32.pow(attempt) + Duration::from_millis(jitter);
+                        sleep(delay).await;
+                        last_err = Some(e);
+                        continue;
+                    }
+                    return Err(e).context("GitHub API request failed after retries");
+                }
+            }
+        }
+        Err(last_err
+            .map(|e| anyhow::anyhow!("GitHub API request failed after {} retries: {}", MAX_RETRIES, e))
+            .unwrap_or_else(|| anyhow::anyhow!("GitHub API request failed after {} retries", MAX_RETRIES)))
+    }
+
+    async fn get_json<T: for<'de> Deserialize<'de>>(&self, url: &str) -> Result<T> {
+        debug!(url, "GitHub API GET");
+        let resp = self.send_with_retry(|| self.build_get(url)).await?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -58,22 +112,52 @@ impl GithubRestClient {
             .with_context(|| format!("Failed to parse GitHub response from {}", url))
     }
 
+    /// Get raw JSON value from GitHub API. Used when response format may vary.
+    async fn get_json_raw(&self, url: &str) -> Result<serde_json::Value> {
+        debug!(url, "GitHub API GET (raw)");
+        let resp = self.send_with_retry(|| self.build_get(url)).await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("GitHub API error {}: {}", status, body);
+        }
+
+        resp.json::<serde_json::Value>()
+            .await
+            .with_context(|| format!("Failed to parse GitHub response from {}", url))
+    }
+
+    async fn get_text(&self, url: &str) -> Result<String> {
+        debug!(url, "GitHub API GET (text)");
+        let resp = self.send_with_retry(|| {
+            self.client
+                .get(url)
+                .header("Authorization", self.auth_header())
+                .header("Accept", "application/vnd.github+json")
+                .header("X-GitHub-Api-Version", "2022-11-28")
+        })
+        .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("GitHub API error {}: {}", status, body);
+        }
+
+        resp.text()
+            .await
+            .with_context(|| format!("Failed to read GitHub text response from {}", url))
+    }
+
     async fn put_json<T: for<'de> Deserialize<'de>, B: Serialize>(
         &self,
         url: &str,
         body: &B,
     ) -> Result<T> {
         debug!(url, "GitHub API PUT");
-        let resp = self
-            .client
-            .put(url)
-            .header("Authorization", self.auth_header())
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2022-11-28")
-            .json(body)
-            .send()
-            .await
-            .context("GitHub API PUT request failed")?;
+        let payload = serde_json::to_vec(body)?;
+        let resp = self.send_with_retry(|| self.build_put(url, &payload)).await?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -163,6 +247,160 @@ impl GithubRestClient {
         }
     }
 
+    /// Get detailed information about failed CI checks for a commit ref.
+    /// Returns a human-readable summary of which checks failed, their conclusions,
+    /// and the error details from the check output and annotations.
+    pub async fn get_failed_checks_detail(
+        &self,
+        owner: &str,
+        repo: &str,
+        ref_sha: &str,
+    ) -> Result<String> {
+        let detail = self.get_failed_checks_detail_structured(owner, repo, ref_sha).await?;
+        Ok(detail.to_string())
+    }
+
+    /// Structured version — returns `CiFailureDetail` so callers can
+    /// generate targeted instructions (e.g., local reproduce commands).
+    pub async fn get_failed_checks_detail_structured(
+        &self,
+        owner: &str,
+        repo: &str,
+        ref_sha: &str,
+    ) -> Result<CiFailureDetail> {
+        let url = format!(
+            "{}/repos/{}/{}/commits/{}/check-runs",
+            GITHUB_API_BASE, owner, repo, ref_sha
+        );
+        let resp: CheckRunsResponse = match self.get_json(&url).await {
+            Ok(r) => r,
+            Err(e) => {
+                warn!(error = %e, "check-runs API failed — falling back to check-suites for failure detail");
+                let fallback = self.get_failed_suites_detail(owner, repo, ref_sha).await?;
+                return Ok(CiFailureDetail {
+                    failed_checks: vec![FailedCheck { name: fallback.clone(), conclusion: "failure".to_string() }],
+                    still_running: vec![],
+                    job_logs: vec![],
+                });
+            }
+        };
+
+        if resp.check_runs.is_empty() {
+            return Ok(CiFailureDetail {
+                failed_checks: vec![],
+                still_running: vec![],
+                job_logs: vec![],
+            });
+        }
+
+        let mut failed_checks: Vec<FailedCheck> = Vec::new();
+        let mut pending: Vec<String> = Vec::new();
+        let mut failed_run_ids: Vec<(String, u64)> = Vec::new();
+
+        for run in &resp.check_runs {
+            let name = run.name.as_deref().unwrap_or("unknown-check");
+            let status = run.status.as_deref().unwrap_or("unknown");
+            match status {
+                "queued" | "in_progress" => {
+                    pending.push(format!("{} (running)", name));
+                }
+                "completed" => {
+                    if let Some(conclusion) = &run.conclusion {
+                        match conclusion.as_str() {
+                            "failure" | "timed_out" | "cancelled" | "action_required" => {
+                                failed_checks.push(FailedCheck {
+                                    name: name.to_string(),
+                                    conclusion: conclusion.clone(),
+                                });
+                                if let Some(id) = run.id {
+                                    failed_run_ids.push((name.to_string(), id));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let job_logs = match self.get_failed_job_logs(owner, repo, ref_sha).await {
+            Ok(logs) if !logs.is_empty() => logs,
+            Ok(_) => vec![],
+            Err(e) => {
+                debug!(error = %e, "Failed to fetch job logs — skipping");
+                vec![]
+            }
+        };
+
+        Ok(CiFailureDetail {
+            failed_checks,
+            still_running: pending,
+            job_logs,
+        })
+    }
+
+    /// Get annotations for a specific check run.
+    /// Annotations contain exact file:line references and error messages.
+    #[allow(dead_code)]
+    async fn get_check_annotations(
+        &self,
+        owner: &str,
+        repo: &str,
+        check_run_id: u64,
+    ) -> Result<Vec<CheckAnnotation>> {
+        let url = format!(
+            "{}/repos/{}/{}/check-runs/{}/annotations",
+            GITHUB_API_BASE, owner, repo, check_run_id
+        );
+        let annotations: Vec<CheckAnnotation> = match self.get_json(&url).await {
+            Ok(a) => a,
+            Err(e) => {
+                debug!(error = %e, check_run_id, "Failed to fetch check annotations — skipping");
+                Vec::new()
+            }
+        };
+        Ok(annotations)
+    }
+
+    /// Get failure detail from check-suites API as fallback.
+    /// Less detailed than check-runs but works with broader token scopes.
+    async fn get_failed_suites_detail(
+        &self,
+        owner: &str,
+        repo: &str,
+        ref_sha: &str,
+    ) -> Result<String> {
+        let url = format!(
+            "{}/repos/{}/{}/commits/{}/check-suites",
+            GITHUB_API_BASE, owner, repo, ref_sha
+        );
+        let resp: serde_json::Value = self.get_json_raw(&url).await?;
+
+        let mut failed: Vec<String> = Vec::new();
+        if let Some(suites) = resp["check_suites"].as_array() {
+            for suite in suites {
+                let status = suite["status"].as_str().unwrap_or("unknown");
+                if status == "completed" {
+                    let conclusion = suite["conclusion"].as_str().unwrap_or("");
+                    match conclusion {
+                        "failure" | "timed_out" | "cancelled" | "action_required" => {
+                            let app_name = suite["app"]["name"].as_str().unwrap_or("unknown");
+                            failed.push(format!("{} ({}) — {}", app_name, conclusion, status));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        if failed.is_empty() {
+            Ok("CI failed but could not retrieve detailed check names".to_string())
+        } else {
+            Ok(format!("Failed checks suites:\n{}", failed.join("\n")))
+        }
+    }
+
     // ── PR Operations ─────────────────────────────────────────────────────
 
     /// Get PR details including head SHA and state.
@@ -231,16 +469,7 @@ impl GithubRestClient {
             GITHUB_API_BASE, owner, repo
         );
 
-        let resp = self
-            .client
-            .get(&url)
-            .header("Authorization", self.auth_header())
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2022-11-28")
-            .send()
-            .await
-            .context("GitHub API request failed")?;
-
+        let resp = self.send_with_retry(|| self.build_get(&url)).await?;
         let status = resp.status();
         if status.as_u16() == 404 {
             return Ok(false);
@@ -295,6 +524,18 @@ impl GithubRestClient {
             .collect())
     }
 
+    pub async fn list_open_issues(
+        &self,
+        owner: &str,
+        repo: &str,
+    ) -> Result<Vec<GitHubIssueResponse>> {
+        let url = format!(
+            "{}/repos/{}/{}/issues?state=open&per_page=100",
+            GITHUB_API_BASE, owner, repo
+        );
+        self.get_json(&url).await
+    }
+
     /// Update a PR branch with the latest changes from the base branch.
     /// Uses GitHub's built-in "Update branch" feature.
     /// Returns `Ok(())` if successful, `Err` if conflicts exist or API unavailable.
@@ -304,16 +545,7 @@ impl GithubRestClient {
             GITHUB_API_BASE, owner, repo, pr_number
         );
 
-        let resp = self
-            .client
-            .put(&url)
-            .header("Authorization", self.auth_header())
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2022-11-28")
-            .send()
-            .await
-            .context("GitHub update-branch request failed")?;
-
+        let resp = self.send_with_retry(|| self.build_put(&url, &[])).await?;
         let status = resp.status();
         if status.is_success() {
             debug!(pr = pr_number, "Branch updated successfully via GitHub API");
@@ -351,6 +583,75 @@ impl GithubRestClient {
 
         Ok(conflicted)
     }
+
+    // ── Actions Job Log Fetching ──────────────────────────────────────────
+
+    /// Fetch job logs for failed workflow runs associated with a commit.
+    /// Returns the last portion of each failed job's log, which typically
+    /// contains the actual error output (e.g., ruff/lint/test failures).
+    pub async fn get_failed_job_logs(
+        &self,
+        owner: &str,
+        repo: &str,
+        head_sha: &str,
+    ) -> Result<Vec<(String, String)>> {
+        let url = format!(
+            "{}/repos/{}/{}/actions/runs?head_sha={}&status=failure&per_page=10",
+            GITHUB_API_BASE, owner, repo, head_sha
+        );
+
+        let runs_resp: WorkflowRunsResponse = match self.get_json(&url).await {
+            Ok(r) => r,
+            Err(e) => {
+                debug!(error = %e, "Failed to fetch workflow runs for job logs — skipping");
+                return Ok(Vec::new());
+            }
+        };
+
+        let mut result = Vec::new();
+
+        for run in runs_resp.workflow_runs {
+            let run_name = run.name.as_deref().unwrap_or("unknown");
+
+            let jobs_url = format!(
+                "{}/repos/{}/{}/actions/runs/{}/jobs?per_page=50",
+                GITHUB_API_BASE, owner, repo, run.id
+            );
+
+            let jobs_resp: WorkflowJobsResponse = match self.get_json(&jobs_url).await {
+                Ok(r) => r,
+                Err(e) => {
+                    debug!(error = %e, run_id = run.id, "Failed to fetch jobs for workflow run — skipping");
+                    continue;
+                }
+            };
+
+            for job in jobs_resp.jobs {
+                if job.conclusion.as_deref() != Some("failure") {
+                    continue;
+                }
+
+                let job_name = job.name.as_deref().unwrap_or("unknown-job");
+
+                let log_url = format!(
+                    "{}/repos/{}/{}/actions/jobs/{}/logs",
+                    GITHUB_API_BASE, owner, repo, job.id
+                );
+
+                match self.get_text(&log_url).await {
+                    Ok(log_text) => {
+                        let tail = tail_log(&log_text, 150);
+                        result.push((format!("{}/{}", run_name, job_name), tail));
+                    }
+                    Err(e) => {
+                        debug!(error = %e, job_id = job.id, "Failed to fetch job log — skipping");
+                    }
+                }
+            }
+        }
+
+        Ok(result)
+    }
 }
 
 // ── Helper Functions ──────────────────────────────────────────────────────
@@ -384,6 +685,16 @@ fn extract_ticket_id(title: &str, body: &Option<String>) -> Option<String> {
     None
 }
 
+fn tail_log(log: &str, max_lines: usize) -> String {
+    let lines: Vec<&str> = log.lines().collect();
+    if lines.len() <= max_lines {
+        log.to_string()
+    } else {
+        let skip = lines.len() - max_lines;
+        format!("... (truncated {} lines)\n{}", skip, lines[skip..].join("\n"))
+    }
+}
+
 // ── API Response Types ────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -400,6 +711,135 @@ struct CheckSuitesResponse {
 struct CheckSuite {
     status: String,
     conclusion: Option<String>,
+}
+
+/// A structured representation of a failed CI check.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FailedCheck {
+    pub name: String,
+    pub conclusion: String,
+}
+
+/// Structured CI failure detail returned by `get_failed_checks_detail_structured`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CiFailureDetail {
+    pub failed_checks: Vec<FailedCheck>,
+    pub still_running: Vec<String>,
+    /// Raw job log excerpts for each failed job (job_name, last N lines)
+    pub job_logs: Vec<(String, String)>,
+}
+
+impl CiFailureDetail {
+    /// Map failed check/job names to the local commands that reproduce them.
+    /// Uses both the check-run names and the workflow job names for matching.
+    /// Includes setup/install steps so forge can run them even on a bare host.
+    pub fn local_reproduce_commands(&self) -> Vec<String> {
+        let mut commands = Vec::new();
+        let all_names: Vec<&str> = self
+            .failed_checks
+            .iter()
+            .map(|c| c.name.as_str())
+            .chain(self.job_logs.iter().map(|(n, _)| n.as_str()))
+            .collect();
+
+        for name in &all_names {
+            let lower = name.to_lowercase();
+            if lower.contains("backend") || lower.contains("python") || lower.contains("pytest") || lower.contains("ruff") {
+                commands.push(
+                    "# Backend checks — install Python tools first if missing\n\
+                     sudo apt-get update -qq && sudo apt-get install -y -qq python3 python3-pip python3-venv > /dev/null 2>&1\n\
+                     python3 -m venv .venv && source .venv/bin/activate\n\
+                     cd backend && pip install -q -r requirements.txt && pip install -q ruff\n\
+                     python -m pytest -x -q && ruff check .".to_string()
+                );
+            } else if lower.contains("frontend") || lower.contains("node") || lower.contains("npm") || lower.contains("lint") {
+                commands.push(
+                    "# Frontend checks — install Node tools first if missing\n\
+                     cd frontend && npm ci && npm run lint && npm run typecheck && npm test".to_string()
+                );
+            } else if lower.contains("build") {
+                commands.push("npm run build".to_string());
+            } else if lower.contains("test") {
+                commands.push("npm test".to_string());
+            }
+        }
+        if commands.is_empty() {
+            commands.push("# No specific check name recognized — inspect .github/workflows/ and run each job's steps locally".to_string());
+        }
+        commands.dedup();
+        commands
+    }
+}
+
+impl fmt::Display for CiFailureDetail {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if !self.failed_checks.is_empty() {
+            writeln!(f, "Failed checks:")?;
+            for check in &self.failed_checks {
+                writeln!(f, "  {} ({})", check.name, check.conclusion)?;
+            }
+        }
+        if !self.still_running.is_empty() {
+            writeln!(f, "\nStill running:")?;
+            for name in &self.still_running {
+                writeln!(f, "  {}", name)?;
+            }
+        }
+        if !self.job_logs.is_empty() {
+            writeln!(f, "\nJob logs (last 150 lines per failed job):")?;
+            for (i, (name, log)) in self.job_logs.iter().enumerate() {
+                if i > 0 {
+                    writeln!(f, "\n---\n")?;
+                }
+                writeln!(f, "Job: {}", name)?;
+                write!(f, "{}", log)?;
+            }
+        }
+        if self.failed_checks.is_empty() && self.still_running.is_empty() && self.job_logs.is_empty() {
+            write!(f, "No check runs found for this commit")?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Deserialize)]
+struct CheckRunsResponse {
+    check_runs: Vec<CheckRun>,
+}
+
+#[derive(Deserialize)]
+struct CheckRun {
+    id: Option<u64>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    conclusion: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    output: Option<CheckRunOutput>,
+}
+
+#[derive(Deserialize)]
+#[allow(dead_code)]
+struct CheckRunOutput {
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    summary: Option<String>,
+    #[serde(default)]
+    text: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[allow(dead_code)]
+struct CheckAnnotation {
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    start_line: Option<u64>,
+    #[serde(default)]
+    message: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -444,4 +884,45 @@ struct ContentEntry {
 struct PrFileResponse {
     filename: String,
     status: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GitHubIssueResponse {
+    pub number: u64,
+    pub title: String,
+    pub body: Option<String>,
+    pub html_url: String,
+    pub pull_request: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+struct WorkflowRunsResponse {
+    workflow_runs: Vec<WorkflowRun>,
+}
+
+#[derive(Deserialize)]
+struct WorkflowRun {
+    id: u64,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    status: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    conclusion: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct WorkflowJobsResponse {
+    jobs: Vec<WorkflowJob>,
+}
+
+#[derive(Deserialize)]
+struct WorkflowJob {
+    id: u64,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    conclusion: Option<String>,
 }
