@@ -437,6 +437,7 @@ impl ProcessManager {
     }
 
     /// Spawn a SENTINEL process (ephemeral, for single evaluation).
+    /// Backward-compatible overload using default timeout.
     pub async fn spawn_sentinel(
         &self,
         pair_id: &str,
@@ -444,6 +445,20 @@ impl ProcessManager {
         mode: SentinelMode,
         worktree: &Path,
         shared: &Path,
+    ) -> Result<Child> {
+        self.spawn_sentinel_with_timeout(pair_id, ticket_id, mode, worktree, shared, 300)
+            .await
+    }
+
+    /// Spawn a SENTINEL process with an explicit timeout.
+    pub async fn spawn_sentinel_with_timeout(
+        &self,
+        pair_id: &str,
+        ticket_id: &str,
+        mode: SentinelMode,
+        worktree: &Path,
+        shared: &Path,
+        timeout_secs: u64,
     ) -> Result<Child> {
         let segment = mode.segment_value();
 
@@ -478,7 +493,8 @@ impl ProcessManager {
                 worktree.to_string_lossy().to_string(),
             )
             .env("SPRINTLESS_SHARED", shared.to_string_lossy().to_string())
-            .env("SPRINTLESS_GITHUB_TOKEN", &self.github_token);
+            .env("SPRINTLESS_GITHUB_TOKEN", &self.github_token)
+            .env("SPRINTLESS_SENTINEL_TIMEOUT_SECS", timeout_secs.to_string());
 
         if let Some(proxy_url) = &self.proxy_url {
             Self::inject_proxy_env(
@@ -766,11 +782,13 @@ impl ProcessManager {
             PR CREATION STEPS:\n\
             1. Ensure all changes committed: 'git status' then commit if needed\n\
             2. Push branch: 'git push -u origin HEAD'\n\
+               If push is rejected (non-fast-forward), use 'git push --force-with-lease -u origin HEAD'\n\
             3. Create PR using GitHub MCP create_pull_request:\n\
                - title: from CONTRACT summary\n\
                - body: include SENTINEL's PR description and CERTIFICATION\n\
                - head: current branch\n\
                - base: 'main'\n\
+               If a PR already exists for this branch, do NOT create a new one — just update STATUS.json with the existing PR info.\n\
             4. Write {}/STATUS.json:\n\
                {{\n\
                  \"status\": \"PR_OPENED\",\n\
@@ -800,23 +818,41 @@ impl ProcessManager {
 
                 format!(
                     "You are SENTINEL. Review this plan. Write ONLY to {}/CONTRACT.md.\n\n\
-                    --- TICKET.md ---\n{}\n\n\
-                    --- PLAN.md ---\n{}\n\n\
-                    Check the plan has these sections:\n\
-                    - ## Understanding (explains what we're building)\n\
-                    - ## Segments (each with Files and Definition of Done)\n\
-                    - ## Files Changed (specific file paths)\n\
-                    - ## Risks (identified risks)\n\n\
-                    APPROVE if all sections exist and are specific (real file paths, real criteria).\n\
-                    REJECT if generic/placeholder content (e.g. '[Task 1 description]').\n\n\
-                    Write CONTRACT.md now:\n\
-                    ---\n\
-                    status: AGREED | ISSUES\n\
-                    summary: <one line>\n\
-                    definition_of_done:\n\
-                    - <criterion from plan>\n\
-                    objections:\n\
-                    - <specific issue or 'None'>",
+                     --- TICKET.md ---\n{}\n\n\
+                     --- PLAN.md ---\n{}\n\n\
+                     Check the plan has these sections:\n\
+                     - ## Understanding (explains what we're building)\n\
+                     - ## Segments (each with Files and Definition of Done)\n\
+                     - ## Files Changed (specific file paths)\n\
+                     - ## Risks (identified risks)\n\n\
+                     APPROVE if all sections exist and are specific (real file paths, real criteria).\n\
+                     REJECT if generic/placeholder content (e.g. '[Task 1 description]').\n\n\
+                     ESTIMATE TIMEOUTS based on these complexity factors:\n\
+                     - Number of segments (more segments = more eval time)\n\
+                     - Test coverage depth (integration/e2e tests need more time than unit tests)\n\
+                     - Build system requirements (compiled languages, container builds add time)\n\
+                     - Number of files changed (larger diffs need more review time)\n\
+                     - Cross-cutting changes (refactors, API changes affect many files)\n\n\
+                     Timeout guidelines (these are BASE values, the harness adds environmental overhead):\n\
+                     - Low complexity: plan_review=90s, segment_eval=180s, final_review=300s\n\
+                       (1-2 segments, unit tests only, few files, simple feature)\n\
+                     - Medium complexity: plan_review=120s, segment_eval=300s, final_review=480s\n\
+                       (3-4 segments, integration tests, moderate files, typical feature)\n\
+                     - High complexity: plan_review=180s, segment_eval=480s, final_review=720s\n\
+                       (5+ segments, e2e/container builds, many files, cross-cutting refactor)\n\n\
+                     Write CONTRACT.md now:\n\
+                     ---\n\
+                     status: AGREED | ISSUES\n\
+                     summary: <one line>\n\
+                     definition_of_done:\n\
+                     - <criterion from plan>\n\
+                     objections:\n\
+                     - <specific issue or 'None'>\n\
+                     timeout_profile:\n\
+                       plan_review_secs: <number>\n\
+                       segment_eval_secs: <number>\n\
+                       final_review_secs: <number>\n\
+                       complexity: low | medium | high",
                     shared_path, ticket, plan
                 )
             }
@@ -1025,6 +1061,11 @@ mod tests {
         assert!(prompt.contains("status: AGREED | ISSUES"));
         assert!(prompt.contains("REJECT if generic/placeholder content"));
         assert!(prompt.contains("definition_of_done:"));
+        assert!(prompt.contains("timeout_profile:"));
+        assert!(prompt.contains("plan_review_secs:"));
+        assert!(prompt.contains("segment_eval_secs:"));
+        assert!(prompt.contains("final_review_secs:"));
+        assert!(prompt.contains("complexity: low | medium | high"));
     }
 
     #[test]
@@ -1033,6 +1074,7 @@ mod tests {
         let prompt =
             manager.build_sentinel_prompt(Path::new("/tmp/shared"), &SentinelMode::SegmentEval(3));
 
+        assert!(prompt.contains("SHARED: /tmp/shared"));
         assert!(prompt.contains("--- CONTRACT.md ---"));
         assert!(prompt.contains("Write /tmp/shared/segment-3-eval.md"));
     }
@@ -1043,6 +1085,7 @@ mod tests {
         let prompt =
             manager.build_sentinel_prompt(Path::new("/tmp/shared"), &SentinelMode::FinalReview);
 
+        assert!(prompt.contains("SHARED: /tmp/shared"));
         assert!(prompt.contains("--- CONTRACT.md ---"));
         assert!(prompt.contains("Write /tmp/shared/final-review.md"));
     }

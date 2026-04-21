@@ -1,12 +1,14 @@
 use agent_forge::ForgePairNode; // Use the event-driven pair node
 use agent_nexus::NexusNode;
+use agent_vessel::VesselNode;
 use anyhow::Result;
 use config::{
-    ACTION_FAILED, ACTION_NO_WORK, ACTION_PR_OPENED, ACTION_WORK_ASSIGNED, KEY_TICKETS,
-    KEY_WORKER_SLOTS,
+    ACTION_CONFLICTS_DETECTED, ACTION_DEPLOYED, ACTION_DEPLOY_FAILED, ACTION_FAILED,
+    ACTION_MERGE_PRS, ACTION_NO_WORK, ACTION_PR_OPENED, ACTION_WORK_ASSIGNED, KEY_PENDING_PRS,
+    KEY_TICKETS, KEY_WORKER_SLOTS,
 };
 use pair_harness::WorkspaceManager;
-use pocketflow_core::{Flow, SharedStore};
+use pocketflow_core::{Action, Flow, SharedStore};
 use std::sync::Arc;
 use tracing::info;
 
@@ -19,7 +21,7 @@ async fn main() -> Result<()> {
     }
     tracing_subscriber::fmt::init();
 
-    info!("Starting REAL End-to-End Orchestration (Event-Driven FORGE-SENTINEL Pairs)");
+    info!("Starting REAL End-to-End Orchestration (Event-Driven FORGE-SENTINEL Pairs + VESSEL)");
 
     // 1. Validate Environment
     let github_token = std::env::var("GITHUB_PERSONAL_ACCESS_TOKEN")
@@ -46,6 +48,8 @@ async fn main() -> Result<()> {
 
     info!(workspace = %workspace_dir.display(), "Target repository workspace ready");
 
+    std::env::set_var("AGENTFLOW_WORKSPACE_ROOT", &workspace_dir);
+
     // Set ORCHESTRATOR_DIR so pair harness can find the plugin
     // This is needed because the workspace is a separate cloned repo
     let orchestrator_dir = std::env::current_dir()?;
@@ -54,6 +58,7 @@ async fn main() -> Result<()> {
     // 3. Initialize Nodes
     // NEXUS: Orchestrator that assigns work
     // ForgePairNode: Event-driven FORGE-SENTINEL pair with full review lifecycle
+    // VesselNode: Merge gatekeeper - polls CI, merges PRs, emits ticket_merged events
     let persona_path = orchestrator_dir
         .join("orchestration")
         .join("agent")
@@ -66,6 +71,7 @@ async fn main() -> Result<()> {
 
     let nexus = Arc::new(NexusNode::new(persona_path, registry_path));
     let forge_pair = Arc::new(ForgePairNode::new(&workspace_dir, &github_token));
+    let vessel = Arc::new(VesselNode::from_env());
 
     // 4. Setup Flow with Routing
     // The ForgePairNode handles the full FORGE-SENTINEL lifecycle:
@@ -73,12 +79,21 @@ async fn main() -> Result<()> {
     // - FORGE implements segments -> SENTINEL evaluates -> segment-N-eval.md
     // - SENTINEL final review -> final-review.md
     // - FORGE opens PR -> STATUS.json
+    //
+    // VesselNode handles the merge gate:
+    // - Polls CI status until terminal (success/failure/timeout)
+    // - Detects merge conflicts early via GitHub's `mergeable` field
+    // - Attempts conflict resolution (GitHub update-branch or local rebase)
+    // - Routes unresolvable conflicts back to forge_pair for rework
+    // - Merges PR if CI green
+    // - Emits ticket_merged event for dependency resolution
     let flow = Flow::new("nexus")
         .add_node(
             "nexus",
             nexus,
             vec![
                 (ACTION_WORK_ASSIGNED, "forge_pair"),
+                (ACTION_MERGE_PRS, "vessel"),
                 (ACTION_NO_WORK, "nexus"),
                 ("approve_command", "forge_pair"),
                 ("reject_command", "nexus"),
@@ -88,9 +103,21 @@ async fn main() -> Result<()> {
             "forge_pair",
             forge_pair,
             vec![
-                (ACTION_PR_OPENED, "nexus"),
+                (ACTION_PR_OPENED, "vessel"),
                 (ACTION_FAILED, "nexus"),
                 ("suspended", "nexus"),
+                (Action::NO_TICKETS, "nexus"),
+            ],
+        )
+        .add_node(
+            "vessel",
+            vessel,
+            vec![
+                (ACTION_DEPLOYED, "nexus"),
+                (ACTION_DEPLOY_FAILED, "nexus"),
+                ("merge_blocked", "nexus"),
+                (ACTION_CONFLICTS_DETECTED, "forge_pair"),
+                ("no_work", "nexus"),
             ],
         );
 
@@ -101,6 +128,7 @@ async fn main() -> Result<()> {
     // Initial tickets list - Nexus will fetch from GitHub if this is empty
     store.set(KEY_TICKETS, serde_json::json!([])).await;
     store.set(KEY_WORKER_SLOTS, serde_json::json!({})).await;
+    store.set(KEY_PENDING_PRS, serde_json::json!([])).await;
 
     // 6. Run Flow
     info!("Running orchestration loop for repository: {}", repo);
@@ -109,6 +137,10 @@ async fn main() -> Result<()> {
     info!("  - WORKLOG.md -> segment-N-eval.md (segment evaluation)");
     info!("  - final-review.md (final approval)");
     info!("  - STATUS.json (completion status)");
+    info!("VESSEL will handle merge gate:");
+    info!("  - CI status polling (10s interval, 10min timeout)");
+    info!("  - Squash merge with ticket reference");
+    info!("  - ticket_merged event emission");
 
     let final_action = flow.run(&store).await?;
 

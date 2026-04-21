@@ -13,6 +13,7 @@ pocketflow-core = { path = "../crates/pocketflow-core" }
 config          = { path = "../crates/config" }
 agent-nexus     = { path = "../crates/agent-nexus" }
 agent-forge     = { path = "../crates/agent-forge" }
+agent-vessel    = { path = "../crates/agent-vessel" }
 pair-harness    = { path = "../crates/pair-harness" }
 
 anyhow      = { workspace = true }

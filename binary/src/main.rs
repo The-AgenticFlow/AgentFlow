@@ -3,15 +3,16 @@ mod nodes;
 mod state;
 
 use anyhow::Result;
-use pocketflow_core::{Flow, SharedStore};
+use pocketflow_core::{Action, Flow, SharedStore};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::info;
 
-use crate::nodes::{ForgeNode, NexusNode};
+use crate::nodes::{ForgeNode, NexusNode, VesselNode};
 use crate::state::{
-    Ticket, TicketStatus, WorkerSlot, WorkerStatus, ACTION_EMPTY, ACTION_FAILED, ACTION_NO_WORK,
-    ACTION_PR_OPENED, ACTION_WORK_ASSIGNED, KEY_TICKETS, KEY_WORKER_SLOTS,
+    Ticket, TicketStatus, WorkerSlot, WorkerStatus, ACTION_CONFLICTS_DETECTED, ACTION_DEPLOYED,
+    ACTION_DEPLOY_FAILED, ACTION_EMPTY, ACTION_FAILED, ACTION_MERGE_PRS, ACTION_NO_WORK,
+    ACTION_PR_OPENED, ACTION_WORK_ASSIGNED, KEY_PENDING_PRS, KEY_TICKETS, KEY_WORKER_SLOTS,
 };
 
 #[tokio::main]
@@ -23,7 +24,7 @@ async fn main() -> Result<()> {
     }
     tracing_subscriber::fmt::init();
 
-    info!("Autonomous AI Dev Team starting (Phase 3 Integration)...");
+    info!("Autonomous AI Dev Team starting (Phase 3 Integration with VESSEL)...");
 
     // 1. Check for target repository configuration
     let github_token = std::env::var("GITHUB_PERSONAL_ACCESS_TOKEN");
@@ -94,6 +95,7 @@ async fn main() -> Result<()> {
     store
         .set(KEY_WORKER_SLOTS, serde_json::to_value(worker_slots)?)
         .await;
+    store.set(KEY_PENDING_PRS, serde_json::json!([])).await;
 
     // 4. Build Flow - use orchestration/agent directory for personas
     let orchestrator_dir = std::env::current_dir()?;
@@ -105,6 +107,7 @@ async fn main() -> Result<()> {
         &workspace_dir,
         orchestrator_dir.join("orchestration/agent/agents/forge.agent.md"),
     ));
+    let vessel = Arc::new(VesselNode::from_env());
 
     let flow = Flow::new("nexus")
         .add_node(
@@ -112,6 +115,7 @@ async fn main() -> Result<()> {
             nexus,
             vec![
                 (ACTION_WORK_ASSIGNED, "forge"),
+                (ACTION_MERGE_PRS, "vessel"),
                 (ACTION_NO_WORK, "nexus"),
                 ("approve_command", "forge"),
                 ("reject_command", "nexus"),
@@ -121,13 +125,25 @@ async fn main() -> Result<()> {
             "forge",
             forge,
             vec![
-                (ACTION_PR_OPENED, "nexus"),
+                (ACTION_PR_OPENED, "vessel"),
                 (ACTION_FAILED, "nexus"),
                 (ACTION_EMPTY, "nexus"),
+                (Action::NO_TICKETS, "nexus"),
                 ("suspended", "nexus"),
             ],
         )
-        .max_steps(20); // allow more steps for real logic
+        .add_node(
+            "vessel",
+            vessel,
+            vec![
+                (ACTION_DEPLOYED, "nexus"),
+                (ACTION_DEPLOY_FAILED, "nexus"),
+                ("merge_blocked", "nexus"),
+                (ACTION_CONFLICTS_DETECTED, "forge"),
+                ("no_work", "nexus"),
+            ],
+        )
+        .max_steps(20);
 
     // 5. Run Flow
     info!("Starting Flow execution loop...");

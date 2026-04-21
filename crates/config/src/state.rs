@@ -38,6 +38,8 @@ pub enum TicketStatus {
     Assigned { worker_id: String },
     #[serde(rename = "in_progress")]
     InProgress { worker_id: String },
+    #[serde(rename = "merged")]
+    Merged { worker_id: String, pr_number: u64 },
     #[serde(rename = "failed")]
     Failed {
         worker_id: String,
@@ -81,6 +83,8 @@ pub enum WorkerStatus {
 
 pub const KEY_TICKETS: &str = "tickets";
 pub const KEY_WORKER_SLOTS: &str = "worker_slots";
+pub const KEY_PENDING_PRS: &str = "pending_prs";
+#[deprecated(note = "Use KEY_PENDING_PRS for clarity")]
 pub const KEY_OPEN_PRS: &str = "open_prs";
 pub const KEY_COMMAND_GATE: &str = "command_gate";
 
@@ -89,3 +93,8 @@ pub const ACTION_PR_OPENED: &str = "pr_opened";
 pub const ACTION_NO_WORK: &str = "no_work";
 pub const ACTION_EMPTY: &str = "empty";
 pub const ACTION_FAILED: &str = "failed";
+pub const ACTION_DEPLOYED: &str = "deployed";
+pub const ACTION_DEPLOY_FAILED: &str = "deploy_failed";
+pub const ACTION_MERGE_BLOCKED: &str = "merge_blocked";
+pub const ACTION_MERGE_PRS: &str = "merge_prs";
+pub const ACTION_CONFLICTS_DETECTED: &str = "conflicts_detected";

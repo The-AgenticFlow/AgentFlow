@@ -66,18 +66,22 @@ impl OpenAiClient {
 
     /// Create an OpenAiClient configured to use a proxy endpoint.
     /// Routes through PROXY_URL as the API URL and uses PROXY_API_KEY for auth.
+    /// Falls back to OPENAI_API_KEY if PROXY_API_KEY is not set.
+    /// For self-hosted proxies without auth, uses a dummy key.
     pub fn from_proxy(model_override: &str) -> Result<Self> {
         let proxy_url = std::env::var("PROXY_URL")
             .or_else(|_| std::env::var("ANTHROPIC_BASE_URL"))
             .context("PROXY_URL not set — required for OpenAI-compatible proxy routing")?;
         let api_url = format!("{}/chat/completions", proxy_url.trim_end_matches('/'));
+        // Priority: PROXY_API_KEY > OPENAI_API_KEY > dummy key for no-auth proxies
         let api_key = std::env::var("PROXY_API_KEY")
             .or_else(|_| std::env::var("OPENAI_API_KEY"))
-            .context("PROXY_API_KEY or OPENAI_API_KEY not set for proxy")?;
+            .unwrap_or_else(|_| "no-key".to_string());
 
         tracing::info!(
             api_url = %api_url,
             model = %model_override,
+            has_auth = !api_key.is_empty() && api_key != "no-key",
             "OpenAiClient configured with proxy"
         );
 

@@ -58,9 +58,15 @@ impl AnthropicClient {
 
     fn resolve_api_key(proxy_active: bool) -> Result<String> {
         if proxy_active {
+            // Priority: PROXY_API_KEY > ANTHROPIC_API_KEY > dummy key for no-auth proxies
             if let Ok(key) = std::env::var("PROXY_API_KEY") {
                 return Ok(key);
             }
+            if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
+                return Ok(key);
+            }
+            // Self-hosted proxies may not need auth
+            return Ok("no-key".to_string());
         }
         std::env::var("ANTHROPIC_API_KEY").context("ANTHROPIC_API_KEY not set")
     }
@@ -200,12 +206,14 @@ impl LlmClient for AnthropicClient {
             .text()
             .await
             .context("Failed to read Anthropic response body")?;
-        debug!(stop_reason = %raw_text.len(), status = %status, body = %&raw_text[..raw_text.len().min(500)], "← Anthropic raw response");
+        let truncation_len = raw_text.len().min(500);
+        let truncation_len = raw_text.floor_char_boundary(truncation_len);
+        debug!(stop_reason = %raw_text.len(), status = %status, body = %&raw_text[..truncation_len], "← Anthropic raw response");
 
         let raw: Value = serde_json::from_str(&raw_text).context(format!(
             "Failed to parse Anthropic response (status={}, body={})",
             status,
-            &raw_text[..raw_text.len().min(500)]
+            &raw_text[..truncation_len]
         ))?;
 
         if !status.is_success() {

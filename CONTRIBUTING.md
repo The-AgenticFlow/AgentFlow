@@ -44,18 +44,53 @@ This guide explains how to set up your environment, run the project in different
    cp .env.example .env
    ```
 
-2. **Configure Variables**:
-   - `ANTHROPIC_API_KEY`: Required for FORGE and NEXUS agents (and as fallback).
-   - `GITHUB_PERSONAL_ACCESS_TOKEN`: Required for real-world PR creation.
-   - `GITHUB_REPOSITORY`: The target repository (e.g., `owner/repo`).
-   - `PROXY_URL`: Optional. LiteLLM proxy URL for per-agent model routing.
-   - `PROXY_API_KEY`: Optional. API key for authenticating with a hosted LiteLLM proxy.
-   - `GEMINI_API_KEY`: Optional. Used by SENTINEL when proxy is enabled.
-   - `OPENAI_API_KEY`: Optional. Used by LORE when proxy is enabled.
-   - `GROQ_API_KEY`: Optional. Used by VESSEL when proxy is enabled (free tier available).
-   - `LLM_PROVIDER`: Set to `openai`, `gemini`, `anthropic`, or `fallback` (default).
+2. **Choose Your Mode**:
 
-   See the [Per-Agent LLM Routing](#per-agent-llm-routing-litellm-proxy) section below for proxy setup details.
+   ### Mode 1: Proxy (Recommended — always preferred)
+   Routes all LLM calls through a proxy. Direct API keys serve as **fallback** when the proxy has transient errors.
+
+   ```env
+   PROXY_URL=http://localhost:8080/v1      # Required - enables proxy mode
+   PROXY_API_KEY=your-key                   # Highest priority key
+   MODEL_PROVIDER_MAP=glm=openai,...        # Maps model names to client format
+
+   # Optional fallback keys (used only when proxy fails)
+   ANTHROPIC_API_KEY=your-anthropic-key     # Fallback for Anthropic
+   GEMINI_API_KEY=your-gemini-key           # Fallback for Gemini
+   ```
+
+   ### Mode 2: Direct (Fallback only)
+   Calls LLM providers directly. **Requires individual API keys.**
+
+   ```env
+   # PROXY_URL not set (or commented out)
+   LLM_FALLBACK=anthropic,gemini,openai     # Provider order
+   ANTHROPIC_API_KEY=your-key               # Required for anthropic
+   GEMINI_API_KEY=your-key                  # Required for gemini
+   OPENAI_API_KEY=your-key                  # Required for openai
+   ```
+
+3. **Required Variables** (both modes):
+   - `GITHUB_PERSONAL_ACCESS_TOKEN`: For GitHub API (issues, PRs, CI polling)
+   - `GITHUB_REPOSITORY`: Target repository (e.g., `owner/repo`)
+   - `CLAUDE_PATH`: Path to Claude CLI binary (for Forge workers)
+
+## 🔑 Environment Variables Reference
+
+| Variable | Proxy Mode | Direct Mode | Description |
+|----------|------------|-------------|-------------|
+| `PROXY_URL` | **Required** | Not set | Enables proxy mode |
+| `PROXY_API_KEY` | **Recommended** | N/A | Auth key for proxy (highest priority) |
+| `GATEWAY_API_KEY` | Optional | N/A | Upstream gateway key (second priority) |
+| `ANTHROPIC_API_KEY` | Fallback | Required* | Anthropic/Claude API key |
+| `OPENAI_API_KEY` | Fallback | Required* | OpenAI API key |
+| `GEMINI_API_KEY` | Fallback | Required* | Google Gemini API key |
+| `LLM_FALLBACK` | N/A | Optional | Provider fallback order |
+| `MODEL_PROVIDER_MAP` | Optional | Optional | Model→provider mapping |
+
+*Required only if listed in `LLM_FALLBACK`
+
+**Key priority order**: `PROXY_API_KEY` > `GATEWAY_API_KEY` > `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` / `OPENAI_API_KEY`. When `PROXY_URL` is set, the proxy client is tried first. Direct API key clients are appended as fallbacks, so a transient proxy error (503, timeout) doesn't block the orchestration pipeline.
 
 ## 🚀 Running the Project
 
@@ -124,9 +159,9 @@ cargo test -p agent-forge --test forge_claude_e2e
 
 ### <a id="per-agent-llm-routing-litellm-proxy"></a>Per-Agent LLM Routing (LiteLLM Proxy)
 
-AgentFlow supports routing each agent to a different LLM backend through a LiteLLM proxy, so agents like LORE (documentation) and VESSEL (CI/CD) don't burn budget on expensive models.
+AgentFlow supports routing each agent to a different LLM backend through a LiteLLM proxy. This allows cheaper models for simpler tasks.
 
-**Default model assignments** are defined in `orchestration/agent/registry.json` via the `model_backend` and `routing_key` fields:
+**Registry configuration** (`orchestration/agent/registry.json`):
 
 ```json
 { "id": "forge",    "model_backend": "anthropic/claude-sonnet-4-5",     "routing_key": "forge-key" },
@@ -135,33 +170,24 @@ AgentFlow supports routing each agent to a different LLM backend through a LiteL
 { "id": "lore",     "model_backend": "openai/gpt-4o-mini",             "routing_key": "lore-key" }
 ```
 
-**Routing flow**:
+**How it works**:
 
-1. When `PROXY_URL` is set, `ProcessManager` injects `ANTHROPIC_BASE_URL` and `ANTHROPIC_API_KEY` into each spawned Claude Code process
-2. If `PROXY_API_KEY` is set → `ANTHROPIC_API_KEY` = the proxy auth key (hosted LiteLLM)
-3. If `PROXY_API_KEY` is not set → `ANTHROPIC_API_KEY` = the routing key (self-hosted LiteLLM)
-4. The LiteLLM proxy matches the routing key against `model_info.id` in `litellm_config.yaml` and routes to the correct backend
+1. `model_backend` is sent to the LLM client as the model name
+2. `MODEL_PROVIDER_MAP` determines which client format to use (e.g., `glm=openai` sends OpenAI-format requests)
+3. `routing_key` maps to backend models in your proxy's `litellm_config.yaml`
 
-**Self-hosted proxy** (Docker Compose):
-
-```bash
-docker compose up proxy redis
-# Proxy available at http://localhost:4000
-```
-
-**Hosted proxy** (e.g., LiteLLM Cloud):
+**Quick setup** (self-hosted LiteLLM):
 
 ```bash
-PROXY_URL=https://your-litellm-instance.example.com
-PROXY_API_KEY=sk-your-hosted-litellm-key
-```
+# .env
+PROXY_URL=http://localhost:4000/v1
 
-**No proxy** (direct API access): Leave `PROXY_URL` unset. All agents use `ANTHROPIC_API_KEY` directly.
-
-**Testing proxy routing**:
-
-```bash
-cargo test -p pair-harness --test proxy_routing
+# litellm_config.yaml
+model_list:
+  - model_name: forge-key
+    litellm_params:
+      model: anthropic/claude-sonnet-4-5
+      api_key: os.environ/ANTHROPIC_API_KEY
 ```
 
 ### <a id="local-anthropic-proxy-openai-only-gateways"></a>Local Anthropic Proxy (OpenAI-Only Gateways)

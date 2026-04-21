@@ -5,20 +5,15 @@
 // Ties together AnthropicClient and McpSession into a single
 // `run()` method that drives an agent to completion.
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, Result};
 use serde_json::Value;
 use tracing::{debug, info, warn};
 
 use crate::{
-    anthropic::AnthropicClient,
     fallback::FallbackClient,
-    gemini::GeminiClient,
     mcp::McpSession,
-    openai::OpenAiClient,
     types::{AgentDecision, AgentPersona, LlmClient, LlmResponse, Message},
 };
-
-// ── AgentRunner ───────────────────────────────────────────────────────────
 
 pub struct AgentRunner {
     client: Box<dyn LlmClient>,
@@ -31,52 +26,23 @@ impl AgentRunner {
     }
 
     /// Create a runner using environment variables.
-    /// Detects provider via LLM_PROVIDER (defaults to fallback for automatic failover).
+    /// Always uses FallbackClient for automatic failover.
     pub async fn from_env() -> Result<Self> {
-        let provider = std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "fallback".to_string());
-
-        let client: Box<dyn LlmClient> = match provider.as_str() {
-            "openai" => Box::new(OpenAiClient::from_env()?),
-            "gemini" => Box::new(GeminiClient::from_env()?),
-            "anthropic" => Box::new(AnthropicClient::from_env()?),
-            "fallback" => Box::new(FallbackClient::from_env()?),
-            other => bail!(
-                "Unknown LLM_PROVIDER: {}. Valid options: anthropic, gemini, openai, fallback",
-                other
-            ),
-        };
-
-        info!(provider = %provider, model = %client.model(), "AgentRunner initialized from env");
-
-        let mcp = McpSession::connect_default().await?;
-        Ok(Self::new(client, mcp))
+        Self::from_env_for_agent(None).await
     }
 
     /// Create a runner for a specific agent, using its registry `model_backend`.
     ///
-    /// When `model_backend` is provided, it overrides `ANTHROPIC_MODEL` for the
-    /// proxy/anthropic provider so the correct model is sent to the proxy.
+    /// When `model_backend` is provided, FallbackClient routes to the correct
+    /// provider based on MODEL_PROVIDER_MAP. When PROXY_URL is set, individual
+    /// API keys are optional - the proxy handles all routing.
     pub async fn from_env_for_agent(model_backend: Option<&str>) -> Result<Self> {
-        let provider = std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "fallback".to_string());
-
-        let client: Box<dyn LlmClient> = match provider.as_str() {
-            "openai" => Box::new(OpenAiClient::from_env()?),
-            "gemini" => Box::new(GeminiClient::from_env()?),
-            "anthropic" => match model_backend {
-                Some(m) => Box::new(AnthropicClient::from_env_with_model(m)?),
-                None => Box::new(AnthropicClient::from_env()?),
-            },
-            "fallback" => match model_backend {
-                Some(m) => Box::new(FallbackClient::from_env_with_model(m)?),
-                None => Box::new(FallbackClient::from_env()?),
-            },
-            other => bail!(
-                "Unknown LLM_PROVIDER: {}. Valid options: anthropic, gemini, openai, fallback",
-                other
-            ),
+        let client: Box<dyn LlmClient> = match model_backend {
+            Some(m) => Box::new(FallbackClient::from_env_with_model(m)?),
+            None => Box::new(FallbackClient::from_env()?),
         };
 
-        info!(provider = %provider, model = %client.model(), "AgentRunner initialized for agent");
+        info!(model = %client.model(), "AgentRunner initialized");
 
         let mcp = McpSession::connect_default().await?;
         Ok(Self::new(client, mcp))
@@ -194,14 +160,29 @@ fn extract_decision(text: &str) -> Result<AgentDecision> {
         }
     }
 
-    // 3. Fall back: scan for the last '{' and try to parse from there to the end
-    // This handles cases where there's a conversational preamble.
-    if let Some(last_brace) = text.rfind('{') {
-        let potential_json = &text[last_brace..];
-        // We might need to find the matching '}' if there's trailing junk,
-        // but often LLMs just end with the JSON object.
+    // 3. Find the start of a JSON object. We prefer `{"` (JSON object start)
+    //    over any stray '{' in reasoning text, then fall back to rfind.
+    let json_start = text.find("{\"").or_else(|| text.rfind('{'));
+
+    if let Some(start) = json_start {
+        let potential_json = &text[start..];
+
         if let Ok(d) = serde_json::from_str::<AgentDecision>(potential_json.trim()) {
             return Ok(d);
+        }
+
+        // 3b. Truncated JSON repair: LLM responses can be cut off before the
+        //     closing '"}' or '}'. Try appending common truncation suffixes.
+        let trimmed = potential_json.trim();
+        if trimmed.starts_with('{') {
+            let suffixes = ["}", "\"}", "\"\n}", "\n}"];
+            for suffix in suffixes {
+                let repaired = format!("{}{}", trimmed, suffix);
+                if let Ok(d) = serde_json::from_str::<AgentDecision>(&repaired) {
+                    warn!("Repaired truncated JSON by appending suffix");
+                    return Ok(d);
+                }
+            }
         }
     }
 
@@ -211,6 +192,14 @@ fn extract_decision(text: &str) -> Result<AgentDecision> {
         if trimmed.starts_with('{') {
             if let Ok(d) = serde_json::from_str::<AgentDecision>(trimmed) {
                 return Ok(d);
+            }
+            let suffixes = ["}", "\"}", "\"\n}", "\n}"];
+            for suffix in suffixes {
+                let repaired = format!("{}{}", trimmed, suffix);
+                if let Ok(d) = serde_json::from_str::<AgentDecision>(&repaired) {
+                    warn!("Repaired truncated JSON on line by appending suffix");
+                    return Ok(d);
+                }
             }
         }
     }
@@ -242,6 +231,28 @@ mod tests {
         );
         let d = extract_decision(text).unwrap();
         assert_eq!(d.action, "work_assigned");
+    }
+
+    #[test]
+    fn test_extract_decision_with_reasoning_preamble() {
+        let text = concat!(
+            "**Reasoning:** Some reasoning text here.\n\n",
+            r#"{"action": "merge_prs", "notes": "PR #40 needs merge."}"#
+        );
+        let d = extract_decision(text).unwrap();
+        assert_eq!(d.action, "merge_prs");
+        assert_eq!(d.notes, "PR #40 needs merge.");
+    }
+
+    #[test]
+    fn test_extract_decision_truncated_json_missing_quote_and_brace() {
+        let text = concat!(
+            "**Reasoning:** Some reasoning text here.\n\n",
+            r#"{"action": "merge_prs", "notes": "PR #40 needs merge."#
+        );
+        let d = extract_decision(text).unwrap();
+        assert_eq!(d.action, "merge_prs");
+        assert_eq!(d.notes, "PR #40 needs merge.");
     }
 
     #[test]

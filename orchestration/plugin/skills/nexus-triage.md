@@ -33,11 +33,21 @@ A ticket is blocked if:
 ## Prioritization Matrix
 
 ```
-         | High Impact | Low Impact
+          | High Impact | Low Impact
 ---------|-------------|------------
 Urgent   | Do Now      | Schedule
 Not Urgent| Plan       | Backlog
 ```
+
+## CI-First Override
+
+**CI setup tickets ALWAYS take absolute priority over all other tickets.**
+
+Before applying the normal matrix, check if the repository has CI workflows:
+- If `ci_readiness` is `missing`: Only CI setup tickets should be assigned
+- CI setup tickets are identified by: ID starting with `T-CI-`, or title containing "CI" + ("setup" or "pipeline" or "workflow")
+- Without CI, VESSEL cannot validate PRs and will stall, wasting all worker cycles
+- This override applies regardless of issue number, apparent urgency, or any other priority signal
 
 ## Assignment Considerations
 

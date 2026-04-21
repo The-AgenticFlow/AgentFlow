@@ -10,7 +10,7 @@
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use pair_harness::process::SentinelMode;
-use pair_harness::types::{Contract, FinalReview, SegmentEval};
+use pair_harness::types::{Contract, FinalReview, SegmentEval, TimeoutProfile};
 use pocketflow_core::{Action, Node, SharedStore};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -61,6 +61,8 @@ pub struct SentinelConfig {
     pub mode: SentinelMode,
     /// Path to SENTINEL persona
     pub persona_path: PathBuf,
+    /// Timeout profile from contract (parsed from CONTRACT.md)
+    pub timeout_profile: Option<TimeoutProfile>,
 }
 
 /// SENTINEL node for code review.
@@ -178,6 +180,27 @@ When done, exit. This is an ephemeral process."#,
         ))
     }
 
+    /// Resolve the effective timeout for this evaluation.
+    /// Uses the contract timeout profile if available, otherwise falls back to mode-based defaults.
+    fn resolve_timeout(&self) -> Duration {
+        const ENV_OVERHEAD_SECS: u64 = 45;
+
+        let base_secs = match &self.config.timeout_profile {
+            Some(profile) => match &self.config.mode {
+                SentinelMode::PlanReview => profile.plan_review_secs,
+                SentinelMode::SegmentEval(_) => profile.segment_eval_secs,
+                SentinelMode::FinalReview => profile.final_review_secs,
+            },
+            None => match &self.config.mode {
+                SentinelMode::PlanReview => 120,
+                SentinelMode::SegmentEval(_) => 300,
+                SentinelMode::FinalReview => 480,
+            },
+        };
+
+        Duration::from_secs(base_secs + ENV_OVERHEAD_SECS)
+    }
+
     /// Spawn SENTINEL process and wait for completion.
     async fn spawn_and_wait(&self, prompt: &str) -> Result<SentinelStatus> {
         let log_dir = self.config.shared.join("logs");
@@ -227,14 +250,14 @@ When done, exit. This is an ephemeral process."#,
                 .map_err(|e| anyhow!("Failed to write prompt to stdin: {:#}", e))?;
         }
 
-        // Wait with timeout (10 minutes for evaluation)
-        let timeout = Duration::from_secs(600);
+        // Wait with timeout (determined by contract complexity or fallback)
+        let timeout = self.resolve_timeout();
         let result = tokio::time::timeout(timeout, child.wait()).await;
 
         match result {
             Err(_) => {
                 child.kill().await?;
-                warn!(pair = %self.config.pair_id, "SENTINEL timed out after 10m");
+                warn!(pair = %self.config.pair_id, "SENTINEL timed out after {}s", timeout.as_secs());
                 return Ok(SentinelStatus {
                     verdict: "changes_requested".to_string(),
                     segment: None,
@@ -447,6 +470,7 @@ mod tests {
             shared: PathBuf::from("/tmp/shared"),
             mode: SentinelMode::SegmentEval(1),
             persona_path: PathBuf::from("orchestration/agent/agents/sentinel.agent.md"),
+            timeout_profile: None,
         };
         
         assert_eq!(config.pair_id, "forge-1");

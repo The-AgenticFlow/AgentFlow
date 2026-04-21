@@ -17,7 +17,7 @@ try:
     s = json.load(open('${SHARED}/STATUS.json'))
     required = ['status','pair','ticket_id','files_changed']
     missing = [k for k in required if k not in s]
-    valid_statuses = ['PR_OPENED','BLOCKED','FUEL_EXHAUSTED']
+    valid_statuses = ['PR_OPENED','BLOCKED','FUEL_EXHAUSTED','PENDING_REVIEW']
     # Note: IMPLEMENTATION_COMPLETE and COMPLETED are NOT valid terminal statuses
     # FORGE must push and create PR (PR_OPENED) or explicitly block
     if missing:
@@ -35,7 +35,7 @@ except Exception as e:
       echo "Fix STATUS.json before exiting."
       echo ""
       echo "Required fields: status, pair, ticket_id, files_changed"
-      echo "Valid statuses: PR_OPENED, BLOCKED, FUEL_EXHAUSTED"
+      echo "Valid statuses: PR_OPENED, BLOCKED, FUEL_EXHAUSTED, PENDING_REVIEW"
       exit 2
     fi
   fi
