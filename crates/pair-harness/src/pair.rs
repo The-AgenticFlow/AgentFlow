@@ -24,8 +24,9 @@ use crate::watcher::SharedDirWatcher;
 use crate::worktree::{MergeMainResult, WorktreeManager};
 
 const DEFAULT_SENTINEL_TIMEOUT_SECS: u64 = 120;
-const FORGE_STARTUP_TIMEOUT_SECS: u64 = 300; // 5 minutes to write PLAN.md
+const FORGE_STARTUP_TIMEOUT_SECS: u64 = 300;
 const MAX_SENTINEL_RETRIES: u32 = 2;
+const MIN_SENTINEL_RETRY_INTERVAL_SECS: u64 = 30;
 
 /// Normalize agent-written STATUS.json status strings to canonical values.
 ///
@@ -242,6 +243,61 @@ struct SentinelTracker {
     timeout_secs: u64,
 }
 
+struct SentinelFailureInfo {
+    mode: SentinelMode,
+    reason: String,
+}
+
+struct SentinelRetryState {
+    plan_review_retries: u32,
+    segment_eval_retries: std::collections::HashMap<u32, u32>,
+    final_review_retries: u32,
+}
+
+impl SentinelRetryState {
+    fn new() -> Self {
+        Self {
+            plan_review_retries: 0,
+            segment_eval_retries: std::collections::HashMap::new(),
+            final_review_retries: 0,
+        }
+    }
+
+    fn get(&self, mode: &SentinelMode) -> u32 {
+        match mode {
+            SentinelMode::PlanReview => self.plan_review_retries,
+            SentinelMode::SegmentEval(n) => *self.segment_eval_retries.get(n).unwrap_or(&0),
+            SentinelMode::FinalReview => self.final_review_retries,
+        }
+    }
+
+    fn increment(&mut self, mode: &SentinelMode) {
+        match mode {
+            SentinelMode::PlanReview => self.plan_review_retries += 1,
+            SentinelMode::SegmentEval(n) => {
+                *self.segment_eval_retries.entry(*n).or_insert(0) += 1;
+            }
+            SentinelMode::FinalReview => self.final_review_retries += 1,
+        }
+    }
+
+    fn reset(&mut self, mode: &SentinelMode) {
+        match mode {
+            SentinelMode::PlanReview => self.plan_review_retries = 0,
+            SentinelMode::SegmentEval(n) => {
+                self.segment_eval_retries.remove(n);
+            }
+            SentinelMode::FinalReview => self.final_review_retries = 0,
+        }
+    }
+
+    fn reset_all(&mut self) {
+        self.plan_review_retries = 0;
+        self.segment_eval_retries.clear();
+        self.final_review_retries = 0;
+    }
+}
+
 /// The main FORGE-SENTINEL pair lifecycle manager.
 pub struct ForgeSentinelPair {
     config: PairConfig,
@@ -253,7 +309,9 @@ pub struct ForgeSentinelPair {
     start_time: Instant,
     sentinel_tracker: Option<SentinelTracker>,
     forge_spawn_time: Instant,
-    sentinel_retries: u32,
+    sentinel_retries: SentinelRetryState,
+    last_sentinel_spawn_time: Option<Instant>,
+    last_sentinel_failure: Option<SentinelFailureInfo>,
     ticket_id: String,
     plan_approved: bool,
     final_approved: bool,
@@ -289,7 +347,9 @@ impl ForgeSentinelPair {
             start_time: Instant::now(),
             sentinel_tracker: None,
             forge_spawn_time: Instant::now(),
-            sentinel_retries: 0,
+            sentinel_retries: SentinelRetryState::new(),
+            last_sentinel_spawn_time: None,
+            last_sentinel_failure: None,
             ticket_id: String::new(),
             plan_approved: false,
             final_approved: false,
@@ -407,6 +467,39 @@ impl ForgeSentinelPair {
             }
         }
 
+        // 1c. If CI fix rework: merge origin/main so FORGE has latest workflow files + detects conflicts
+        if ci_fix_path.exists() {
+            match self.worktree.merge_origin_main(&self.config.worktree) {
+                Ok(MergeMainResult::Clean) => {
+                    info!(
+                        pair = %self.config.pair_id,
+                        "origin/main merged cleanly before CI fix — FORGE has latest workflows"
+                    );
+                    if let Err(e) = self.worktree.force_push_branch(&self.config.worktree) {
+                        warn!(
+                            pair = %self.config.pair_id,
+                            error = %e,
+                            "Failed to force-push after clean merge — GitHub PR may be stale"
+                        );
+                    }
+                }
+                Ok(MergeMainResult::Conflict { conflicted_files }) => {
+                    info!(
+                        pair = %self.config.pair_id,
+                        files = conflicted_files.len(),
+                        "Merge conflicts surfaced during CI fix prep — FORGE will resolve both conflicts and CI failures"
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        pair = %self.config.pair_id,
+                        error = %e,
+                        "Failed to merge origin/main before CI fix — FORGE may not have latest workflows"
+                    );
+                }
+            }
+        }
+
         // 2. Provision configuration files
         self.provision_config(ticket).await?;
 
@@ -415,6 +508,10 @@ impl ForgeSentinelPair {
 
         // 4. Create shared directory structure
         self.create_shared_structure().await?;
+
+        // 4b. Reset watchdog so stale WORKLOG.md mtime from a previous
+        //     lifecycle doesn't cause an immediate stall detection.
+        self.watchdog.reset();
 
         // 5. Write TICKET.md and TASK.md
         self.write_task_context(ticket).await?;
@@ -455,13 +552,18 @@ impl ForgeSentinelPair {
                         let mode = tracker.mode.clone();
                         if status.success() {
                             self.materialize_sentinel_artifact(&mode).await?;
-                            self.sentinel_retries = 0;
+                            self.sentinel_retries.reset(&mode);
                         } else {
                             warn!(
                                 mode = ?mode,
                                 exit_code = ?status.code(),
                                 "SENTINEL exited with error before producing a watched artifact"
                             );
+                            self.last_sentinel_failure = Some(SentinelFailureInfo {
+                                mode: mode.clone(),
+                                reason: format!("exit code {:?}", status.code()),
+                            });
+                            self.sentinel_retries.reset(&mode);
                         }
                         self.sentinel_tracker = None;
                     }
@@ -481,7 +583,23 @@ impl ForgeSentinelPair {
                         "SENTINEL timed out after {}s",
                         tracker.timeout_secs
                     );
+                    let mode = tracker.mode.clone();
+                    let timeout_secs = tracker.timeout_secs;
                     let _ = self.process.kill(&mut tracker.child).await;
+                    let stderr_excerpt = self.read_sentinel_stderr_excerpt(&mode).await;
+                    self.last_sentinel_failure = Some(SentinelFailureInfo {
+                        mode: mode.clone(),
+                        reason: format!("timeout after {}s", timeout_secs),
+                    });
+                    let _ = self
+                        .reset
+                        .append_sentinel_failure(
+                            &format!("{:?}", mode),
+                            &format!("timeout after {}s", timeout_secs),
+                            stderr_excerpt.as_deref(),
+                        )
+                        .await;
+                    self.sentinel_retries.reset(&mode);
                     self.sentinel_tracker = None;
                 }
             }
@@ -500,6 +618,7 @@ impl ForgeSentinelPair {
                 if self.process.is_running(forge).await {
                     warn!("Killing stuck FORGE process and respawning");
                     self.process.kill(forge).await?;
+                    self.sentinel_retries.reset_all();
                     *forge = self.spawn_forge_resume().await?;
                     self.reset.increment_reset();
                 }
@@ -533,6 +652,7 @@ impl ForgeSentinelPair {
                                 "Contract agreed - respawning FORGE to begin implementation"
                             );
                             self.process.kill(forge).await?;
+                            self.sentinel_retries.reset_all();
                             *forge = self.spawn_forge_resume().await?;
                         } else {
                             info!("Contract has issues - FORGE must revise plan");
@@ -540,7 +660,9 @@ impl ForgeSentinelPair {
                     }
 
                     FsEvent::WorklogUpdated => {
-                        if self.all_segments_approved().await? {
+                        if self.final_approved {
+                            debug!("Worklog updated but final already approved — skipping SENTINEL spawn");
+                        } else if self.all_segments_approved().await? {
                             info!("All segments complete - spawning SENTINEL for final review");
                             self.spawn_sentinel_for_final().await?;
                         } else if let Some(segment_n) = self.next_segment_to_eval().await? {
@@ -601,6 +723,7 @@ impl ForgeSentinelPair {
                         self.sentinel_tracker = None;
                         info!("Context reset - respawning FORGE");
                         self.process.kill(forge).await?;
+                        self.sentinel_retries.reset_all();
                         *forge = self.spawn_forge_resume().await?;
                         self.reset.increment_reset();
                     }
@@ -611,9 +734,10 @@ impl ForgeSentinelPair {
             if self.start_time.elapsed().as_secs().wrapping_rem(60) == 0 {
                 let status = self.watchdog.check_stalled()?;
                 if status.is_stalled() {
-                    let elapsed = self.start_time.elapsed().as_secs();
+                    let total_elapsed = self.start_time.elapsed().as_secs();
+                    let worklog_elapsed = status.elapsed().unwrap_or_default().as_secs();
                     warn!(
-                        elapsed_secs = elapsed,
+                        elapsed_secs = worklog_elapsed,
                         "Pair stalled - no WORKLOG update for too long, killing pair"
                     );
                     let _ = self.process.kill(forge).await;
@@ -621,8 +745,8 @@ impl ForgeSentinelPair {
                     return Ok(PairOutcome::Blocked {
                         reason: format!(
                             "Pair stalled — no progress for {}s (total elapsed: {}s)",
-                            self.config.watchdog_timeout_secs,
-                            elapsed
+                            worklog_elapsed,
+                            total_elapsed
                         ),
                         blockers: vec![],
                     });
@@ -650,6 +774,7 @@ impl ForgeSentinelPair {
                                 self.read_contract_timeout_profile().await?;
                                 info!(timeout = ?self.contract_timeout, "Contract agreed (drained after FORGE exit) - respawning FORGE to begin implementation");
                                 self.process.kill(forge).await?;
+                                self.sentinel_retries.reset_all();
                                 *forge = self.spawn_forge_resume().await?;
                             }
                         }
@@ -707,6 +832,7 @@ impl ForgeSentinelPair {
                 // After draining events, re-evaluate state based on filesystem
                 if self.reset.has_handoff() {
                     info!("FORGE exited with handoff - respawning");
+                    self.sentinel_retries.reset_all();
                     *forge = self.spawn_forge_resume().await?;
                     self.reset.increment_reset();
                 } else if self.config.shared.join("STATUS.json").exists() {
@@ -731,15 +857,21 @@ impl ForgeSentinelPair {
                             info!("FORGE exited after writing PLAN.md - spawning SENTINEL for plan review");
                             self.spawn_sentinel_for_plan().await?;
                         } else if contract_exists && self.plan_approved && !worklog_exists {
-                            // Contract agreed but no implementation yet - respawn FORGE to implement
                             info!("FORGE exited, contract agreed - respawning FORGE to begin implementation");
+                            self.sentinel_retries.reset_all();
                             *forge = self.spawn_forge_resume().await?;
                         } else if worklog_exists {
                             // Implementation in progress - check segment status
                             if self.all_segments_approved().await? {
-                                if !final_review_exists {
+                                if !final_review_exists && !self.final_approved {
                                     info!("FORGE exited, all segments approved - spawning SENTINEL for final review");
                                     self.spawn_sentinel_for_final().await?;
+                                } else {
+                                    // Final review already approved (CI fix / conflict rework)
+                                    // or already exists — respawn FORGE to continue rework
+                                    info!("FORGE exited with final approval already granted — respawning to continue rework");
+                                    self.sentinel_retries.reset_all();
+                                    *forge = self.spawn_forge_resume().await?;
                                 }
                             } else if let Some(segment_n) = self.next_segment_to_eval().await? {
                                 info!(
@@ -752,17 +884,17 @@ impl ForgeSentinelPair {
                                 // This is expected with --print mode: FORGE exits after each segment,
                                 // and we just respawn to continue the next one.
                                 info!("FORGE exited after segment work - respawning to continue implementation");
+                                self.sentinel_retries.reset_all();
                                 *forge = self.spawn_forge_resume().await?;
                             } else {
-                                // No segments remaining in plan, no eval needed, but not all approved.
-                                // This is a genuine stale state - count as a reset.
                                 info!("FORGE exited with partial worklog - respawning to continue implementation");
+                                self.sentinel_retries.reset_all();
                                 *forge = self.spawn_forge_resume().await?;
                                 self.reset.increment_reset();
                             }
                         } else {
-                            // No clear state - respawn
                             info!("FORGE exited after making progress - respawning to continue");
+                            self.sentinel_retries.reset_all();
                             *forge = self.spawn_forge_resume().await?;
                         }
                     }
@@ -780,6 +912,7 @@ impl ForgeSentinelPair {
                         // Ran for a while but produced nothing - synthesize handoff and respawn
                         warn!("FORGE exited unexpectedly after {}s without progress - synthesizing handoff", forge_uptime);
                         self.reset.synthesize_handoff().await?;
+                        self.sentinel_retries.reset_all();
                         *forge = self.spawn_forge_resume().await?;
                         self.reset.increment_reset();
                     }
@@ -872,46 +1005,62 @@ impl ForgeSentinelPair {
                     after.split("\n## ").next().unwrap_or(after).trim().to_string()
                 })
                 .unwrap_or_else(|| "CI checks failed".to_string());
-            let local_commands = ci_fix_content
+            let job_log_section = ci_fix_content
                 .lines()
-                .find(|l| l.starts_with("## How to Fix"))
+                .find(|l| l.starts_with("## Job Log Output"))
                 .map(|_| {
                     let after = ci_fix_content
-                        .split("## How to Fix — Run Checks Locally\n\n")
+                        .split("## Job Log Output")
                         .nth(1)
                         .unwrap_or("");
-                    after.split("\n## ").next().unwrap_or(after).trim().to_string()
+                    after.trim().to_string()
                 })
-                .unwrap_or_else(|| "Run the CI checks locally".to_string());
+                .unwrap_or_default();
+            let conflict_notice = if self.config.worktree.join(".git").exists()
+                && std::process::Command::new("git")
+                    .args(["diff", "--name-only", "--diff-filter=U"])
+                    .current_dir(&self.config.worktree)
+                    .output()
+                    .ok()
+                    .map(|o| !o.stdout.is_empty())
+                    .unwrap_or(false)
+            {
+                "\n\n**MERGE CONFLICTS DETECTED:** origin/main was merged into your branch and there are conflict markers.\n\
+                 Resolve ALL conflict markers (lines with <<<<<<<) BEFORE running CI checks.\n".to_string()
+            } else {
+                String::new()
+            };
             format!(
                 "Fix CI failures for ticket {}.\n\n\
                  Branch: {}\n\n\
                  The CI pipeline failed:\n{}\n\n\
-                 {}\n\n\
+                 {}{}\
                  CRITICAL RULES:\n\
-                 1. Run ALL failing checks locally, fix ALL errors, then push ONCE. \
-                 Do NOT push after fixing only one error — CI will just fail on the next check.\n\
-                 2. If a tool is missing (pip, ruff, npm, etc.), INSTALL IT first — do not skip checks.\n\
-                 3. You MUST update {}/WORKLOG.md as you work — write what you install, what errors you find, \
-                 and what you fix. The watchdog will kill your process if WORKLOG.md is not updated within 20 minutes.\n\n\
+                 1. Read .github/workflows/ to find the failing workflow(s). Match the check names above to the job names in the YAML.\n\
+                 2. Run the failing job's exact `run:` steps locally. Install any missing tools first.\n\
+                 3. Resolve ALL merge conflict markers (if any) BEFORE running CI checks.\n\
+                 4. Fix ALL errors, then push ONCE. Do NOT push after fixing only one error — CI will just fail on the next check.\n\
+                 5. You MUST update {}/WORKLOG.md as you work — the watchdog will kill your process if WORKLOG.md is not updated within 20 minutes.\n\n\
                  Steps:\n\
-                 1. `git pull`\n\
-                 2. Install any missing tools (pip, python3-venv, ruff, npm, etc.)\n\
-                 3. Install project deps: `pip install -r requirements.txt` or `npm ci`\n\
-                 4. Update WORKLOG.md with what you installed\n\
-                 5. Run each failing check locally (see commands above)\n\
-                 6. Fix ALL errors found by each check\n\
-                 7. Update WORKLOG.md with what you fixed\n\
-                 8. Run all checks again to confirm everything passes\n\
-                 9. `git add -A && git commit -m \"fix CI failures\" && git push`\n\
-                 10. Write STATUS.json with status PR_OPENED\n\n\
+                 1. Read .github/workflows/ — find the workflow(s) matching the failed check names above\n\
+                 2. Install any missing tools the workflow expects (pip, npm, ruff, etc.)\n\
+                 3. Install project deps as the workflow does (pip install -r requirements.txt, npm ci, etc.)\n\
+                 4. Resolve any <<<<<<< conflict markers in any files\n\
+                 5. Update WORKLOG.md with what you installed\n\
+                 6. Run the failing job's steps locally using the exact commands from the workflow YAML\n\
+                 7. Fix ALL errors found\n\
+                 8. Update WORKLOG.md with what you fixed\n\
+                 9. Run ALL failing checks again to confirm everything passes\n\
+                 10. git add -A && git commit -m \"fix CI failures\" && git push\n\
+                 11. Write STATUS.json with status PR_OPENED\n\n\
                  If a PR already exists for this branch, do NOT create a new one — just push and update STATUS.json\n\n\
                  VALID STATUS.json status values: PR_OPENED, COMPLETE, BLOCKED, FUEL_EXHAUSTED, PENDING_REVIEW. \
                  Do NOT use any other value — an invalid status will be treated as BLOCKED and your fix will be wasted.",
                 ticket.id,
                 WorktreeManager::branch_name(&self.config.pair_id, &ticket.id),
                 failure_summary,
-                local_commands,
+                if job_log_section.is_empty() { String::new() } else { format!("## Job Log Output (for reference)\n\n{}\n\n", job_log_section) },
+                conflict_notice,
                 self.config.shared.display(),
             )
         } else {
@@ -942,7 +1091,9 @@ impl ForgeSentinelPair {
 
     /// Spawn FORGE process in resume mode.
     async fn spawn_forge_resume(&mut self) -> Result<Child> {
+        self.append_sentinel_failure_to_handoff().await?;
         self.forge_spawn_time = Instant::now();
+        self.sentinel_retries.reset_all();
         self.process
             .spawn_forge_resume(
                 &self.config.pair_id,
@@ -982,17 +1133,39 @@ impl ForgeSentinelPair {
         compute_effective_timeout(base_secs, &complexity)
     }
 
+    fn check_sentinel_retry_interval(&self) -> bool {
+        if let Some(last) = self.last_sentinel_spawn_time {
+            let elapsed = last.elapsed().as_secs();
+            if elapsed < MIN_SENTINEL_RETRY_INTERVAL_SECS {
+                debug!(
+                    elapsed_secs = elapsed,
+                    min_secs = MIN_SENTINEL_RETRY_INTERVAL_SECS,
+                    "Sentinel retry too soon — deferring"
+                );
+                return false;
+            }
+        }
+        true
+    }
+
     /// Spawn SENTINEL for plan review.
     async fn spawn_sentinel_for_plan(&mut self) -> Result<()> {
-        if self.sentinel_retries >= MAX_SENTINEL_RETRIES {
-            warn!(
-                retries = self.sentinel_retries,
-                "SENTINEL plan review exceeded max retries — forcing changes_requested and reset"
-            );
-            self.reset.increment_reset();
+        if !self.check_sentinel_retry_interval() {
             return Ok(());
         }
-        self.sentinel_retries += 1;
+        let mode = SentinelMode::PlanReview;
+        if self.sentinel_retries.get(&mode) >= MAX_SENTINEL_RETRIES {
+            warn!(
+                retries = self.sentinel_retries.get(&mode),
+                "SENTINEL plan review exceeded max retries — writing synthetic changes_requested"
+            );
+            self.write_synthetic_plan_rejection().await?;
+            self.reset.increment_reset();
+            self.sentinel_retries.reset(&mode);
+            return Ok(());
+        }
+        self.sentinel_retries.increment(&mode);
+        self.last_sentinel_spawn_time = Some(Instant::now());
         let timeout_secs = self.resolve_sentinel_timeout(&SentinelMode::PlanReview);
         let child = self
             .process
@@ -1018,16 +1191,23 @@ impl ForgeSentinelPair {
 
     /// Spawn SENTINEL for segment evaluation.
     async fn spawn_sentinel_for_segment(&mut self, segment: u32) -> Result<()> {
-        if self.sentinel_retries >= MAX_SENTINEL_RETRIES {
-            warn!(
-                retries = self.sentinel_retries,
-                segment,
-                "SENTINEL segment eval exceeded max retries — forcing changes_requested and reset"
-            );
-            self.reset.increment_reset();
+        if !self.check_sentinel_retry_interval() {
             return Ok(());
         }
-        self.sentinel_retries += 1;
+        let mode = SentinelMode::SegmentEval(segment);
+        if self.sentinel_retries.get(&mode) >= MAX_SENTINEL_RETRIES {
+            warn!(
+                retries = self.sentinel_retries.get(&mode),
+                segment,
+                "SENTINEL segment eval exceeded max retries — writing synthetic changes_requested"
+            );
+            self.write_synthetic_segment_rejection(segment).await?;
+            self.reset.increment_reset();
+            self.sentinel_retries.reset(&mode);
+            return Ok(());
+        }
+        self.sentinel_retries.increment(&mode);
+        self.last_sentinel_spawn_time = Some(Instant::now());
         let timeout_secs = self.resolve_sentinel_timeout(&SentinelMode::SegmentEval(segment));
         let child = self
             .process
@@ -1059,15 +1239,22 @@ impl ForgeSentinelPair {
             return Ok(());
         }
 
-        if self.sentinel_retries >= MAX_SENTINEL_RETRIES {
-            warn!(
-                retries = self.sentinel_retries,
-                "SENTINEL final review exceeded max retries — forcing changes_requested and reset"
-            );
-            self.reset.increment_reset();
+        if !self.check_sentinel_retry_interval() {
             return Ok(());
         }
-        self.sentinel_retries += 1;
+        let mode = SentinelMode::FinalReview;
+        if self.sentinel_retries.get(&mode) >= MAX_SENTINEL_RETRIES {
+            warn!(
+                retries = self.sentinel_retries.get(&mode),
+                "SENTINEL final review exceeded max retries — writing synthetic rejection"
+            );
+            self.write_synthetic_final_rejection().await?;
+            self.reset.increment_reset();
+            self.sentinel_retries.reset(&mode);
+            return Ok(());
+        }
+        self.sentinel_retries.increment(&mode);
+        self.last_sentinel_spawn_time = Some(Instant::now());
         info!("Spawning SENTINEL for final review");
         let timeout_secs = self.resolve_sentinel_timeout(&SentinelMode::FinalReview);
         let child = self
@@ -1532,6 +1719,105 @@ impl ForgeSentinelPair {
         false
     }
 
+    async fn write_synthetic_plan_rejection(&self) -> Result<()> {
+        let path = self.config.shared.join("CONTRACT.md");
+        if path.exists() {
+            return Ok(());
+        }
+        let content = format!(
+            "# Contract\n\n\
+             ## Status: ISSUES\n\n\
+             ## Feedback\n\n\
+             SENTINEL plan review failed after {} attempts.\n\
+             FORGE must re-verify the plan against the project requirements.\n\
+             Review PLAN.md for completeness and update it before continuing.\n",
+            MAX_SENTINEL_RETRIES
+        );
+        tokio::fs::write(&path, &content)
+            .await
+            .context("Failed to write synthetic CONTRACT.md")?;
+        info!(path = %path.display(), "Wrote synthetic CONTRACT.md with ISSUES verdict");
+        Ok(())
+    }
+
+    async fn write_synthetic_segment_rejection(&self, segment: u32) -> Result<()> {
+        let path = self
+            .config
+            .shared
+            .join(format!("segment-{}-eval.md", segment));
+        if path.exists() {
+            return Ok(());
+        }
+        let content = format!(
+            "# Segment {} Evaluation\n\n\
+             ## Verdict: CHANGES_REQUESTED\n\n\
+             ## Specific feedback\n\n\
+             SENTINEL evaluation failed after {} attempts.\n\
+             FORGE must re-verify this segment's implementation locally before resubmitting.\n\
+             Run all tests and lint checks for this segment's code before updating WORKLOG.md.\n\
+             Check .github/workflows/ for CI commands and run them locally to confirm everything passes.\n",
+            segment, MAX_SENTINEL_RETRIES
+        );
+        tokio::fs::write(&path, &content)
+            .await
+            .context("Failed to write synthetic segment eval")?;
+        info!(path = %path.display(), "Wrote synthetic segment-{}-eval.md with CHANGES_REQUESTED", segment);
+        Ok(())
+    }
+
+    async fn write_synthetic_final_rejection(&self) -> Result<()> {
+        let path = self.config.shared.join("final-review.md");
+        if path.exists() {
+            return Ok(());
+        }
+        let content = format!(
+            "# Final Review\n\n\
+             ## Verdict: REJECTED\n\n\
+             ## Specific feedback\n\n\
+             SENTINEL final review failed after {} attempts.\n\
+             FORGE must re-verify all segments locally before requesting final review again.\n\
+             Run the full test suite and all CI checks locally (see .github/workflows/) before proceeding.\n",
+            MAX_SENTINEL_RETRIES
+        );
+        tokio::fs::write(&path, &content)
+            .await
+            .context("Failed to write synthetic final-review.md")?;
+        info!(path = %path.display(), "Wrote synthetic final-review.md with REJECTED verdict");
+        Ok(())
+    }
+
+    async fn append_sentinel_failure_to_handoff(&mut self) -> Result<()> {
+        let handoff_path = self.config.shared.join("HANDOFF.md");
+        if !handoff_path.exists() {
+            return Ok(());
+        }
+        let Some(ref failure) = self.last_sentinel_failure else {
+            return Ok(());
+        };
+        let mode_str = match &failure.mode {
+            SentinelMode::PlanReview => "PlanReview".to_string(),
+            SentinelMode::SegmentEval(n) => format!("SegmentEval({})", n),
+            SentinelMode::FinalReview => "FinalReview".to_string(),
+        };
+        let section = format!(
+            "\n\n## Last Sentinel Failure\n\n\
+             Mode: {}\n\
+             Reason: {}\n",
+            mode_str,
+            failure.reason,
+        );
+        let existing = tokio::fs::read_to_string(&handoff_path).await.unwrap_or_default();
+        if existing.contains("## Last Sentinel Failure") {
+            return Ok(());
+        }
+        tokio::fs::write(&handoff_path, format!("{}{}", existing, section))
+            .await
+            .context("Failed to append sentinel failure to HANDOFF.md")?;
+        info!("Appended sentinel failure diagnostics to HANDOFF.md");
+        self.last_sentinel_failure = None;
+        Ok(())
+    }
+
     async fn materialize_sentinel_artifact(&self, mode: &SentinelMode) -> Result<()> {
         match mode {
             SentinelMode::PlanReview => {
@@ -1579,6 +1865,39 @@ impl ForgeSentinelPair {
         }
 
         Ok(())
+    }
+
+    async fn read_sentinel_stderr_excerpt(&self, mode: &SentinelMode) -> Option<String> {
+        let mode_str = match mode {
+            SentinelMode::PlanReview => "PlanReview".to_string(),
+            SentinelMode::SegmentEval(n) => format!("SegmentEval({})", n),
+            SentinelMode::FinalReview => "FinalReview".to_string(),
+        };
+        let log_path = self
+            .config
+            .shared
+            .join("logs")
+            .join(format!("sentinel-{}-stderr.log", mode_str));
+
+        if !log_path.exists() {
+            return None;
+        }
+
+        let content = match tokio::fs::read_to_string(&log_path).await {
+            Ok(c) => c,
+            Err(_) => return None,
+        };
+
+        if content.trim().is_empty() {
+            return None;
+        }
+
+        const MAX_EXCERPT_LEN: usize = 500;
+        if content.len() <= MAX_EXCERPT_LEN {
+            Some(content.trim().to_string())
+        } else {
+            Some(format!("...{}", &content[content.len() - MAX_EXCERPT_LEN..].trim()))
+        }
     }
 
     async fn read_sentinel_result_payload(&self, mode: &SentinelMode) -> Result<Option<String>> {

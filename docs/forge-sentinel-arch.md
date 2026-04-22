@@ -1869,6 +1869,37 @@ confirms the mechanical conditions are met and executes the merge.
 
 ## 17. Failure Modes and Recovery
 
+### CI failure on PR — rework cycle
+
+```
+VESSEL detects CI failure on PR
+      │
+      ▼
+VESSEL writes CI_FIX.md to pair-N/shared/
+      │
+      ▼
+NEXUS re-assigns worker from Done → Assigned
+Ticket status: Completed → InProgress
+      │
+      ▼
+Pair lifecycle restarts:
+  - CI_FIX.md detected → plan_approved + final_approved = true
+  - build_forge_prompt checks CI_FIX.md BEFORE CONTRACT.md
+    → generates rework_prompt() with CI fix instructions
+  - FORGE pushes fixes to existing PR branch (NOT a new PR)
+  - FORGE writes STATUS.json with PR_OPENED + same PR number
+      │
+      ▼
+VESSEL re-checks CI on updated PR
+  ┌───┴───┐
+Green    Still failing
+  │         │
+Merge    CI_FIX.md again
+          (max 3 attempts, then ticket Failed)
+```
+
+**Critical:** The `build_forge_prompt` function must check CI_FIX.md / CONFLICT_RESOLUTION.md **before** CONTRACT.md. If CONTRACT.md with `status: AGREED` is checked first, FORGE enters normal implementation mode and re-implements the same segments instead of fixing CI failures.
+
 ### FORGE stalls — no WORKLOG update for N minutes
 
 ```
@@ -2049,6 +2080,22 @@ pub enum FsEvent {
     FinalReviewWritten,          // SENTINEL approved all segments
     StatusJsonWritten,           // Terminal signal (PR_OPENED, BLOCKED, etc.)
     HandoffWritten,              // Context reset requested
+}
+
+/// Per-mode SENTINEL retry tracking — each mode (plan, segment-N, final)
+/// has independent retry state, preventing a plan-review retry from
+/// consuming a segment-eval retry budget.
+struct SentinelRetryState {
+    plan_review_retries: u32,
+    segment_eval_retries: HashMap<u32, u32>,
+    final_review_retries: u32,
+}
+
+/// Records the last SENTINEL failure for inclusion in HANDOFF.md,
+/// so a respawned FORGE knows why SENTINEL failed and can adapt.
+struct SentinelFailureInfo {
+    mode: SentinelMode,
+    reason: String,
 }
 
 pub struct ForgeSentinelPair {
@@ -2650,5 +2697,6 @@ The FORGE-SENTINEL pair architecture (v3) provides autonomous multi-agent ticket
 | Secrets pushed to GitHub | GitHub push protection blocks push, infinite retry loop | .claude/ gitignored + secret scrubbing + history rewrite + accurate blocked reasons |
 | Generic blocked reasons | NEXUS blindly re-approves failing pushes | Actual error in reason (e.g., "GH013: secrets in .claude/mcp.json") |
 | Force-push on all rejections | Worsens secret scanning violations | Only force-push on non-fast-forward, never on GH013 |
+| CI fix re-entered implementation mode | FORGE ignored CI_FIX.md, re-implemented same segments, PR never fixed | `build_forge_prompt` checks CI_FIX.md/CONFLICT_RESOLUTION.md before CONTRACT.md; `final_approved` skips redundant SENTINEL spawns |
 
 The v3 design is **production-ready** with all critical gaps addressed. Implementation can proceed using the corrected Rust structure in Section 18.

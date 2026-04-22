@@ -82,6 +82,42 @@ impl ResetManager {
         Ok(())
     }
 
+    /// Append sentinel failure diagnostics to an existing HANDOFF.md,
+    /// or write a minimal one if no handoff exists yet.
+    pub async fn append_sentinel_failure(
+        &self,
+        mode: &str,
+        reason: &str,
+        stderr_excerpt: Option<&str>,
+    ) -> Result<()> {
+        let handoff_path = self.shared.join("HANDOFF.md");
+        let section = format!(
+            "\n\n## Last Sentinel Failure\n\n\
+             - **Mode:** {}\n\
+             - **Reason:** {}\n\
+             - **Stderr excerpt:** {}\n",
+            mode,
+            reason,
+            stderr_excerpt.unwrap_or("(none)")
+        );
+
+        if handoff_path.exists() {
+            let existing = fs::read_to_string(&handoff_path)?;
+            fs::write(&handoff_path, format!("{}{}", existing, section))?;
+        } else {
+            fs::write(
+                &handoff_path,
+                format!(
+                    "# HANDOFF\n\n{}{}\n\n## Exact next step\n\nReview and fix the issue reported above.\n",
+                    section,
+                    ""
+                ),
+            )?;
+        }
+        info!("Appended sentinel failure diagnostics to HANDOFF.md");
+        Ok(())
+    }
+
     /// Parse WORKLOG.md and create a synthesized handoff.
     fn synthesize_from_worklog(&self, worklog: &str) -> Result<Handoff> {
         let mut completed_segments = Vec::new();

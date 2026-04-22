@@ -1290,10 +1290,6 @@ impl VesselNode {
             info!(path = %shared_dir.display(), "Created shared directory for CI_FIX.md");
         }
 
-        let local_commands = failure_detail
-            .map(|d| d.local_reproduce_commands().join("\n"))
-            .unwrap_or_else(|| "Check .github/workflows/ for the CI commands to run locally".to_string());
-
         let job_log_section = match failure_detail {
             Some(d) if !d.job_logs.is_empty() => {
                 let logs = d
@@ -1305,7 +1301,7 @@ impl VesselNode {
                 format!(
                     "\n## Job Log Output (for reference)\n\n\
                      {}\n\n\
-                     **Do NOT try to fix errors from this log alone.** Run the commands locally first.",
+                     **Do NOT try to fix errors from this log alone.** Read .github/workflows/ and run the actual steps locally.",
                     logs
                 )
             }
@@ -1316,51 +1312,30 @@ impl VesselNode {
             "# CI Fix Required\n\n\
              VESSEL detected that CI checks failed for PR #{}.\n\n\
              ## Failed Checks\n\n{}\n\n\
-             ## How to Fix — Run Checks Locally\n\n\
+             ## How to Fix\n\n\
+             The branch has been updated with the latest origin/main (merged in).\n\
+             You now have the latest .github/workflows/ files — read them to find the failing jobs.\n\n\
              **IMPORTANT: Do NOT push without running ALL checks locally first.**\n\n\
-             1. Pull the latest: `git pull`\n\n\
-             2. **Install any missing tools first.** If a command is not found, install it:\n\
-                - Python/pip missing: `sudo apt-get update && sudo apt-get install -y python3 python3-pip python3-venv`\n\
-                - Then create venv: `python3 -m venv .venv && source .venv/bin/activate`\n\
-                - npm missing: `sudo apt-get install -y nodejs npm` or use `nvm`\n\
-                - Always install project deps: `pip install -r requirements.txt` or `npm ci`\n\n\
-             3. Run each failing check locally ONE AT A TIME. Fix errors before moving to the next:\n\n\
-             ```\n{}\n```\n\n\
-             4. After fixing all errors, run ALL commands again to confirm nothing is broken:\n\n\
-             ```\n{}\n```\n\n\
-             5. Only after ALL checks pass locally: `git add -A && git commit -m \"fix CI failures\" && git push`\n\n\
-             6. Write STATUS.json with `\"status\": \"PR_OPENED\"` and your PR number\n\n\
+             1. Read .github/workflows/ — find the workflow(s) matching the failed check names above.\n\
+             2. Match the check name to the job name in the workflow YAML.\n\
+             3. Install any missing tools the workflow expects (pip, npm, ruff, etc.).\n\
+             4. Install project deps as the workflow does (pip install -r requirements.txt, npm ci, etc.).\n\
+             5. Run the failing job's exact `run:` steps locally from the workflow YAML.\n\
+             6. Fix ALL errors before pushing — do not fix one and push, CI will just fail on the next.\n\
+             7. After ALL checks pass locally: `git add -A && git commit -m \"fix CI failures\" && git push`\n\
+             8. Write STATUS.json with `\"status\": \"PR_OPENED\"` and your PR number\n\n\
+             If merge conflict markers are present in any files, resolve them BEFORE running CI checks.\n\n\
              ## WORKLOG Updates — CRITICAL\n\n\
              You MUST update WORKLOG.md in the shared directory as you work. The watchdog monitors\n\
              WORKLOG.md — if you don't update it, your pair will be killed after 20 minutes of silence.\n\n\
-             Update WORKLOG.md at these points:\n\
-             - After installing dependencies (write what you installed)\n\
-             - After each check you run (write pass/fail and what you fixed)\n\
-             - After pushing your fix (write what was fixed and pushed)\n\n\
-             Example WORKLOG entry:\n\
-             ```\n\
-             ## CI Fix Progress\n\
-             - Installed python3, pip, ruff via apt + pip\n\
-             - Ran `ruff check .` — 12 errors found\n\
-             - Fixed I001 (import sort) in app/auth.py\n\
-             - Fixed UP017 (UTC alias) in app/auth.py and app/models.py\n\
-             - Fixed B008 (Depends default) in app/auth.py\n\
-             - Fixed B904 (raise from) in app/auth.py\n\
-             - Ran `ruff check .` — 0 errors\n\
-             - Ran `python -m pytest -x -q` — all pass\n\
-             - Pushed fix commit\n\
-             ```\n\n\
              ## Rules\n\n\
              - Do NOT change the PR description or title\n\
              - Do NOT push blind fixes — always verify locally first\n\
              - Fix ALL errors before pushing — do not fix one and push, CI will just fail on the next\n\
-             - If you cannot reproduce locally, pull first then try again\n\
-             - After you push, VESSEL will re-monitor CI automatically\n\
-             - If a tool is missing, INSTALL IT — do not skip the check just because the tool isn't installed{}",
+             - Read .github/workflows/ for the exact CI commands — do not guess\n\
+             - After you push, VESSEL will re-monitor CI automatically{}",
             pr_placeholder.pr_number,
             reason,
-            local_commands,
-            local_commands,
             job_log_section,
         );
 

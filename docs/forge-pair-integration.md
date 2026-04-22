@@ -143,9 +143,9 @@ The `SharedDirWatcher` monitors the shared directory for:
 
 | File | Event | Action |
 |------|-------|--------|
-| `PLAN.md` | Written | Spawn SENTINEL for plan review |
+| `PLAN.md` | Written | Spawn SENTINEL for plan review (skipped if `plan_approved`) |
 | `CONTRACT.md` | Written | Resume FORGE (if AGREED) |
-| `WORKLOG.md` | Modified | Spawn SENTINEL for segment eval |
+| `WORKLOG.md` | Modified | Spawn SENTINEL for segment eval (skipped if `final_approved`) |
 | `segment-N-eval.md` | Written | Resume FORGE |
 | `final-review.md` | Written | Resume FORGE (if APPROVED) |
 | `STATUS.json` | Written | Terminal state - return outcome |
@@ -284,6 +284,42 @@ See [`crates/pair-harness/tests/full_e2e.rs`](../crates/pair-harness/tests/full_
 | Efficiency | Zero-polling event detection |
 | Scalability | Long-running process model |
 | Observability | Detailed segment evaluations |
+
+## CI Fix and Conflict Rework Cycles
+
+When VESSEL detects CI failures on a PR, it writes `CI_FIX.md` to the pair's shared directory and routes back to the forge pair. Similarly, merge conflicts with origin/main trigger a `CONFLICT_RESOLUTION.md` rework cycle. These are **rework cycles**, not fresh implementations.
+
+### Rework Prompt Priority
+
+The FORGE prompt builder (`build_forge_prompt`) checks for rework markers **before** CONTRACT.md:
+
+```
+CI_FIX.md or CONFLICT_RESOLUTION.md exists?
+  → YES: generate rework_prompt() — focused on fixing the specific failure
+  → NO:  fall through to CONTRACT.md / HANDOFF.md / new session logic
+```
+
+Without this priority check, FORGE would see CONTRACT.md with `status: AGREED` and re-enter the normal segment implementation workflow, ignoring the CI fix instructions in TASK.md entirely — resulting in the same code being pushed to the same PR with no actual fix.
+
+### Lifecycle Flags
+
+When CI_FIX.md or CONFLICT_RESOLUTION.md is detected at lifecycle start:
+
+- `plan_approved = true` — skip SENTINEL plan review
+- `final_approved = true` — skip SENTINEL final review and segment evaluations
+
+This prevents the event loop from redundantly spawning SENTINEL for reviews that are already complete. The `FsEvent::WorklogUpdated` handler explicitly checks `final_approved` before spawning SENTINEL for segment or final review.
+
+### FORGE Exit Handling
+
+When FORGE exits during a rework cycle with `final_approved = true` and all segments already approved, the harness respawns FORGE to continue the rework rather than falling through with no action (which would cause a stall).
+
+### Key Properties
+
+- FORGE pushes fixes to the **existing PR branch** — it does NOT create a new PR
+- The TASK.md instructions explicitly state: "If a PR already exists for this branch, do NOT create a new one — just push and update STATUS.json"
+- origin/main is merged into the worktree before FORGE is spawned, so FORGE has the latest CI workflow files
+- WORKLOG.md is reset on re-provision so the watchdog doesn't see a stale mtime from the previous lifecycle
 
 ## Push Error Recovery
 

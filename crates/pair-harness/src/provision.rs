@@ -192,6 +192,8 @@ impl Provisioner {
 
     /// Create the shared directory structure.
     pub fn create_shared_structure(&self, shared: &Path) -> Result<()> {
+        let already_exists = shared.exists();
+
         fs::create_dir_all(shared).context("Failed to create shared directory")?;
 
         // Clean up the legacy sentinel subdirectory from older runs.
@@ -208,6 +210,16 @@ impl Provisioner {
             "# Shared artifacts are runtime state, not committed\n*\n!.gitignore\n",
         )
         .context("Failed to write .gitignore")?;
+
+        // On re-provision (e.g. CI fix, conflict rework), write a fresh WORKLOG.md
+        // so the watchdog doesn't see a stale mtime from a previous lifecycle and
+        // immediately declare the pair stalled.
+        if already_exists {
+            let worklog_path = shared.join("WORKLOG.md");
+            fs::write(&worklog_path, "# Worklog\n\n")
+                .context("Failed to reset WORKLOG.md on re-provision")?;
+            debug!(path = %worklog_path.display(), "Reset WORKLOG.md for re-provisioned pair");
+        }
 
         debug!(path = %shared.display(), "Shared directory structure created");
         Ok(())

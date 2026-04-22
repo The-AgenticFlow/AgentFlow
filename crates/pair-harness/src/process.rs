@@ -609,7 +609,16 @@ impl ProcessManager {
         let task_path = shared.join("TASK.md");
         let contract_path = shared.join("CONTRACT.md");
         let plan_path = shared.join("PLAN.md");
+        let ci_fix_path = shared.join("CI_FIX.md");
+        let conflict_path = shared.join("CONFLICT_RESOLUTION.md");
         let shared_path = shared.display();
+
+        // CI fix / conflict rework takes priority over CONTRACT.md AGREED —
+        // otherwise FORGE would re-enter implementation mode and ignore the
+        // fix instructions in TASK.md.
+        if ci_fix_path.exists() || conflict_path.exists() {
+            return self.rework_prompt(shared);
+        }
 
         if handoff_path.exists() {
             // Resume mode - read handoff and continue
@@ -775,6 +784,71 @@ impl ProcessManager {
                - ## Risks: What could go wrong\n\n\
              Write PLAN.md to shared directory now. Do NOT write any code yet - only the plan.",
             shared_path, ticket, task, shared_path, shared_path, shared_path
+        )
+    }
+
+    /// Build the prompt for CI fix or conflict rework.
+    ///
+    /// This is used when CI_FIX.md or CONFLICT_RESOLUTION.md exists in the
+    /// shared directory. It must take priority over CONTRACT.md AGREED so that
+    /// FORGE actually addresses the CI failure / merge conflict instead of
+    /// re-entering the normal segment implementation workflow.
+    fn rework_prompt(&self, shared: &Path) -> String {
+        let task_path = shared.join("TASK.md");
+        let worklog_path = shared.join("WORKLOG.md");
+        let ci_fix_path = shared.join("CI_FIX.md");
+        let conflict_path = shared.join("CONFLICT_RESOLUTION.md");
+        let shared_path = shared.display();
+
+        let mode = if ci_fix_path.exists() {
+            "CI FIX"
+        } else {
+            "CONFLICT RESOLUTION"
+        };
+
+        let rework_content = if ci_fix_path.exists() {
+            std::fs::read_to_string(&ci_fix_path)
+                .unwrap_or_else(|_| "Could not read CI_FIX.md".to_string())
+        } else {
+            std::fs::read_to_string(&conflict_path)
+                .unwrap_or_else(|_| "Could not read CONFLICT_RESOLUTION.md".to_string())
+        };
+
+        let task = std::fs::read_to_string(&task_path)
+            .unwrap_or_else(|_| "No TASK.md found".to_string());
+        let worklog = if worklog_path.exists() {
+            std::fs::read_to_string(&worklog_path)
+                .unwrap_or_else(|_| "No WORKLOG.md found".to_string())
+        } else {
+            "No WORKLOG.md yet".to_string()
+        };
+
+        format!(
+            "You are FORGE, an autonomous coding agent. This is a {mode} cycle — NOT normal implementation.\n\n\
+            --- TASK.md ---\n{task}\n\n\
+            --- {mode} DETAILS ---\n{rework_content}\n\n\
+            --- WORKLOG.md (previous progress) ---\n{worklog}\n\n\
+            IMPORTANT - Directory Structure:\n\
+            - CURRENT DIRECTORY (worktree): Write ALL source code, tests, package.json here\n\
+            - SHARED DIRECTORY ({shared_path}): Write WORKLOG.md, STATUS.json here\n\n\
+            VALID STATUS.json VALUES — use only these exact strings in the \"status\" field:\n\
+            - \"PR_OPENED\" — work complete, PR created (include pr_url, pr_number, branch)\n\
+            - \"COMPLETE\" — all work done, PR creation deferred to harness\n\
+            - \"BLOCKED\" — cannot proceed (include reason, blockers)\n\
+            - \"FUEL_EXHAUSTED\" — budget/tokens exhausted\n\
+            - \"PENDING_REVIEW\" — work paused, waiting for review\n\
+            Do NOT use any other status value — it will be treated as BLOCKED and your work wasted.\n\n\
+            CRITICAL: Follow the instructions in TASK.md exactly. This is a {mode} cycle — \
+            do NOT re-implement already-completed segments. Focus ONLY on fixing the issues \
+            described in the {mode} details above.\n\n\
+            You MUST update {shared_path}/WORKLOG.md as you work — the watchdog will kill your \
+            process if WORKLOG.md is not updated within 20 minutes.\n\n\
+            If a PR already exists for this branch, do NOT create a new one — just push and update STATUS.json.",
+            mode = mode,
+            task = task,
+            rework_content = rework_content,
+            worklog = worklog,
+            shared_path = shared_path,
         )
     }
 

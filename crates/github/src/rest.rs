@@ -730,44 +730,12 @@ pub struct CiFailureDetail {
 }
 
 impl CiFailureDetail {
-    /// Map failed check/job names to the local commands that reproduce them.
-    /// Uses both the check-run names and the workflow job names for matching.
-    /// Includes setup/install steps so forge can run them even on a bare host.
-    pub fn local_reproduce_commands(&self) -> Vec<String> {
-        let mut commands = Vec::new();
-        let all_names: Vec<&str> = self
-            .failed_checks
+    pub fn failed_check_names(&self) -> Vec<&str> {
+        self.failed_checks
             .iter()
             .map(|c| c.name.as_str())
             .chain(self.job_logs.iter().map(|(n, _)| n.as_str()))
-            .collect();
-
-        for name in &all_names {
-            let lower = name.to_lowercase();
-            if lower.contains("backend") || lower.contains("python") || lower.contains("pytest") || lower.contains("ruff") {
-                commands.push(
-                    "# Backend checks — install Python tools first if missing\n\
-                     sudo apt-get update -qq && sudo apt-get install -y -qq python3 python3-pip python3-venv > /dev/null 2>&1\n\
-                     python3 -m venv .venv && source .venv/bin/activate\n\
-                     cd backend && pip install -q -r requirements.txt && pip install -q ruff\n\
-                     python -m pytest -x -q && ruff check .".to_string()
-                );
-            } else if lower.contains("frontend") || lower.contains("node") || lower.contains("npm") || lower.contains("lint") {
-                commands.push(
-                    "# Frontend checks — install Node tools first if missing\n\
-                     cd frontend && npm ci && npm run lint && npm run typecheck && npm test".to_string()
-                );
-            } else if lower.contains("build") {
-                commands.push("npm run build".to_string());
-            } else if lower.contains("test") {
-                commands.push("npm test".to_string());
-            }
-        }
-        if commands.is_empty() {
-            commands.push("# No specific check name recognized — inspect .github/workflows/ and run each job's steps locally".to_string());
-        }
-        commands.dedup();
-        commands
+            .collect()
     }
 }
 

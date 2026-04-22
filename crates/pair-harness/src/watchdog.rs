@@ -186,6 +186,15 @@ impl WatchdogStatus {
     pub fn is_warning(&self) -> bool {
         matches!(self, WatchdogStatus::Warning { .. })
     }
+
+    /// Get the elapsed time (if available).
+    pub fn elapsed(&self) -> Option<Duration> {
+        match self {
+            WatchdogStatus::Stalled { elapsed, .. } => Some(*elapsed),
+            WatchdogStatus::Warning { elapsed, .. } => Some(*elapsed),
+            WatchdogStatus::Active { .. } => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -245,6 +254,27 @@ mod tests {
         watchdog.reset();
 
         // Should be active
+        let status = watchdog.check_stalled().unwrap();
+        assert!(!status.is_stalled());
+    }
+
+    #[test]
+    fn test_watchdog_stale_worklog_reset() {
+        let dir = tempdir().unwrap();
+        let shared = dir.path().to_path_buf();
+
+        // Simulate a previous lifecycle: create WORKLOG.md and let it age
+        let mut watchdog = Watchdog::new(shared.clone(), 1200);
+        fs::write(shared.join("WORKLOG.md"), "# Worklog from previous run\n").unwrap();
+
+        // Wait briefly so the file has a non-zero age
+        thread::sleep(Duration::from_millis(100));
+
+        // Without reset, the watchdog would calculate elapsed from the old mtime.
+        // But we call reset() as pair re-provisioning does.
+        watchdog.reset();
+
+        // Should be active — reset guarantees the watchdog treats "now" as last update
         let status = watchdog.check_stalled().unwrap();
         assert!(!status.is_stalled());
     }
