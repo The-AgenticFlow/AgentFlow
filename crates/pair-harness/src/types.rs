@@ -47,6 +47,7 @@ pub struct Ticket {
 #[derive(Debug, Clone)]
 pub struct PairConfig {
     pub pair_id: String,
+    pub ticket_id: String,
     pub project_root: PathBuf,
     pub worktree: PathBuf,
     pub shared: PathBuf,
@@ -81,6 +82,7 @@ impl PairConfig {
             worktree: project_root.join("worktrees").join(&pair_id),
             shared: Self::shared_path(project_root, &pair_id, &ticket_id),
             pair_id,
+            ticket_id,
             redis_url: None,
             proxy_url: None,
             github_token: github_token.into(),
@@ -104,6 +106,7 @@ impl PairConfig {
             worktree: project_root.join("worktrees").join(&pair_id),
             shared: Self::shared_path(project_root, &pair_id, &ticket_id),
             pair_id,
+            ticket_id,
             redis_url: Some(redis_url.into()),
             proxy_url: None,
             github_token: github_token.into(),
@@ -127,6 +130,7 @@ impl PairConfig {
             worktree: project_root.join("worktrees").join(&pair_id),
             shared: Self::shared_path(project_root, &pair_id, &ticket_id),
             pair_id,
+            ticket_id,
             redis_url,
             proxy_url: Some(proxy_url.into()),
             github_token: github_token.into(),
