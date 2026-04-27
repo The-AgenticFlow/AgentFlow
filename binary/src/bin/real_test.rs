@@ -1,11 +1,12 @@
 use agent_forge::ForgePairNode; // Use the event-driven pair node
+use agent_lore::LoreNode;
 use agent_nexus::NexusNode;
 use agent_vessel::VesselNode;
 use anyhow::Result;
 use config::{
     ACTION_CI_FIX_NEEDED, ACTION_CONFLICTS_DETECTED, ACTION_DEPLOYED, ACTION_DEPLOY_FAILED,
-    ACTION_FAILED, ACTION_MERGE_PRS, ACTION_NO_WORK, ACTION_PR_OPENED, ACTION_WORK_ASSIGNED,
-    KEY_PENDING_PRS, KEY_TICKETS, KEY_WORKER_SLOTS,
+    ACTION_DOCS_COMPLETE, ACTION_FAILED, ACTION_MERGE_PRS, ACTION_NO_WORK, ACTION_PR_OPENED,
+    ACTION_WORK_ASSIGNED, KEY_PENDING_PRS, KEY_TICKETS, KEY_WORKER_SLOTS,
 };
 use pair_harness::WorkspaceManager;
 use pocketflow_core::{Action, Flow, SharedStore};
@@ -72,6 +73,7 @@ async fn main() -> Result<()> {
     let nexus = Arc::new(NexusNode::new(persona_path, registry_path));
     let forge_pair = Arc::new(ForgePairNode::new(&workspace_dir, &github_token));
     let vessel = Arc::new(VesselNode::from_env());
+    let lore = Arc::new(LoreNode::new(&workspace_dir, orchestrator_dir.join("orchestration/agent/agents/lore.agent.md")));
 
     // 4. Setup Flow with Routing
     // The ForgePairNode handles the full FORGE-SENTINEL lifecycle:
@@ -113,12 +115,21 @@ async fn main() -> Result<()> {
             "vessel",
             vessel,
             vec![
-                (ACTION_DEPLOYED, "nexus"),
+                (ACTION_DEPLOYED, "lore"),
                 (ACTION_DEPLOY_FAILED, "nexus"),
                 (ACTION_CI_FIX_NEEDED, "forge_pair"),
                 ("merge_blocked", "nexus"),
                 (ACTION_CONFLICTS_DETECTED, "forge_pair"),
+                (Action::AWAITING_HUMAN, "nexus"),
                 ("no_work", "nexus"),
+            ],
+        )
+        .add_node(
+            "lore",
+            lore,
+            vec![
+                (ACTION_DOCS_COMPLETE, "nexus"),
+                (ACTION_NO_WORK, "nexus"),
             ],
         );
 
