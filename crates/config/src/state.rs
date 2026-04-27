@@ -50,6 +50,12 @@ pub enum TicketStatus {
     Completed { worker_id: String, outcome: String },
     #[serde(rename = "exhausted")]
     Exhausted { worker_id: String, attempts: u32 },
+    #[serde(rename = "awaiting_human")]
+    AwaitingHuman {
+        worker_id: String,
+        reason: String,
+        attempts: u32,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,6 +93,7 @@ pub const KEY_PENDING_PRS: &str = "pending_prs";
 #[deprecated(note = "Use KEY_PENDING_PRS for clarity")]
 pub const KEY_OPEN_PRS: &str = "open_prs";
 pub const KEY_COMMAND_GATE: &str = "command_gate";
+pub const KEY_DOCUMENTATION_QUEUE: &str = "documentation_queue";
 
 pub const ACTION_WORK_ASSIGNED: &str = "work_assigned";
 pub const ACTION_PR_OPENED: &str = "pr_opened";
@@ -99,3 +106,6 @@ pub const ACTION_MERGE_BLOCKED: &str = "merge_blocked";
 pub const ACTION_MERGE_PRS: &str = "merge_prs";
 pub const ACTION_CONFLICTS_DETECTED: &str = "conflicts_detected";
 pub const ACTION_CI_FIX_NEEDED: &str = "ci_fix_needed";
+pub const ACTION_DOCS_COMPLETE: &str = "docs_complete";
+pub const ACTION_DOCS_PENDING: &str = "docs_pending";
+pub const ACTION_AWAITING_HUMAN: &str = "awaiting_human";

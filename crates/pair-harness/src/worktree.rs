@@ -32,20 +32,32 @@ impl WorktreeManager {
     /// * `ticket_id` - Ticket identifier (e.g., "T-42")
     ///
     /// # Returns
-    /// Path to the created worktree.
-    pub fn create_worktree(&self, pair_id: &str, ticket_id: &str) -> Result<PathBuf> {
+    /// `WorktreeSetupResult` containing the path and any setup warnings.
+    pub fn create_worktree(&self, pair_id: &str, ticket_id: &str) -> Result<WorktreeSetupResult> {
         let worktree_path = self
             .worktrees_dir
             .join(format!("{}-{}", pair_id, ticket_id));
         let branch_name = Self::branch_name(pair_id, ticket_id);
+        let mut warnings = Vec::new();
 
         info!(pair_id, ticket_id, branch = %branch_name, "Creating worktree");
 
         if let Err(e) = self.run_git_in_main(&["fetch", "origin", "main"]) {
             warn!(error = %e, "git fetch origin/main failed, continuing");
+            warnings.push(SetupWarning {
+                phase: "fetch_origin_main".to_string(),
+                error: e.to_string(),
+                affected_files: vec![],
+            });
         }
         if let Err(e) = self.run_git_in_main(&["merge", "origin/main"]) {
             warn!(error = %e, "git merge origin/main failed, continuing");
+            let affected_files = self.list_unmerged_files_in_main();
+            warnings.push(SetupWarning {
+                phase: "merge_origin_main".to_string(),
+                error: e.to_string(),
+                affected_files,
+            });
         }
 
         if worktree_path.exists() {
@@ -56,7 +68,10 @@ impl WorktreeManager {
                         branch = %branch_name,
                         "Worktree already exists on correct branch - reusing"
                     );
-                    return Ok(worktree_path);
+                    return Ok(WorktreeSetupResult {
+                        path: worktree_path,
+                        warnings,
+                    });
                 }
             }
             warn!(path = %worktree_path.display(), "Worktree exists on different branch, replacing");
@@ -100,7 +115,6 @@ impl WorktreeManager {
             }
         }
 
-        // Verify the worktree is clean
         let status = Command::new("git")
             .args(["status", "--porcelain"])
             .current_dir(&worktree_path)
@@ -108,11 +122,24 @@ impl WorktreeManager {
             .context("Failed to run git status")?;
 
         if !status.stdout.is_empty() {
-            warn!(path = %worktree_path.display(), "Worktree is not clean");
+            let dirty_files = String::from_utf8_lossy(&status.stdout)
+                .lines()
+                .filter_map(|l| l.get(3..).map(|s| s.trim().to_string()))
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>();
+            warn!(path = %worktree_path.display(), files = dirty_files.len(), "Worktree is not clean");
+            warnings.push(SetupWarning {
+                phase: "worktree_dirty".to_string(),
+                error: "Worktree has uncommitted changes".to_string(),
+                affected_files: dirty_files,
+            });
         }
 
         info!(path = %worktree_path.display(), branch = %branch_name, "Worktree created successfully");
-        Ok(worktree_path)
+        Ok(WorktreeSetupResult {
+            path: worktree_path,
+            warnings,
+        })
     }
 
     /// Remove a worktree and its associated branch by pair_id.
@@ -471,6 +498,28 @@ impl WorktreeManager {
         Ok(())
     }
 
+    fn list_unmerged_files_in_main(&self) -> Vec<String> {
+        Command::new("git")
+            .args(["diff", "--name-only", "--diff-filter=U"])
+            .current_dir(&self.project_root)
+            .output()
+            .ok()
+            .and_then(|o| {
+                if o.status.success() {
+                    Some(
+                        String::from_utf8_lossy(&o.stdout)
+                            .lines()
+                            .map(|l| l.trim().to_string())
+                            .filter(|l| !l.is_empty())
+                            .collect(),
+                    )
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default()
+    }
+
     fn prune_stale_worktrees(&self) {
         let _ = Command::new("git")
             .args(["worktree", "prune"])
@@ -580,6 +629,26 @@ pub enum RebaseResult {
     Success,
     /// Rebase has conflicts that need resolution
     Conflict,
+}
+
+/// Result of worktree creation, including any setup warnings.
+#[derive(Debug, Clone)]
+pub struct WorktreeSetupResult {
+    /// Path to the created worktree.
+    pub path: PathBuf,
+    /// Warnings encountered during setup (git fetch/merge errors, dirty state, etc.).
+    pub warnings: Vec<SetupWarning>,
+}
+
+/// A warning encountered during worktree setup.
+#[derive(Debug, Clone)]
+pub struct SetupWarning {
+    /// Phase that produced the warning (e.g., "fetch_origin_main", "merge_origin_main", "worktree_dirty").
+    pub phase: String,
+    /// The error message or git stderr.
+    pub error: String,
+    /// Affected files (unmerged/dirty) if detectable.
+    pub affected_files: Vec<String>,
 }
 
 /// Result of a merge origin/main operation.

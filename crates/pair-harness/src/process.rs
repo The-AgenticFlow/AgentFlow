@@ -640,6 +640,9 @@ impl ProcessManager {
                 - \"APPROVED_READY\" — changes requested by SENTINEL addressed\n\
                 - \"SEGMENT_N_DONE\" — segment N complete (e.g. SEGMENT_1_DONE)\n\
                 Do NOT use any other status value — it will be treated as BLOCKED and your work wasted.\n\n\
+                CRITICAL: After each commit, you MUST push to remote:\n\
+                - git push -u origin HEAD (first push) or git push (subsequent)\n\
+                Without pushing, your work will NOT be visible on GitHub.\n\n\
                 Read the handoff document and continue from the exact next step:\n\n\
                 --- HANDOFF.md ---\n{}\n\n\
                 Continue exactly where the previous session left off. Do not repeat work already done.",
@@ -709,14 +712,18 @@ impl ProcessManager {
                     1. Implement ONE segment from PLAN.md\n\
                     2. Write tests for that segment\n\
                     3. Update {}/WORKLOG.md with segment progress\n\
-                    4. WAIT for SENTINEL review - SENTINEL will evaluate your segment\n\
-                    5. If APPROVED, continue to next segment\n\
-                    6. If CHANGES_REQUESTED, fix issues and update WORKLOG.md\n\
-                    7. Repeat until all segments complete\n\
-                    8. When ALL segments APPROVED, SENTINEL does final review\n\
-                    9. After final APPROVAL, create PR\n\n\
+                    4. Commit and push your changes:\n\
+                       - git add -A && git commit -m \"Segment N: <description>\"\n\
+                       - git push -u origin HEAD (first push) or git push (subsequent)\n\
+                    5. WAIT for SENTINEL review - SENTINEL will evaluate your segment\n\
+                    6. If APPROVED, continue to next segment\n\
+                    7. If CHANGES_REQUESTED, fix issues and update WORKLOG.md\n\
+                    8. Repeat until all segments complete\n\
+                    9. When ALL segments APPROVED, SENTINEL does final review\n\
+                    10. After final APPROVAL, create PR\n\n\
+                    CRITICAL: You MUST push to remote after each commit or your work will NOT be visible on GitHub.\n\
                     You have full permissions. Install deps with 'npm install'. \
-                    Commit after each segment. Document progress in {}/WORKLOG.md.",
+                    Document progress in {}/WORKLOG.md.",
                     contract, worklog, shared_path, shared_path, shared_path
                 )
             } else {
@@ -843,6 +850,9 @@ impl ProcessManager {
             described in the {mode} details above.\n\n\
             You MUST update {shared_path}/WORKLOG.md as you work — the watchdog will kill your \
             process if WORKLOG.md is not updated within 20 minutes.\n\n\
+            After fixing issues, commit and push:\n\
+            - git add -A && git commit -m \"{mode}: <description>\"\n\
+            - git push (or git push -u origin HEAD if first push)\n\n\
             If a PR already exists for this branch, do NOT create a new one — just push and update STATUS.json.",
             mode = mode,
             task = task,

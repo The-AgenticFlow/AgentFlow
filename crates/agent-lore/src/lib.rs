@@ -1,0 +1,559 @@
+// crates/agent-lore/src/lib.rs
+//
+// LORE Agent — Documenter and Institutional Memory Keeper.
+//
+// Responsible for preserving project knowledge through:
+// - Architecture Decision Records (ADRs)
+// - Changelog maintenance
+// - Sprint retrospectives
+// - Documentation-as-code management
+
+pub mod adr;
+pub mod changelog;
+pub mod docs;
+pub mod readme;
+pub mod retrospective;
+pub mod types;
+
+use anyhow::{anyhow, Result};
+use async_trait::async_trait;
+use config::KEY_PENDING_PRS;
+use github::client::McpGithubClient;
+use pocketflow_core::{Action, Node, SharedStore};
+use serde_json::{json, Value};
+use std::path::PathBuf;
+use std::process::Command as StdCommand;
+use tracing::{debug, info, warn};
+
+use adr::AdrGenerator;
+use changelog::ChangelogManager;
+use docs::DocsManager;
+use readme::ReadmeManager;
+use retrospective::RetrospectiveGenerator;
+use types::{ArchitecturalDecision, LoreConfig, LoreOutcome, LoreTask, MergedTicketInfo};
+
+pub use types::{LoreOutcome as LoreStatus, MergedTicketInfo as LoreTicketInfo};
+
+pub struct LoreNode {
+    config: LoreConfig,
+    adr_generator: AdrGenerator,
+    changelog_manager: ChangelogManager,
+    readme_manager: ReadmeManager,
+    docs_manager: DocsManager,
+    #[allow(dead_code)]
+    retrospective_generator: RetrospectiveGenerator,
+}
+
+impl LoreNode {
+    pub fn new(workspace_root: impl Into<PathBuf>, persona_path: impl Into<PathBuf>) -> Self {
+        let config = LoreConfig::new(workspace_root, persona_path);
+        Self::from_config(config)
+    }
+
+    pub fn from_config(config: LoreConfig) -> Self {
+        let adr_generator = AdrGenerator::new(config.adr_dir.clone());
+        let changelog_manager = ChangelogManager::new(config.docs_dir.clone());
+        let readme_manager = ReadmeManager::new(config.workspace_root.clone());
+        let docs_manager = DocsManager::new(config.docs_dir.clone());
+        let retrospective_generator = RetrospectiveGenerator::new(config.docs_dir.clone());
+
+        Self {
+            config,
+            adr_generator,
+            changelog_manager,
+            readme_manager,
+            docs_manager,
+            retrospective_generator,
+        }
+    }
+
+    pub fn from_env() -> Self {
+        Self::from_config(LoreConfig::from_env())
+    }
+
+    async fn load_persona(&self) -> Result<String> {
+        let content = tokio::fs::read_to_string(&self.config.persona_path)
+            .await
+            .map_err(|e| {
+                anyhow!(
+                    "Failed to load lore persona from {:?}: {}",
+                    self.config.persona_path,
+                    e
+                )
+            })?;
+        Ok(content)
+    }
+
+    async fn get_merged_tickets_from_store(&self, store: &SharedStore) -> Vec<MergedTicketInfo> {
+        let events = store.get_events_since(0).await;
+        events
+            .iter()
+            .filter(|e| e.event_type == "ticket_merged")
+            .filter_map(|e| {
+                let ticket_id = e.payload["ticket_id"].as_str()?.to_string();
+                let pr_number = e.payload["pr_number"].as_u64()?;
+                let sha = e.payload["sha"].as_str().unwrap_or("").to_string();
+                Some(MergedTicketInfo {
+                    ticket_id,
+                    pr_number,
+                    pr_title: format!("PR #{}", pr_number),
+                    pr_body: None,
+                    sha,
+                    merged_at: chrono::Utc::now().to_rfc3339(),
+                    changes: Vec::new(),
+                })
+            })
+            .collect()
+    }
+
+    async fn get_documentation_tasks(&self, store: &SharedStore) -> Vec<LoreTask> {
+        let mut tasks = Vec::new();
+
+        if let Some(queue) = store.get_typed::<Vec<Value>>("documentation_queue").await {
+            for item in queue {
+                if let Ok(task) = serde_json::from_value(item.clone()) {
+                    tasks.push(task);
+                }
+            }
+        }
+
+        let events = store.get_events_since(0).await;
+        for event in events.iter() {
+            if event.event_type == "ticket_merged" {
+                if let (Some(ticket_id), Some(pr_number)) = (
+                    event.payload["ticket_id"].as_str(),
+                    event.payload["pr_number"].as_u64(),
+                ) {
+                    let needs_adr = !self
+                        .adr_generator
+                        .adr_exists_for_ticket(ticket_id)
+                        .await;
+
+                    if needs_adr {
+                        tasks.push(LoreTask::AdrGeneration {
+                            decision: ArchitecturalDecision::new(
+                                format!("Decision for {}", ticket_id),
+                                format!("Context extracted from ticket {}", ticket_id),
+                                "Decision details to be documented".to_string(),
+                                "Consequences of this decision".to_string(),
+                                ticket_id,
+                                Some(pr_number),
+                            ),
+                        });
+                    }
+
+                    tasks.push(LoreTask::ChangelogUpdate {
+                        ticket_id: ticket_id.to_string(),
+                        pr_number,
+                        changes: Vec::new(),
+                        pr_title: None,
+                        pr_body: None,
+                    });
+                }
+            }
+        }
+
+        tasks
+    }
+
+    async fn process_changelog_update(&self, task: &LoreTask) -> Result<LoreOutcome> {
+        let LoreTask::ChangelogUpdate {
+            ticket_id,
+            pr_number,
+            changes: _,
+            pr_title,
+            pr_body,
+        } = task
+        else {
+            return Ok(LoreOutcome::NoWork);
+        };
+
+        self.changelog_manager.ensure_changelog_exists().await?;
+
+        let title = pr_title.clone().unwrap_or_else(|| format!("Ticket {}", ticket_id));
+        let category = self
+            .changelog_manager
+            .categorize_from_pr(&title, pr_body.as_deref());
+
+        let entry = title
+            .strip_prefix(&format!("[{}] ", ticket_id))
+            .unwrap_or(&title);
+
+        self.changelog_manager
+            .add_entry(category, entry, *pr_number)
+            .await?;
+
+        Ok(LoreOutcome::ChangelogUpdated {
+            entry: format!("{}: {} (#{})", category.as_str(), entry, pr_number),
+        })
+    }
+
+    async fn process_adr_generation(&self, task: &LoreTask) -> Result<LoreOutcome> {
+        let LoreTask::AdrGeneration { decision } = task else {
+            return Ok(LoreOutcome::NoWork);
+        };
+
+        let path = self.adr_generator.generate(decision).await?;
+        let adr_id = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        Ok(LoreOutcome::AdrWritten {
+            path: path.to_string_lossy().to_string(),
+            adr_id,
+        })
+    }
+
+    #[allow(dead_code)]
+    async fn process_retrospective(&self, task: &LoreTask, store: &SharedStore) -> Result<LoreOutcome> {
+        let LoreTask::Retrospective { sprint_id } = task else {
+            return Ok(LoreOutcome::NoWork);
+        };
+
+        let tickets = RetrospectiveGenerator::read_sprint_history(store).await;
+        let path = self.retrospective_generator.generate(sprint_id, &tickets, None).await?;
+
+        Ok(LoreOutcome::RetrospectiveGenerated {
+            path: path.to_string_lossy().to_string(),
+        })
+    }
+
+    async fn process_doc_sync(&self, task: &LoreTask) -> Result<LoreOutcome> {
+        let LoreTask::DocSync { scope } = task else {
+            return Ok(LoreOutcome::NoWork);
+        };
+
+        self.docs_manager.ensure_structure().await?;
+        let docs = self.docs_manager.list_docs(*scope).await?;
+
+        Ok(LoreOutcome::DocsSynced {
+            updated: docs.iter().map(|p| p.to_string_lossy().to_string()).collect(),
+        })
+    }
+
+    async fn process_readme_update(&self, task: &LoreTask) -> Result<LoreOutcome> {
+        let LoreTask::ReadmeUpdate {
+            ticket_id: _,
+            feature_summary,
+        } = task
+        else {
+            return Ok(LoreOutcome::NoWork);
+        };
+
+        let updated = self
+            .readme_manager
+            .update_feature_section(feature_summary, feature_summary)
+            .await?;
+
+        if updated {
+            Ok(LoreOutcome::ReadmeUpdated {
+                sections: vec![feature_summary.clone()],
+            })
+        } else {
+            Ok(LoreOutcome::NoWork)
+        }
+    }
+
+    async fn commit_and_push_docs(&self, changed_files: &[PathBuf]) -> Result<()> {
+        if changed_files.is_empty() {
+            info!("LORE: No files to commit");
+            return Ok(());
+        }
+
+        let workspace = &self.config.workspace_root;
+        let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+        let branch_name = format!("lore/docs-{}", timestamp);
+
+        info!(
+            branch = %branch_name,
+            file_count = changed_files.len(),
+            "LORE: Creating docs branch"
+        );
+
+        let output = StdCommand::new("git")
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .current_dir(workspace)
+            .output()?;
+        let current_branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+        if current_branch == branch_name {
+            info!("LORE: Already on docs branch");
+        } else {
+            let output = StdCommand::new("git")
+                .args(["checkout", "-b", &branch_name])
+                .current_dir(workspace)
+                .output()?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(anyhow!("Failed to create branch {}: {}", branch_name, stderr));
+            }
+            info!("LORE: Created branch {}", branch_name);
+        }
+
+        let output = StdCommand::new("git")
+            .args(["add", "-A"])
+            .current_dir(workspace)
+            .output()?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(anyhow!("Failed to git add: {}", stderr));
+        }
+
+        let commit_msg = format!("docs: update documentation for merged PRs");
+        let output = StdCommand::new("git")
+            .args(["commit", "-m", &commit_msg])
+            .current_dir(workspace)
+            .output()?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if stderr.contains("nothing to commit") {
+                info!("LORE: No changes to commit");
+                return Ok(());
+            }
+            return Err(anyhow!("Failed to commit: {}", stderr));
+        }
+        info!("LORE: Committed docs changes");
+
+        let output = StdCommand::new("git")
+            .args(["push", "-u", "origin", &branch_name])
+            .current_dir(workspace)
+            .output()?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(anyhow!("Failed to push branch {}: {}", branch_name, stderr));
+        }
+        info!("LORE: Pushed branch {}", branch_name);
+
+        Ok(())
+    }
+
+    async fn open_docs_pr(
+        &self,
+        store: &SharedStore,
+        branch_name: &str,
+        changed_files: &[PathBuf],
+    ) -> Result<u64> {
+        let repo = store
+            .get_typed::<String>("repository")
+            .await
+            .ok_or_else(|| anyhow!("No repository configured in store"))?;
+
+        let parts: Vec<&str> = repo.split('/').collect();
+        if parts.len() != 2 {
+            return Err(anyhow!("Invalid repository format: {}", repo));
+        }
+        let owner = parts[0];
+        let repo_name = parts[1];
+
+        let mcp_command = std::env::var("MCP_CLI_COMMAND").unwrap_or_else(|_| "mcp-cli".to_string());
+        let client = McpGithubClient::new(&mcp_command);
+
+        let mut pr_body = String::from("## Documentation Update\n\n");
+        pr_body.push_str("This PR contains automated documentation updates generated by LORE.\n\n");
+        pr_body.push_str("### Files Changed\n\n");
+        for file in changed_files {
+        if let Ok(rel) = file.strip_prefix(&self.config.workspace_root) {
+            pr_body.push_str(&format!("- `{}`\n", rel.display()));
+        }
+        }
+
+        let title = format!("docs: update documentation ({})", chrono::Utc::now().format("%Y-%m-%d %H:%M"));
+        let pr_number = client
+            .create_pull_request(owner, repo_name, &title, branch_name, "main")
+            .await?;
+
+        info!(pr_number, "LORE: Created documentation PR");
+
+        let pr_entry = json!({
+            "number": pr_number,
+            "head_branch": branch_name,
+            "head_sha": "",
+            "base_branch": "main",
+            "ticket_id": "T-DOCS",
+            "title": title,
+            "worker_id": "lore",
+            "is_docs_pr": true,
+        });
+
+        let mut pending_prs: Vec<Value> = store.get_typed(KEY_PENDING_PRS).await.unwrap_or_default();
+        pending_prs.push(pr_entry);
+        store.set(KEY_PENDING_PRS, json!(pending_prs)).await;
+
+        info!(pr_number, "LORE: Added docs PR to pending_prs");
+
+        Ok(pr_number)
+    }
+}
+
+#[async_trait]
+impl Node for LoreNode {
+    fn name(&self) -> &str {
+        "lore"
+    }
+
+    async fn prep(&self, store: &SharedStore) -> Result<Value> {
+        debug!("LORE prep: gathering documentation tasks");
+
+        let tasks = self.get_documentation_tasks(store).await;
+        let merged_tickets = self.get_merged_tickets_from_store(store).await;
+
+        let persona = self.load_persona().await.ok();
+
+        Ok(json!({
+            "tasks": tasks,
+            "merged_tickets": merged_tickets,
+            "persona": persona,
+            "workspace_root": self.config.workspace_root,
+        }))
+    }
+
+    async fn exec(&self, prep_result: Value) -> Result<Value> {
+        let tasks: Vec<LoreTask> = serde_json::from_value(prep_result["tasks"].clone())
+            .unwrap_or_default();
+
+        if tasks.is_empty() {
+            info!("LORE: No documentation tasks to process");
+            return Ok(json!({ "outcomes": [], "has_work": false }));
+        }
+
+        info!(count = tasks.len(), "LORE: Processing documentation tasks");
+
+        let mut outcomes = Vec::new();
+
+        for task in &tasks {
+            let outcome = match task {
+                LoreTask::ChangelogUpdate { .. } => self.process_changelog_update(task).await,
+                LoreTask::AdrGeneration { .. } => self.process_adr_generation(task).await,
+                LoreTask::Retrospective { .. } => Ok(LoreOutcome::NoWork),
+                LoreTask::DocSync { .. } => self.process_doc_sync(task).await,
+                LoreTask::ReadmeUpdate { .. } => self.process_readme_update(task).await,
+            };
+
+            match outcome {
+                Ok(o) => {
+                    info!(outcome = ?o, "Task completed");
+                    outcomes.push(json!(o));
+                }
+                Err(e) => {
+                    warn!(error = %e, task = ?task, "Task failed");
+                    outcomes.push(json!({ "error": e.to_string() }));
+                }
+            }
+        }
+
+        Ok(json!({
+            "outcomes": outcomes,
+            "has_work": !outcomes.is_empty(),
+        }))
+    }
+
+    async fn post(&self, store: &SharedStore, exec_result: Value) -> Result<Action> {
+        let outcomes: Vec<Value> = exec_result["outcomes"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let has_work = exec_result["has_work"].as_bool().unwrap_or(false);
+
+        if !has_work {
+            debug!("LORE: No documentation was generated");
+            return Ok(Action::new("no_work"));
+        }
+
+        let mut changelog_updated = false;
+        let mut adrs_written = Vec::new();
+        let mut changed_files = Vec::new();
+
+        for outcome in &outcomes {
+            if let Some(obj) = outcome.as_object() {
+                if obj.contains_key("ChangelogUpdated") {
+                    changelog_updated = true;
+                }
+                if let Some(adr) = obj.get("AdrWritten") {
+                    adrs_written.push(adr.clone());
+                }
+                if let Some(path_str) = obj.get("path").and_then(|v| v.as_str()) {
+                    changed_files.push(PathBuf::from(path_str));
+                }
+            }
+        }
+
+        if changelog_updated {
+            changed_files.push(self.config.docs_dir.join("CHANGELOG.md"));
+        }
+
+        if !changed_files.is_empty() {
+            info!(
+                file_count = changed_files.len(),
+                "LORE: Committing and pushing documentation changes"
+            );
+
+            let branch_name = format!("lore/docs-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S"));
+
+            match self.commit_and_push_docs(&changed_files).await {
+                Ok(()) => {
+                    match self.open_docs_pr(store, &branch_name, &changed_files).await {
+                        Ok(pr_number) => {
+                            info!(pr_number, "LORE: Documentation PR created successfully");
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "LORE: Failed to create docs PR — changes committed but not opened as PR");
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(error = %e, "LORE: Failed to commit/push docs — changes remain local only");
+                }
+            }
+        }
+
+        if changelog_updated {
+            store
+                .emit(
+                    "lore",
+                    "changelog_updated",
+                    json!({
+                        "updated": true,
+                    }),
+                )
+                .await;
+        }
+
+        if !adrs_written.is_empty() {
+            store
+                .emit(
+                    "lore",
+                    "adr_written",
+                    json!({
+                        "count": adrs_written.len(),
+                        "adrs": adrs_written,
+                    }),
+                )
+                .await;
+        }
+
+        info!(
+            changelog_updated,
+            adrs_count = adrs_written.len(),
+            "LORE: Documentation tasks completed"
+        );
+
+        Ok(Action::new("docs_complete"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pocketflow_core::SharedStore;
+
+    #[tokio::test]
+    async fn test_lore_node_no_work() {
+        let store = SharedStore::new_in_memory();
+        let node = LoreNode::from_env();
+
+        let action = node.run(&store).await.unwrap();
+        assert_eq!(action.as_str(), "no_work");
+    }
+}

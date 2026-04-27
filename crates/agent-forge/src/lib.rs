@@ -126,9 +126,10 @@ impl BatchNode for ForgeNode {
         let worktree_mgr = WorktreeManager::new(&self.workspace_root);
 
         // Create worktree for this worker
-        let worktree_path = worktree_mgr
+        let setup_result = worktree_mgr
             .create_worktree(&worker_id, &ticket_id)
             .map_err(|e| anyhow!("Failed to create worktree: {:#}", e))?;
+        let worktree_path = setup_result.path;
 
         info!(worker = worker_id, ticket = ticket_id, path = ?worktree_path, "Worktree created");
 
@@ -769,6 +770,12 @@ impl ForgePairNode {
                 }
             } else if stderr.contains("non-fast-forward") || stderr.contains("fetch first") {
                 info!(worker = worker_id, branch = %branch_name, "Normal push rejected — force-pushing with --force-with-lease");
+
+                let _ = StdCommand::new("git")
+                    .args(["fetch", "origin"])
+                    .current_dir(&worktree_path)
+                    .output();
+
                 let force_push = StdCommand::new("git")
                     .args(["push", "-u", "origin", &branch_name, "--force-with-lease"])
                     .current_dir(&worktree_path)
@@ -782,7 +789,22 @@ impl ForgePairNode {
                     {
                         return Err(anyhow!("Force-push rejected by secret scanning — secrets remain in git history. Error: {}", force_stderr));
                     }
-                    return Err(anyhow!("Failed to force-push branch: {}", force_stderr));
+                    if force_stderr.contains("stale info") || force_stderr.contains("rejected") {
+                        warn!(worker = worker_id, branch = %branch_name, "force-with-lease rejected — falling back to --force");
+                        let bare_force = StdCommand::new("git")
+                            .args(["push", "-u", "origin", &branch_name, "--force"])
+                            .current_dir(&worktree_path)
+                            .output()
+                            .context("Failed to bare-force-push branch")?;
+                        if bare_force.status.success() {
+                            // push succeeded with bare --force — continue to PR creation
+                        } else {
+                            let bare_stderr = String::from_utf8_lossy(&bare_force.stderr);
+                            return Err(anyhow!("Force-push failed: {}", bare_stderr));
+                        }
+                    } else {
+                        return Err(anyhow!("Failed to force-push branch: {}", force_stderr));
+                    }
                 }
             } else if !stderr.contains("already exists")
                 && !stderr.contains("up-to-date")

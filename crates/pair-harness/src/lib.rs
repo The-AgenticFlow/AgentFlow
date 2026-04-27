@@ -25,8 +25,11 @@ pub use pair::ForgeSentinelPair;
 pub use process::{ProcessManager, SentinelMode};
 pub use provision::Provisioner;
 pub use reset::ResetManager;
-pub use types::{FsEvent, PairConfig, PairOutcome, Ticket};
+pub use types::{
+    ErrorHistory, ErrorHistoryEntry, FsEvent, PairConfig, PairOutcome, Ticket, VerificationResult,
+    VerificationState,
+};
 pub use watchdog::Watchdog;
 pub use watcher::SharedDirWatcher;
 pub use workspace::WorkspaceManager;
-pub use worktree::WorktreeManager;
+pub use worktree::{SetupWarning, WorktreeManager, WorktreeSetupResult};
