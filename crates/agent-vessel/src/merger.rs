@@ -88,6 +88,7 @@ mod tests {
             base_branch: "main".to_string(),
             ticket_id: Some("T-100".to_string()),
             title: "Add new feature".to_string(),
+            body: None,
             state: PrState::Open,
             mergeable: Some(true),
         };
@@ -105,6 +106,7 @@ mod tests {
             base_branch: "main".to_string(),
             ticket_id: None,
             title: "Add new feature".to_string(),
+            body: None,
             state: PrState::Open,
             mergeable: None,
         };

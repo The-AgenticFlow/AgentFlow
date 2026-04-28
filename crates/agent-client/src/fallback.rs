@@ -27,6 +27,12 @@ fn proxy_is_configured() -> bool {
     std::env::var("PROXY_URL").is_ok() || std::env::var("ANTHROPIC_BASE_URL").is_ok()
 }
 
+/// Check if an external connector (gateway) is configured.
+/// When true, direct API fallbacks should NOT be used - only the connector.
+fn external_connector_is_configured() -> bool {
+    std::env::var("GATEWAY_API_KEY").is_ok() || std::env::var("FIREWORKS_API_KEY").is_ok()
+}
+
 /// Resolve provider for a model based on MODEL_PROVIDER_MAP.
 fn resolve_provider_for_model(model: &str) -> Option<String> {
     let map = std::env::var("MODEL_PROVIDER_MAP").ok()?;
@@ -101,7 +107,7 @@ impl FallbackClient {
 
         info!(
             model = model,
-            "Fireworks mode: configuring client (with direct-key fallbacks)"
+            "Fireworks mode: configuring client (no direct fallbacks - external connector)"
         );
 
         if let Ok(c) = FireworksClient::from_env_with_model(model) {
@@ -109,33 +115,14 @@ impl FallbackClient {
             clients.push(Box::new(c));
         }
 
-        if std::env::var("ANTHROPIC_API_KEY").is_ok() {
-            if let Ok(c) = AnthropicClient::from_env_with_model(model) {
-                info!(provider = "anthropic-direct", model = %c.model(), "Direct fallback initialized");
-                clients.push(Box::new(c));
-            }
-        }
-
-        if std::env::var("GEMINI_API_KEY").is_ok() {
-            if let Ok(c) = GeminiClient::from_env() {
-                info!(provider = "gemini-direct", model = %c.model(), "Direct fallback initialized");
-                clients.push(Box::new(c));
-            }
-        }
-
-        if std::env::var("OPENAI_API_KEY").is_ok() {
-            if let Ok(c) = OpenAiClient::from_env() {
-                info!(provider = "openai-direct", model = %c.model(), "Direct fallback initialized");
-                clients.push(Box::new(c));
-            }
-        }
+        // When Fireworks is configured directly, it IS the external connector.
+        // Do NOT add direct API fallbacks - the connector is authoritative.
+        // Priority: PROXY > GATEWAY/FIREWORKS > direct APIs (only when no connector).
 
         if clients.is_empty() {
             bail!(
-                "Fireworks mode: Failed to initialize any client. \
-             Ensure FIREWORKS_API_KEY is set, \
-             or set at least one direct API key (ANTHROPIC_API_KEY, \
-             GEMINI_API_KEY, OPENAI_API_KEY) as fallback."
+                "Fireworks mode: Failed to initialize Fireworks client. \
+                 Ensure FIREWORKS_API_KEY is set."
             );
         }
 
@@ -152,11 +139,14 @@ impl FallbackClient {
         let model = model_override.unwrap_or("claude-haiku-4-5-20251001");
 
         let mapped_provider = model_override.and_then(resolve_provider_for_model);
+        let external_connector = external_connector_is_configured();
 
         info!(
             model = model,
             mapped_provider = ?mapped_provider,
-            "Proxy mode: configuring client (with direct-key fallbacks)"
+            external_connector = external_connector,
+            "Proxy mode: configuring client{}",
+            if external_connector { " (external connector - no direct fallbacks)" } else { " (with direct-key fallbacks)" }
         );
 
         match mapped_provider.as_deref() {
@@ -184,29 +174,34 @@ impl FallbackClient {
         }
 
         // --- 2. Direct-key fallbacks ---
-        // Skip providers that would duplicate the primary proxy client's format
-        // to avoid hammering the same endpoint with a stale key.
-        let skip_anthropic_direct = matches!(mapped_provider.as_deref(), None | Some("anthropic"));
-        if !skip_anthropic_direct {
-            if let Ok(c) = AnthropicClient::from_env_with_model(model) {
-                info!(provider = "anthropic-direct", model = %c.model(), "Direct fallback initialized");
-                clients.push(Box::new(c));
+        // When an external connector (Fireworks/Gateway) is configured, do NOT add
+        // direct API fallbacks. The connector is the authoritative provider.
+        // Priority: PROXY > GATEWAY > direct APIs (only when connector is absent).
+        if external_connector {
+            info!("External connector configured - skipping direct API fallbacks");
+        } else {
+            let skip_anthropic_direct = matches!(mapped_provider.as_deref(), None | Some("anthropic"));
+            if !skip_anthropic_direct {
+                if let Ok(c) = AnthropicClient::from_env_with_model(model) {
+                    info!(provider = "anthropic-direct", model = %c.model(), "Direct fallback initialized");
+                    clients.push(Box::new(c));
+                }
             }
-        }
 
-        if std::env::var("GEMINI_API_KEY").is_ok() {
-            if let Ok(c) = GeminiClient::from_env() {
-                info!(provider = "gemini-direct", model = %c.model(), "Direct fallback initialized");
-                clients.push(Box::new(c));
+            if std::env::var("GEMINI_API_KEY").is_ok() {
+                if let Ok(c) = GeminiClient::from_env() {
+                    info!(provider = "gemini-direct", model = %c.model(), "Direct fallback initialized");
+                    clients.push(Box::new(c));
+                }
             }
-        }
 
-        if std::env::var("OPENAI_API_KEY").is_ok() {
-            if matches!(mapped_provider.as_deref(), Some("openai")) {
-                // Already using OpenAI-format proxy — skip direct OpenAI
-            } else if let Ok(c) = OpenAiClient::from_env() {
-                info!(provider = "openai-direct", model = %c.model(), "Direct fallback initialized");
-                clients.push(Box::new(c));
+            if std::env::var("OPENAI_API_KEY").is_ok() {
+                if matches!(mapped_provider.as_deref(), Some("openai")) {
+                    // Already using OpenAI-format proxy — skip direct OpenAI
+                } else if let Ok(c) = OpenAiClient::from_env() {
+                    info!(provider = "openai-direct", model = %c.model(), "Direct fallback initialized");
+                    clients.push(Box::new(c));
+                }
             }
         }
 

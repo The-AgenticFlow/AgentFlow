@@ -44,6 +44,8 @@ pub enum VesselOutcome {
         ticket_id: String,
         pr_number: u64,
         sha: String,
+        pr_title: String,
+        pr_body: Option<String>,
     },
     /// CI failed, did not merge
     CiFailed {

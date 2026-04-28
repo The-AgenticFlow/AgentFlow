@@ -207,8 +207,10 @@ impl Node for VesselNode {
                     ticket_id,
                     pr_number,
                     sha,
+                    pr_title,
+                    pr_body,
                 } => {
-                    VesselNotifier::emit_ticket_merged(store, ticket_id, *pr_number, sha).await;
+                    VesselNotifier::emit_ticket_merged(store, ticket_id, *pr_number, sha, pr_title, pr_body.as_deref()).await;
                     VesselNotifier::set_ticket_status_merged(store, ticket_id).await;
 
                     self.update_ticket_status(store, ticket_id, "merged").await;
@@ -485,7 +487,7 @@ impl Node for VesselNode {
                     let tid = ticket_id
                         .clone()
                         .unwrap_or_else(|| format!("T-{}", pr_number));
-                    VesselNotifier::emit_ticket_merged(store, &tid, *pr_number, "").await;
+                    VesselNotifier::emit_ticket_merged(store, &tid, *pr_number, "", "Merged without CI validation", None).await;
                     VesselNotifier::set_ticket_status_merged(store, &tid).await;
 
                     self.update_ticket_status(store, &tid, "merged_no_ci").await;
@@ -638,6 +640,8 @@ impl VesselNode {
                         ticket_id: ticket_id.unwrap_or_else(|| format!("T-{}", pr_number)),
                         pr_number,
                         sha: result.sha.unwrap_or_default(),
+                        pr_title: pr_info.title,
+                        pr_body: pr_info.body,
                     }),
                     Ok(result) => Ok(VesselOutcome::MergeBlocked {
                         ticket_id,
@@ -1424,9 +1428,9 @@ impl VesselNode {
 
                 if let Ok(info) = pr_info {
                     let tid = ticket_id
-                        .or(info.ticket_id)
+                        .or(info.ticket_id.clone())
                         .unwrap_or_else(|| format!("T-{}", pr_number));
-                    VesselNotifier::emit_ticket_merged(store, &tid, pr_number, &info.head_sha)
+                    VesselNotifier::emit_ticket_merged(store, &tid, pr_number, &info.head_sha, &info.title, None)
                         .await;
                     VesselNotifier::set_ticket_status_merged(store, &tid).await;
                     self.remove_from_pending_prs(store, pr_number).await;
@@ -1520,6 +1524,8 @@ mod tests {
                 ticket_id: "T-42".to_string(),
                 pr_number: 42,
                 sha: "abc123".to_string(),
+                pr_title: "Add feature X".to_string(),
+                pr_body: Some("Implementation details".to_string()),
             }],
             "has_work": true,
         });

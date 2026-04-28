@@ -25,6 +25,7 @@ use std::path::PathBuf;
 use std::process::Command as StdCommand;
 use tracing::{debug, info, warn};
 
+use crate::types::ChangeCategory;
 use adr::AdrGenerator;
 use changelog::ChangelogManager;
 use docs::DocsManager;
@@ -93,11 +94,16 @@ impl LoreNode {
                 let ticket_id = e.payload["ticket_id"].as_str()?.to_string();
                 let pr_number = e.payload["pr_number"].as_u64()?;
                 let sha = e.payload["sha"].as_str().unwrap_or("").to_string();
+                let pr_title = e.payload["pr_title"]
+                    .as_str()
+                    .unwrap_or(&format!("PR #{}", pr_number))
+                    .to_string();
+                let pr_body = e.payload["pr_body"].as_str().map(String::from);
                 Some(MergedTicketInfo {
                     ticket_id,
                     pr_number,
-                    pr_title: format!("PR #{}", pr_number),
-                    pr_body: None,
+                    pr_title,
+                    pr_body,
                     sha,
                     merged_at: chrono::Utc::now().to_rfc3339(),
                     changes: Vec::new(),
@@ -124,18 +130,42 @@ impl LoreNode {
                     event.payload["ticket_id"].as_str(),
                     event.payload["pr_number"].as_u64(),
                 ) {
+                    let pr_title = event.payload["pr_title"]
+                        .as_str()
+                        .map(String::from)
+                        .unwrap_or_else(|| format!("Ticket {}", ticket_id));
+                    let pr_body = event.payload["pr_body"].as_str().map(String::from);
+
                     let needs_adr = !self
                         .adr_generator
                         .adr_exists_for_ticket(ticket_id)
                         .await;
 
                     if needs_adr {
+                        let adr_title = pr_title
+                            .strip_prefix(&format!("[{}] ", ticket_id))
+                            .unwrap_or(&pr_title);
+                        
+                        let context = if let Some(ref b) = pr_body {
+                            let lines: Vec<&str> = b.lines()
+                                .map(|l| l.trim())
+                                .filter(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with("---"))
+                                .take(5)
+                                .collect();
+                            lines.join("\n")
+                        } else {
+                            format!("Changes merged in PR #{} for ticket {}.", pr_number, ticket_id)
+                        };
+
+                        let decision_summary = format!("Implement changes described in PR #{} for ticket {}.", pr_number, ticket_id);
+                        let consequences = format!("Ticket {} is now resolved and merged into main branch.", ticket_id);
+
                         tasks.push(LoreTask::AdrGeneration {
                             decision: ArchitecturalDecision::new(
-                                format!("Decision for {}", ticket_id),
-                                format!("Context extracted from ticket {}", ticket_id),
-                                "Decision details to be documented".to_string(),
-                                "Consequences of this decision".to_string(),
+                                adr_title,
+                                context,
+                                decision_summary,
+                                consequences,
                                 ticket_id,
                                 Some(pr_number),
                             ),
@@ -146,8 +176,8 @@ impl LoreNode {
                         ticket_id: ticket_id.to_string(),
                         pr_number,
                         changes: Vec::new(),
-                        pr_title: None,
-                        pr_body: None,
+                        pr_title: Some(pr_title),
+                        pr_body,
                     });
                 }
             }
@@ -170,22 +200,75 @@ impl LoreNode {
 
         self.changelog_manager.ensure_changelog_exists().await?;
 
-        let title = pr_title.clone().unwrap_or_else(|| format!("Ticket {}", ticket_id));
+        let raw_title = pr_title.clone().unwrap_or_else(|| format!("Ticket {}", ticket_id));
         let category = self
             .changelog_manager
-            .categorize_from_pr(&title, pr_body.as_deref());
+            .categorize_from_pr(&raw_title, pr_body.as_deref());
 
-        let entry = title
-            .strip_prefix(&format!("[{}] ", ticket_id))
-            .unwrap_or(&title);
+        let entry = self.generate_changelog_entry(&raw_title, pr_body.as_deref(), ticket_id, category);
 
         self.changelog_manager
-            .add_entry(category, entry, *pr_number)
+            .add_entry(category, &entry, *pr_number)
             .await?;
 
         Ok(LoreOutcome::ChangelogUpdated {
             entry: format!("{}: {} (#{})", category.as_str(), entry, pr_number),
         })
+    }
+
+    fn generate_changelog_entry(&self, title: &str, body: Option<&str>, ticket_id: &str, category: ChangeCategory) -> String {
+        let clean_title = title
+            .strip_prefix(&format!("[{}] ", ticket_id))
+            .unwrap_or(title)
+            .trim();
+
+        if let Some(b) = body {
+            let lines: Vec<&str> = b.lines()
+                .map(|l| l.trim())
+                .filter(|l| {
+                    !l.is_empty() 
+                    && !l.starts_with('#') 
+                    && !l.starts_with("---")
+                    && !l.starts_with("## ")
+                    && !l.starts_with("Resolves #")
+                })
+                .collect();
+
+            if !lines.is_empty() {
+                let impl_section = lines.iter().position(|l| l.contains("Implementation") || l.contains("Changes") || l.contains("What"));
+                let start = impl_section.map(|p| p + 1).unwrap_or(0);
+                
+                let content_lines: Vec<&&str> = lines[start..].iter()
+                    .filter(|l| !l.starts_with('-') || l.len() > 3)
+                    .take(3)
+                    .collect();
+
+                if !content_lines.is_empty() {
+                    let summary = content_lines[0].trim_start_matches('-').trim();
+                    if summary.len() > 10 {
+                        let mut entry = summary.to_string();
+                        if let Some(first) = entry.get_mut(0..1) {
+                            first.make_ascii_uppercase();
+                        }
+                        if !entry.ends_with('.') {
+                            entry.push('.');
+                        }
+                        return entry;
+                    }
+                }
+            }
+        }
+
+        let action_word = match category {
+            ChangeCategory::Added => "Added",
+            ChangeCategory::Fixed => "Fixed",
+            ChangeCategory::Changed => "Updated",
+            ChangeCategory::Removed => "Removed",
+            ChangeCategory::Deprecated => "Deprecated",
+            ChangeCategory::Security => "Secured",
+        };
+
+        format!("{} {}.", action_word, clean_title)
     }
 
     async fn process_adr_generation(&self, task: &LoreTask) -> Result<LoreOutcome> {

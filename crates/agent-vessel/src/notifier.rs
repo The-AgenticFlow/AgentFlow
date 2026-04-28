@@ -18,6 +18,8 @@ impl VesselNotifier {
         ticket_id: &str,
         pr_number: u64,
         sha: &str,
+        pr_title: &str,
+        pr_body: Option<&str>,
     ) {
         info!(ticket_id, pr_number, sha, "Emitting ticket_merged event");
 
@@ -29,6 +31,8 @@ impl VesselNotifier {
                     "ticket_id": ticket_id,
                     "pr_number": pr_number,
                     "sha": sha,
+                    "pr_title": pr_title,
+                    "pr_body": pr_body,
                 }),
             )
             .await;
@@ -154,7 +158,7 @@ mod tests {
     async fn test_emit_ticket_merged() {
         let store = SharedStore::new_in_memory();
 
-        VesselNotifier::emit_ticket_merged(&store, "T-42", 123, "abc123").await;
+        VesselNotifier::emit_ticket_merged(&store, "T-42", 123, "abc123", "Fix login bug", Some("Fixed the login issue")).await;
 
         let events = store.get_events_since(0).await;
         assert_eq!(events.len(), 1);
@@ -162,6 +166,7 @@ mod tests {
         assert_eq!(events[0].event_type, "ticket_merged");
         assert_eq!(events[0].payload["ticket_id"], "T-42");
         assert_eq!(events[0].payload["pr_number"], 123);
+        assert_eq!(events[0].payload["pr_title"], "Fix login bug");
     }
 
     #[tokio::test]
