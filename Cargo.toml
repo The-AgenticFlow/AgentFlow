@@ -8,6 +8,7 @@ members = [
     "crates/agent-nexus",
     "crates/agent-forge",
     "crates/agent-vessel",
+    "crates/agent-lore",
     "crates/pair-harness",
     "binary",
     "crates/anthropic-mock",

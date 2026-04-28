@@ -8,12 +8,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::info;
 
-use crate::nodes::{ForgeNode, NexusNode, VesselNode};
+use crate::nodes::{ForgeNode, LoreNode, NexusNode, VesselNode};
 use crate::state::{
     Ticket, TicketStatus, WorkerSlot, WorkerStatus, ACTION_CI_FIX_NEEDED,
-    ACTION_CONFLICTS_DETECTED, ACTION_DEPLOYED, ACTION_DEPLOY_FAILED, ACTION_EMPTY, ACTION_FAILED,
-    ACTION_MERGE_PRS, ACTION_NO_WORK, ACTION_PR_OPENED, ACTION_WORK_ASSIGNED, KEY_PENDING_PRS,
-    KEY_TICKETS, KEY_WORKER_SLOTS,
+    ACTION_CONFLICTS_DETECTED, ACTION_DEPLOYED, ACTION_DEPLOY_FAILED, ACTION_DOCS_COMPLETE,
+    ACTION_EMPTY, ACTION_FAILED, ACTION_MERGE_PRS, ACTION_NO_WORK, ACTION_PR_OPENED,
+    ACTION_WORK_ASSIGNED, KEY_PENDING_PRS, KEY_TICKETS, KEY_WORKER_SLOTS,
 };
 
 #[tokio::main]
@@ -109,6 +109,10 @@ async fn main() -> Result<()> {
         orchestrator_dir.join("orchestration/agent/agents/forge.agent.md"),
     ));
     let vessel = Arc::new(VesselNode::from_env());
+    let lore = Arc::new(LoreNode::new(
+        &workspace_dir,
+        orchestrator_dir.join("orchestration/agent/agents/lore.agent.md"),
+    ));
 
     let flow = Flow::new("nexus")
         .add_node(
@@ -137,13 +141,19 @@ async fn main() -> Result<()> {
             "vessel",
             vessel,
             vec![
-                (ACTION_DEPLOYED, "nexus"),
+                (ACTION_DEPLOYED, "lore"),
                 (ACTION_DEPLOY_FAILED, "nexus"),
                 (ACTION_CI_FIX_NEEDED, "forge"),
                 ("merge_blocked", "nexus"),
                 (ACTION_CONFLICTS_DETECTED, "forge"),
+                (Action::AWAITING_HUMAN, "nexus"),
                 ("no_work", "nexus"),
             ],
+        )
+        .add_node(
+            "lore",
+            lore,
+            vec![(ACTION_DOCS_COMPLETE, "nexus"), (ACTION_NO_WORK, "nexus")],
         )
         .max_steps(20);
 

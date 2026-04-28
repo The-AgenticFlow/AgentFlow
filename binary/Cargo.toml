@@ -14,6 +14,7 @@ config          = { path = "../crates/config" }
 agent-nexus     = { path = "../crates/agent-nexus" }
 agent-forge     = { path = "../crates/agent-forge" }
 agent-vessel    = { path = "../crates/agent-vessel" }
+agent-lore      = { path = "../crates/agent-lore" }
 pair-harness    = { path = "../crates/pair-harness" }
 
 anyhow      = { workspace = true }

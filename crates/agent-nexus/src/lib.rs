@@ -295,6 +295,14 @@ impl NexusNode {
                     }
 
                     if let Some(ticket) = tickets.iter().find(|t| t.id == *tid) {
+                        if matches!(ticket.status, TicketStatus::AwaitingHuman { .. }) {
+                            info!(
+                                pr_number = pr.number,
+                                ticket_id = %tid,
+                                "Skipping re-add of PR for ticket awaiting human intervention"
+                            );
+                            continue;
+                        }
                         if let TicketStatus::Failed { reason, .. } = &ticket.status {
                             if reason.contains("Merge conflicts")
                                 || reason.contains("merge conflict")

@@ -56,6 +56,8 @@ pub struct PairConfig {
     pub github_token: String,
     pub max_resets: u32,
     pub watchdog_timeout_secs: u64,
+    pub verify_command: Option<String>,
+    pub max_verify_attempts: u32,
 }
 
 impl PairConfig {
@@ -88,6 +90,8 @@ impl PairConfig {
             github_token: github_token.into(),
             max_resets: 10,
             watchdog_timeout_secs: 1200,
+            verify_command: None,
+            max_verify_attempts: 3,
         }
     }
 
@@ -112,6 +116,8 @@ impl PairConfig {
             github_token: github_token.into(),
             max_resets: 10,
             watchdog_timeout_secs: 1200,
+            verify_command: None,
+            max_verify_attempts: 3,
         }
     }
 
@@ -136,6 +142,8 @@ impl PairConfig {
             github_token: github_token.into(),
             max_resets: 10,
             watchdog_timeout_secs: 1200,
+            verify_command: None,
+            max_verify_attempts: 3,
         }
     }
 }
@@ -407,6 +415,50 @@ impl FileLock {
             acquired_at: chrono::Utc::now().to_rfc3339(),
         }
     }
+}
+
+/// Result of post-completion verification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VerificationResult {
+    /// Verification passed — accept FORGE completion.
+    Passed,
+    /// Verification failed — feed error back to FORGE for self-repair.
+    Failed { output: String, command: String },
+    /// Verification skipped (no verify_command configured).
+    Skipped,
+}
+
+/// Tracks verification attempt state across the pair lifecycle.
+#[derive(Debug, Clone)]
+pub struct VerificationState {
+    pub attempt: u32,
+    pub max_attempts: u32,
+}
+
+impl VerificationState {
+    pub fn new(max_attempts: u32) -> Self {
+        Self {
+            attempt: 0,
+            max_attempts,
+        }
+    }
+}
+
+/// Persistent error history across self-repair attempts.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ErrorHistory {
+    pub entries: Vec<ErrorHistoryEntry>,
+}
+
+/// A single entry in the error history.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErrorHistoryEntry {
+    pub timestamp: String,
+    pub source: String,
+    pub error_type: String,
+    pub message: String,
+    pub resolution_attempted: Option<String>,
+    pub resolved: bool,
 }
 
 #[cfg(test)]

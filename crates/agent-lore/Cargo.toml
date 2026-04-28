@@ -1,0 +1,17 @@
+[package]
+name = "agent-lore"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+chrono = "0.4"
+pocketflow-core = { path = "../pocketflow-core" }
+config = { path = "../config" }
+github = { path = "../github" }

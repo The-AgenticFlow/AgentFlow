@@ -84,6 +84,7 @@ pub struct PrInfo {
     pub base_branch: String,
     pub ticket_id: Option<String>,
     pub title: String,
+    pub body: Option<String>,
     pub state: PrState,
     /// Whether the PR can be merged without conflicts.
     /// `None` means GitHub hasn't computed it yet (retry later).
@@ -165,6 +166,7 @@ mod tests {
             base_branch: "main".to_string(),
             ticket_id: Some("T-42".to_string()),
             title: "Add feature".to_string(),
+            body: Some("Test body".to_string()),
             state: PrState::Open,
             mergeable: Some(true),
         };
@@ -186,6 +188,7 @@ mod tests {
             base_branch: "main".to_string(),
             ticket_id: None,
             title: "t".to_string(),
+            body: None,
             state: PrState::Open,
             mergeable: Some(false),
         };
@@ -198,6 +201,7 @@ mod tests {
             base_branch: "main".to_string(),
             ticket_id: None,
             title: "t".to_string(),
+            body: None,
             state: PrState::Open,
             mergeable: Some(true),
         };
@@ -210,6 +214,7 @@ mod tests {
             base_branch: "main".to_string(),
             ticket_id: None,
             title: "t".to_string(),
+            body: None,
             state: PrState::Open,
             mergeable: None,
         };

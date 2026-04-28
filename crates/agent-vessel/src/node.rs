@@ -74,7 +74,7 @@ impl VesselNode {
             return None;
         }
         let pair_id = parts[0];
-        let ticket_id = parts[1];
+        let ticket_id = pr_info.ticket_id.as_deref().unwrap_or(parts[1]);
         Some(
             PathBuf::from(workspace_root)
                 .join("worktrees")
@@ -195,6 +195,7 @@ impl Node for VesselNode {
         let mut any_failure = false;
         let mut any_conflicts = false;
         let mut any_ci_fix = false;
+        let mut any_awaiting_human = false;
         let mut failed_ticket_ids: Vec<String> = Vec::new();
 
         for outcome in outcomes {
@@ -203,8 +204,18 @@ impl Node for VesselNode {
                     ticket_id,
                     pr_number,
                     sha,
+                    pr_title,
+                    pr_body,
                 } => {
-                    VesselNotifier::emit_ticket_merged(store, ticket_id, *pr_number, sha).await;
+                    VesselNotifier::emit_ticket_merged(
+                        store,
+                        ticket_id,
+                        *pr_number,
+                        sha,
+                        pr_title,
+                        pr_body.as_deref(),
+                    )
+                    .await;
                     VesselNotifier::set_ticket_status_merged(store, ticket_id).await;
 
                     self.update_ticket_status(store, ticket_id, "merged").await;
@@ -481,7 +492,15 @@ impl Node for VesselNode {
                     let tid = ticket_id
                         .clone()
                         .unwrap_or_else(|| format!("T-{}", pr_number));
-                    VesselNotifier::emit_ticket_merged(store, &tid, *pr_number, "").await;
+                    VesselNotifier::emit_ticket_merged(
+                        store,
+                        &tid,
+                        *pr_number,
+                        "",
+                        "Merged without CI validation",
+                        None,
+                    )
+                    .await;
                     VesselNotifier::set_ticket_status_merged(store, &tid).await;
 
                     self.update_ticket_status(store, &tid, "merged_no_ci").await;
@@ -514,7 +533,7 @@ impl Node for VesselNode {
                             pr_number,
                             ticket_id = %tid,
                             attempts = current_attempts,
-                            "Max conflict resolution attempts exceeded — marking ticket as failed"
+                            "Max conflict resolution attempts exceeded — escalating to human intervention"
                         );
                         VesselNotifier::emit_conflicts_detected(
                             store,
@@ -523,17 +542,17 @@ impl Node for VesselNode {
                             conflicted_files,
                         )
                         .await;
-                        self.mark_ticket_failed(
+                        self.mark_ticket_awaiting_human(
                             store,
                             &tid,
                             &format!(
-                                "Merge conflicts on PR #{} not resolved after {} attempts",
+                                "Merge conflicts on PR #{} not resolved after {} attempts — requires human intervention",
                                 pr_number, current_attempts
                             ),
                         )
                         .await;
                         self.remove_from_pending_prs(store, *pr_number).await;
-                        any_failure = true;
+                        any_awaiting_human = true;
                         continue;
                     }
 
@@ -593,12 +612,14 @@ impl Node for VesselNode {
             }
         }
 
-        if any_conflicts {
+        if any_awaiting_human {
+            Ok(Action::new(Action::AWAITING_HUMAN))
+        } else if any_conflicts {
             Ok(Action::new(ACTION_CONFLICTS_DETECTED))
-        } else if any_ci_fix {
-            Ok(Action::new(ACTION_CI_FIX_NEEDED))
         } else if any_success {
             Ok(Action::DEPLOYED.into())
+        } else if any_ci_fix {
+            Ok(Action::new(ACTION_CI_FIX_NEEDED))
         } else if any_failure {
             Ok(Action::DEPLOY_FAILED.into())
         } else {
@@ -632,6 +653,8 @@ impl VesselNode {
                         ticket_id: ticket_id.unwrap_or_else(|| format!("T-{}", pr_number)),
                         pr_number,
                         sha: result.sha.unwrap_or_default(),
+                        pr_title: pr_info.title,
+                        pr_body: pr_info.body,
                     }),
                     Ok(result) => Ok(VesselOutcome::MergeBlocked {
                         ticket_id,
@@ -733,8 +756,17 @@ impl VesselNode {
         let worktree_path = self.resolve_worktree_path(&pr_info);
 
         let conflicted_files = match &worktree_path {
-            Some(wt) => {
+            Some(wt) if wt.exists() => {
                 self.merge_origin_main_in_worktree(wt, &pr_info.head_branch)
+                    .await
+            }
+            Some(wt) => {
+                warn!(
+                    path = %wt.display(),
+                    pr_number,
+                    "Worktree path resolved but directory missing — falling back to GitHub API"
+                );
+                self.fetch_conflicted_files_from_github(owner, repo, &pr_info)
                     .await
             }
             None => {
@@ -931,7 +963,7 @@ impl VesselNode {
             return false;
         }
         let pair_id = parts[0];
-        let ticket_id = parts[1];
+        let ticket_id = pr_info.ticket_id.as_deref().unwrap_or(parts[1]);
 
         let shared_dir = PathBuf::from(&workspace_root)
             .join("orchestration")
@@ -1046,6 +1078,25 @@ impl VesselNode {
                 let attempts = ticket.attempts + 1;
                 ticket.attempts = attempts;
                 ticket.status = TicketStatus::Failed {
+                    worker_id: String::from("vessel"),
+                    reason: reason.to_string(),
+                    attempts,
+                };
+                break;
+            }
+        }
+
+        store.set(KEY_TICKETS, json!(tickets)).await;
+    }
+
+    async fn mark_ticket_awaiting_human(&self, store: &SharedStore, ticket_id: &str, reason: &str) {
+        let mut tickets: Vec<Ticket> = store.get_typed(KEY_TICKETS).await.unwrap_or_default();
+
+        for ticket in tickets.iter_mut() {
+            if ticket.id == ticket_id {
+                let attempts = ticket.attempts + 1;
+                ticket.attempts = attempts;
+                ticket.status = TicketStatus::AwaitingHuman {
                     worker_id: String::from("vessel"),
                     reason: reason.to_string(),
                     attempts,
@@ -1382,10 +1433,17 @@ impl VesselNode {
 
                 if let Ok(info) = pr_info {
                     let tid = ticket_id
-                        .or(info.ticket_id)
+                        .or(info.ticket_id.clone())
                         .unwrap_or_else(|| format!("T-{}", pr_number));
-                    VesselNotifier::emit_ticket_merged(store, &tid, pr_number, &info.head_sha)
-                        .await;
+                    VesselNotifier::emit_ticket_merged(
+                        store,
+                        &tid,
+                        pr_number,
+                        &info.head_sha,
+                        &info.title,
+                        None,
+                    )
+                    .await;
                     VesselNotifier::set_ticket_status_merged(store, &tid).await;
                     self.remove_from_pending_prs(store, pr_number).await;
                 }
@@ -1478,6 +1536,8 @@ mod tests {
                 ticket_id: "T-42".to_string(),
                 pr_number: 42,
                 sha: "abc123".to_string(),
+                pr_title: "Add feature X".to_string(),
+                pr_body: Some("Implementation details".to_string()),
             }],
             "has_work": true,
         });

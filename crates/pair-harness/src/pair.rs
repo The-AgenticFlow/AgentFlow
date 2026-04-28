@@ -17,11 +17,12 @@ use crate::process::{ProcessManager, SentinelMode};
 use crate::provision::Provisioner;
 use crate::reset::ResetManager;
 use crate::types::{
-    Complexity, FsEvent, PairConfig, PairOutcome, StatusJson, Ticket, TimeoutProfile,
+    Complexity, ErrorHistory, ErrorHistoryEntry, FsEvent, PairConfig, PairOutcome, StatusJson,
+    Ticket, TimeoutProfile, VerificationResult, VerificationState,
 };
 use crate::watchdog::Watchdog;
 use crate::watcher::SharedDirWatcher;
-use crate::worktree::{MergeMainResult, WorktreeManager};
+use crate::worktree::{MergeMainResult, SetupWarning, WorktreeManager};
 
 const DEFAULT_SENTINEL_TIMEOUT_SECS: u64 = 120;
 const FORGE_STARTUP_TIMEOUT_SECS: u64 = 300;
@@ -212,6 +213,49 @@ const ENV_OVERHEAD_STREAMING_SECS: u64 = 10;
 const ENV_OVERHEAD_BUILD_SECS: u64 = 30;
 const ENV_OVERHEAD_BUFFER_SECS: u64 = 20;
 
+fn format_setup_errors(warnings: &[SetupWarning]) -> String {
+    warnings
+        .iter()
+        .map(|w| {
+            let files = if w.affected_files.is_empty() {
+                String::new()
+            } else {
+                format!(" (affected: {})", w.affected_files.join(", "))
+            };
+            format!("[{}] {}{}", w.phase, w.error, files)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn classify_error(message: &str) -> String {
+    let lower = message.to_lowercase();
+    if lower.contains("unmerged") || lower.contains("conflict") {
+        "merge_conflict".to_string()
+    } else if lower.contains("compilation")
+        || lower.contains("error ts")
+        || lower.contains("cargo ")
+    {
+        "compilation_error".to_string()
+    } else if lower.contains("test") && (lower.contains("fail") || lower.contains("error")) {
+        "test_failure".to_string()
+    } else if lower.contains("fetch") || lower.contains("push") || lower.contains("network") {
+        "network_error".to_string()
+    } else if lower.contains("permission") || lower.contains("denied") {
+        "permission_error".to_string()
+    } else {
+        "unknown".to_string()
+    }
+}
+
+fn truncate_message(message: &str, max_len: usize) -> String {
+    if message.len() <= max_len {
+        message.to_string()
+    } else {
+        format!("{}...[truncated]", &message[..max_len])
+    }
+}
+
 fn compute_effective_timeout(base_secs: u64, complexity: &Complexity) -> u64 {
     let overhead =
         ENV_OVERHEAD_NETWORK_SECS + ENV_OVERHEAD_STREAMING_SECS + ENV_OVERHEAD_BUFFER_SECS;
@@ -303,6 +347,8 @@ pub struct ForgeSentinelPair {
     plan_approved: bool,
     final_approved: bool,
     contract_timeout: Option<TimeoutProfile>,
+    error_feedback_attempts: u32,
+    verification_state: VerificationState,
 }
 
 impl ForgeSentinelPair {
@@ -330,6 +376,7 @@ impl ForgeSentinelPair {
             },
             reset: ResetManager::new(config.shared.clone(), config.max_resets),
             watchdog: Watchdog::new(config.shared.clone(), config.watchdog_timeout_secs),
+            verification_state: VerificationState::new(config.max_verify_attempts),
             config,
             start_time: Instant::now(),
             sentinel_tracker: None,
@@ -341,6 +388,7 @@ impl ForgeSentinelPair {
             plan_approved: false,
             final_approved: false,
             contract_timeout: None,
+            error_feedback_attempts: 0,
         }
     }
 
@@ -397,6 +445,17 @@ impl ForgeSentinelPair {
             );
         }
 
+        // Check if ERROR_FEEDBACK.md exists — skip plan/final review, forge will attempt self-repair
+        let error_feedback_path = self.config.shared.join("ERROR_FEEDBACK.md");
+        if error_feedback_path.exists() {
+            self.plan_approved = true;
+            self.final_approved = true;
+            info!(
+                pair = %self.config.pair_id,
+                "ERROR_FEEDBACK.md detected — skipping plan/final review, forge will attempt self-repair"
+            );
+        }
+
         // Check if this is a resume with existing final approval
         let final_review_path = self.config.shared.join("final-review.md");
         if final_review_path.exists() {
@@ -448,8 +507,13 @@ impl ForgeSentinelPair {
                     warn!(
                         pair = %self.config.pair_id,
                         error = %e,
-                        "Failed to merge origin/main into worktree for conflict rework — FORGE may not see conflicts"
+                        "Failed to merge origin/main into worktree for conflict rework — writing ERROR_FEEDBACK.md"
                     );
+                    self.write_error_feedback(
+                        "git_operation",
+                        &e.to_string(),
+                        Some("Run `git merge --abort` to clean up, then `git fetch origin main && git merge origin/main --no-edit`"),
+                    ).await?;
                 }
             }
         }
@@ -481,8 +545,13 @@ impl ForgeSentinelPair {
                     warn!(
                         pair = %self.config.pair_id,
                         error = %e,
-                        "Failed to merge origin/main before CI fix — FORGE may not have latest workflows"
+                        "Failed to merge origin/main before CI fix — writing ERROR_FEEDBACK.md"
                     );
+                    self.write_error_feedback(
+                        "git_operation",
+                        &e.to_string(),
+                        Some("Run `git merge --abort` to clean up, then `git fetch origin main && git merge origin/main --no-edit`"),
+                    ).await?;
                 }
             }
         }
@@ -926,11 +995,22 @@ impl ForgeSentinelPair {
 
     /// Provision the worktree for this pair.
     async fn provision_worktree(&mut self, ticket: &Ticket) -> Result<()> {
-        let worktree_path = self
+        let result = self
             .worktree
             .create_worktree(&self.config.pair_id, &ticket.id)
             .context("Failed to create worktree")?;
-        self.config.worktree = worktree_path;
+        self.config.worktree = result.path;
+
+        if !result.warnings.is_empty() {
+            let error_output = format_setup_errors(&result.warnings);
+            self.write_error_feedback(
+                "setup",
+                &error_output,
+                Some("Run `git status` and `git diff --name-only --diff-filter=U` to assess worktree state"),
+            ).await?;
+        } else {
+            self.clear_error_feedback().await?;
+        }
         Ok(())
     }
 
@@ -948,6 +1028,189 @@ impl ForgeSentinelPair {
                 self.config.redis_url.as_deref(),
             )
             .await
+    }
+
+    /// Write ERROR_FEEDBACK.md with the current error context.
+    ///
+    /// OVERWRITES any existing ERROR_FEEDBACK.md — this file represents
+    /// ONE current error, not a log of past errors.
+    /// Past errors are tracked in error_history.json.
+    async fn write_error_feedback(
+        &mut self,
+        source: &str,
+        error_output: &str,
+        hint: Option<&str>,
+    ) -> Result<()> {
+        let attempt = self.error_feedback_attempts + 1;
+        let branch = WorktreeManager::branch_name(&self.config.pair_id, &self.ticket_id);
+
+        let history_section = self.format_error_history_section().await?;
+
+        let hint_section = hint
+            .map(|h| format!("## Resolution Hints\n{}\n\n", h))
+            .unwrap_or_default();
+
+        let content = format!(
+            "# Error Feedback — Self-Repair Required\n\n\
+             An error occurred during the pair lifecycle that you must resolve.\n\n\
+             ## Error Source\n{}\n\n\
+             ## Error Output\n```\n{}\n```\n\n\
+             ## Context\n\
+             - Branch: {}\n\
+             - Worktree: {}\n\
+             - Attempt: {} of {}\n\n\
+             {}{}\
+             ## Instructions\n\
+             1. Assess the error output above\n\
+             2. Take the suggested resolution steps (if any)\n\
+             3. If you cannot resolve, write STATUS.json with status BLOCKED\n\
+             4. If you resolve the error, continue with your task and write STATUS.json normally\n",
+            source,
+            error_output,
+            branch,
+            self.config.worktree.display(),
+            attempt,
+            self.config.max_verify_attempts,
+            hint_section,
+            history_section,
+        );
+
+        let path = self.config.shared.join("ERROR_FEEDBACK.md");
+        tokio::fs::write(&path, &content).await?;
+
+        info!(
+            path = %path.display(),
+            source,
+            attempt,
+            "Wrote ERROR_FEEDBACK.md for agent self-repair"
+        );
+
+        self.error_feedback_attempts += 1;
+        Ok(())
+    }
+
+    /// Clear ERROR_FEEDBACK.md — called when error is resolved.
+    async fn clear_error_feedback(&self) -> Result<()> {
+        let path = self.config.shared.join("ERROR_FEEDBACK.md");
+        if path.exists() {
+            tokio::fs::remove_file(&path).await?;
+            debug!("Removed ERROR_FEEDBACK.md — error resolved");
+        }
+        Ok(())
+    }
+
+    /// Run post-completion verification if configured.
+    async fn verify_completion(&self) -> Result<VerificationResult> {
+        let command = match &self.config.verify_command {
+            Some(cmd) => cmd.clone(),
+            None => return Ok(VerificationResult::Skipped),
+        };
+
+        info!(command = %command, "Running post-completion verification");
+
+        let output = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(&command)
+            .current_dir(&self.config.worktree)
+            .output()
+            .await
+            .context("Failed to run verification command")?;
+
+        if output.status.success() {
+            info!("Verification passed — accepting FORGE completion");
+            Ok(VerificationResult::Passed)
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let combined = format!("{}\n{}", stdout, stderr);
+            warn!(command = %command, "Verification failed — feeding error back to FORGE");
+            Ok(VerificationResult::Failed {
+                output: combined,
+                command,
+            })
+        }
+    }
+
+    /// Append an entry to error_history.json.
+    async fn append_error_history(&self, source: &str, message: &str) -> Result<()> {
+        let path = self.config.shared.join("error_history.json");
+
+        let mut history = if path.exists() {
+            tokio::fs::read_to_string(&path)
+                .await
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default()
+        } else {
+            ErrorHistory::default()
+        };
+
+        history.entries.push(ErrorHistoryEntry {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            source: source.to_string(),
+            error_type: classify_error(message),
+            message: truncate_message(message, 2000),
+            resolution_attempted: None,
+            resolved: false,
+        });
+
+        tokio::fs::write(&path, serde_json::to_string_pretty(&history)?).await?;
+        Ok(())
+    }
+
+    /// Mark the latest unresolved error history entry as resolved.
+    async fn mark_error_resolved(&self) -> Result<()> {
+        let path = self.config.shared.join("error_history.json");
+        if !path.exists() {
+            return Ok(());
+        }
+
+        let content = tokio::fs::read_to_string(&path).await?;
+        let mut history: ErrorHistory = serde_json::from_str(&content)?;
+
+        if let Some(last_unresolved) = history.entries.iter_mut().rev().find(|e| !e.resolved) {
+            last_unresolved.resolved = true;
+            last_unresolved.resolution_attempted = Some("resolved_by_forge".to_string());
+        }
+
+        tokio::fs::write(&path, serde_json::to_string_pretty(&history)?).await?;
+        Ok(())
+    }
+
+    /// Format a summary of error history for inclusion in prompts.
+    async fn format_error_history_section(&self) -> Result<String> {
+        let path = self.config.shared.join("error_history.json");
+        if !path.exists() {
+            return Ok(String::new());
+        }
+
+        let content = tokio::fs::read_to_string(&path).await?;
+        let history: ErrorHistory = match serde_json::from_str(&content) {
+            Ok(h) => h,
+            Err(_) => return Ok(String::new()),
+        };
+
+        let unresolved: Vec<_> = history
+            .entries
+            .iter()
+            .rev()
+            .take(5)
+            .filter(|e| !e.resolved)
+            .collect();
+
+        if unresolved.is_empty() {
+            return Ok(String::new());
+        }
+
+        let mut section = String::from("## Previous Attempts\n");
+        for entry in unresolved {
+            section.push_str(&format!(
+                "- Attempt ({}): {} — {}\n",
+                entry.source, entry.error_type, entry.message
+            ));
+        }
+        section.push_str("(See error_history.json for full details)\n\n");
+        Ok(section)
     }
 
     /// Seed initial file locks for the ticket.
@@ -968,9 +1231,22 @@ impl ForgeSentinelPair {
         let provisioner = Provisioner::new(&self.config.project_root);
         provisioner.write_ticket(&self.config.shared, ticket)?;
 
+        let error_feedback_path = self.config.shared.join("ERROR_FEEDBACK.md");
         let conflict_path = self.config.shared.join("CONFLICT_RESOLUTION.md");
         let ci_fix_path = self.config.shared.join("CI_FIX.md");
-        let task = if conflict_path.exists() {
+        let task = if error_feedback_path.exists() {
+            format!(
+                "Resolve lifecycle errors for ticket {} before proceeding with implementation.\n\n\
+                 Branch: {}\n\n\
+                 ERROR_FEEDBACK.md in this directory contains error output from the pair lifecycle.\n\
+                 You MUST resolve the errors described before implementing the ticket.\n\
+                 After resolving errors, continue with implementation and write STATUS.json.\n\n\
+                 VALID STATUS.json status values: PR_OPENED, COMPLETE, BLOCKED, FUEL_EXHAUSTED, PENDING_REVIEW. \
+                 Do NOT use any other value.",
+                ticket.id,
+                WorktreeManager::branch_name(&self.config.pair_id, &ticket.id)
+            )
+        } else if conflict_path.exists() {
             format!(
                 "Resolve merge conflicts for ticket {}.\n\n\
                  Branch: {}\n\n\
@@ -1543,7 +1819,7 @@ impl ForgeSentinelPair {
     /// Returns `Ok(None)` if the file exists but is empty (race: inotify fires before flush).
     /// Handles deserialization errors gracefully by logging a warning and returning None,
     /// rather than crashing the entire pair lifecycle.
-    async fn read_status(&self) -> Result<Option<PairOutcome>> {
+    async fn read_status(&mut self) -> Result<Option<PairOutcome>> {
         let path = self.config.shared.join("STATUS.json");
         if !path.exists() {
             return Ok(None);
@@ -1578,7 +1854,7 @@ impl ForgeSentinelPair {
             );
         }
 
-        Ok(Some(match normalized.as_str() {
+        let outcome = match normalized.as_str() {
             "PR_OPENED"
             | "COMPLETE"
             | "COMPLETED"
@@ -1679,7 +1955,66 @@ impl ForgeSentinelPair {
                     }
                 }
             }
-        }))
+        };
+
+        // For terminal outcomes (PR_OPENED, Blocked), run verification if configured
+        if matches!(
+            outcome,
+            PairOutcome::PrOpened { .. } | PairOutcome::Blocked { .. }
+        ) {
+            match self.verify_completion().await? {
+                VerificationResult::Passed => {
+                    self.clear_error_feedback().await?;
+                    self.mark_error_resolved().await?;
+                    return Ok(Some(outcome));
+                }
+                VerificationResult::Failed { output, command } => {
+                    self.verification_state.attempt += 1;
+
+                    if self.verification_state.attempt >= self.verification_state.max_attempts {
+                        warn!(
+                            attempts = self.verification_state.attempt,
+                            "Max verification attempts reached — escalating to nexus"
+                        );
+                        return Ok(Some(PairOutcome::Blocked {
+                            reason: format!(
+                                "Verification failed {} times. Last error from `{}):\n{}",
+                                self.verification_state.attempt, command, output
+                            ),
+                            blockers: vec![crate::types::Blocker {
+                                blocker_type: "verification_failure".to_string(),
+                                description: format!(
+                                    "Post-completion verification failed: {}",
+                                    command
+                                ),
+                                nexus_action:
+                                    "Review verification errors and decide whether to re-assign or close"
+                                        .to_string(),
+                            }],
+                        }));
+                    }
+
+                    self.write_error_feedback(
+                        "build_verification",
+                        &format!("Verification command `{} failed:\n{}", command, output),
+                        Some(&format!(
+                            "Run `{} locally, fix ALL errors, then commit and push",
+                            command
+                        )),
+                    )
+                    .await?;
+
+                    self.append_error_history("build_verification", &output)
+                        .await?;
+
+                    self.archive_non_terminal_status(&normalized).await?;
+                    return Ok(None);
+                }
+                VerificationResult::Skipped => return Ok(Some(outcome)),
+            }
+        }
+
+        Ok(Some(outcome))
     }
 
     /// Check if FORGE has made progress (PLAN.md or WORKLOG.md exists).
@@ -2066,6 +2401,16 @@ impl ForgeSentinelPair {
             debug!("Removed CI_FIX.md after pair completion");
         }
 
+        let error_feedback_path = self.config.shared.join("ERROR_FEEDBACK.md");
+        if error_feedback_path.exists() {
+            let _ = tokio::fs::remove_file(&error_feedback_path).await;
+            debug!("Removed ERROR_FEEDBACK.md in cleanup (safety net)");
+        }
+
+        // Note: error_history.json is intentionally NOT removed during cleanup.
+        // It persists across pair lifecycles for the same ticket and is only
+        // removed when the ticket is completed or marked Exhausted.
+
         info!(pair = %self.config.pair_id, "Cleanup complete");
         Ok(())
     }
@@ -2173,7 +2518,7 @@ mod tests {
         )
         .unwrap();
 
-        let pair = ForgeSentinelPair::new(config.clone());
+        let mut pair = ForgeSentinelPair::new(config.clone());
         let outcome = pair.read_status().await.unwrap();
 
         assert!(outcome.is_none());
@@ -2202,7 +2547,7 @@ mod tests {
         )
         .unwrap();
 
-        let pair = ForgeSentinelPair::new(config);
+        let mut pair = ForgeSentinelPair::new(config);
         let outcome = pair.read_status().await.unwrap().unwrap();
 
         assert!(matches!(
@@ -2304,7 +2649,7 @@ mod tests {
         )
         .unwrap();
 
-        let pair = ForgeSentinelPair::new(config);
+        let mut pair = ForgeSentinelPair::new(config);
         let outcome = pair.read_status().await.unwrap().unwrap();
 
         assert!(matches!(
@@ -2324,7 +2669,7 @@ mod tests {
         )
         .unwrap();
 
-        let pair = ForgeSentinelPair::new(config);
+        let mut pair = ForgeSentinelPair::new(config);
         let outcome = pair.read_status().await.unwrap().unwrap();
 
         assert!(matches!(
