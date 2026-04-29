@@ -2,7 +2,6 @@
 //! Git worktree management for pair isolation.
 
 use anyhow::{anyhow, bail, Context, Result};
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tracing::{debug, info, warn};
@@ -27,26 +26,20 @@ impl WorktreeManager {
 
     /// Create a worktree for a pair on a new branch.
     ///
+    /// Implements worktree reuse: when a pair gets a new ticket, the existing
+    /// worktree is reused by fetching origin/main and creating a new branch.
+    ///
     /// # Arguments
-    /// * `pair_id` - Pair identifier (e.g., "pair-1")
+    /// * `pair_id` - Pair identifier (e.g., "pair-1", "forge-1")
     /// * `ticket_id` - Ticket identifier (e.g., "T-42")
     ///
     /// # Returns
-    /// Path to the created worktree.
+    /// Path to the worktree.
     pub fn create_worktree(&self, pair_id: &str, ticket_id: &str) -> Result<PathBuf> {
-        let worktree_path = self
-            .worktrees_dir
-            .join(format!("{}-{}", pair_id, ticket_id));
+        let worktree_path = self.worktrees_dir.join(pair_id);
         let branch_name = Self::branch_name(pair_id, ticket_id);
 
-        info!(pair_id, ticket_id, branch = %branch_name, "Creating worktree");
-
-        if let Err(e) = self.run_git_in_main(&["fetch", "origin", "main"]) {
-            warn!(error = %e, "git fetch origin/main failed, continuing");
-        }
-        if let Err(e) = self.run_git_in_main(&["merge", "origin/main"]) {
-            warn!(error = %e, "git merge origin/main failed, continuing");
-        }
+        info!(pair_id, ticket_id, branch = %branch_name, "Creating/reusing worktree");
 
         if worktree_path.exists() {
             if let Ok(current) = self.get_current_branch(&worktree_path) {
@@ -54,13 +47,20 @@ impl WorktreeManager {
                     info!(
                         path = %worktree_path.display(),
                         branch = %branch_name,
-                        "Worktree already exists on correct branch - reusing"
+                        "Worktree already on correct branch - reusing"
                     );
                     return Ok(worktree_path);
                 }
+                info!(
+                    path = %worktree_path.display(),
+                    current = %current,
+                    new_branch = %branch_name,
+                    "Reusing existing worktree for new ticket"
+                );
+                return self.reuse_worktree(&worktree_path, &branch_name);
             }
-            warn!(path = %worktree_path.display(), "Worktree exists on different branch, replacing");
-            self.remove_worktree_by_path(&worktree_path, &Self::branch_name(pair_id, ticket_id))?;
+            warn!(path = %worktree_path.display(), "Worktree exists but branch unknown, replacing");
+            self.remove_worktree_by_path(&worktree_path, "unknown")?;
         }
 
         self.prune_stale_worktrees();
@@ -100,7 +100,6 @@ impl WorktreeManager {
             }
         }
 
-        // Verify the worktree is clean
         let status = Command::new("git")
             .args(["status", "--porcelain"])
             .current_dir(&worktree_path)
@@ -115,44 +114,123 @@ impl WorktreeManager {
         Ok(worktree_path)
     }
 
-    /// Remove a worktree and its associated branch by pair_id.
-    /// Backward-compatible: scans worktrees_dir for a directory starting with `pair_id`.
-    pub fn remove_worktree(&self, pair_id: &str) -> Result<()> {
-        let matching: Vec<std::fs::DirEntry> = fs::read_dir(&self.worktrees_dir)
-            .context("Failed to read worktrees directory")?
-            .filter_map(|e: std::io::Result<std::fs::DirEntry>| e.ok())
-            .filter(|e: &std::fs::DirEntry| {
-                e.file_name()
-                    .to_str()
-                    .map(|n: &str| n.starts_with(&format!("{}-", pair_id)))
-                    .unwrap_or(false)
-            })
-            .collect();
+    /// Reuse an existing worktree by fetching origin/main and creating a new branch.
+    fn reuse_worktree(&self, worktree_path: &Path, new_branch: &str) -> Result<PathBuf> {
+        self.fetch_and_reset_to_main(worktree_path)?;
+        self.create_branch_from_main(worktree_path, new_branch)?;
 
-        if matching.is_empty() {
-            bail!("No worktree found for pair {}", pair_id);
+        info!(
+            path = %worktree_path.display(),
+            branch = %new_branch,
+            "Worktree reused successfully"
+        );
+        Ok(worktree_path.to_path_buf())
+    }
+
+    /// Fetch origin/main and reset the worktree to it.
+    fn fetch_and_reset_to_main(&self, worktree_path: &Path) -> Result<()> {
+        info!(path = %worktree_path.display(), "Fetching origin/main and resetting");
+
+        let fetch = Command::new("git")
+            .args(["fetch", "origin", "main"])
+            .current_dir(worktree_path)
+            .output()
+            .context("Failed to fetch origin/main")?;
+
+        if !fetch.status.success() {
+            warn!(
+                error = %String::from_utf8_lossy(&fetch.stderr),
+                "git fetch origin/main failed, continuing"
+            );
         }
 
-        for entry in matching {
-            let worktree_path = entry.path();
-            let dir_name = entry.file_name().to_str().unwrap_or("").to_string();
-            let ticket_id = dir_name
-                .strip_prefix(&format!("{}-", pair_id))
-                .unwrap_or("unknown");
-            let branch_name = Self::branch_name(pair_id, ticket_id);
-            self.remove_worktree_by_path(&worktree_path, &branch_name)?;
+        let stash = Command::new("git")
+            .args(["stash", "--include-untracked"])
+            .current_dir(worktree_path)
+            .output();
+
+        if let Ok(output) = stash {
+            if output.status.success() {
+                info!(path = %worktree_path.display(), "Stashed uncommitted changes");
+            }
         }
+
+        let checkout = Command::new("git")
+            .args(["checkout", "main"])
+            .current_dir(worktree_path)
+            .output()
+            .context("Failed to checkout main")?;
+
+        if !checkout.status.success() {
+            let checkout = Command::new("git")
+                .args(["checkout", "origin/main"])
+                .current_dir(worktree_path)
+                .output()
+                .context("Failed to checkout origin/main")?;
+
+            if !checkout.status.success() {
+                return Err(anyhow!(
+                    "Failed to checkout main or origin/main: {}",
+                    String::from_utf8_lossy(&checkout.stderr)
+                ));
+            }
+        }
+
+        let pull = Command::new("git")
+            .args(["pull", "origin", "main"])
+            .current_dir(worktree_path)
+            .output()
+            .context("Failed to pull origin/main")?;
+
+        if !pull.status.success() {
+            warn!(
+                error = %String::from_utf8_lossy(&pull.stderr),
+                "git pull origin/main failed, continuing"
+            );
+        }
+
         Ok(())
     }
 
-    /// Remove a specific worktree by pair_id and ticket_id.
-    pub fn remove_worktree_for_ticket(&self, pair_id: &str, ticket_id: &str) -> Result<()> {
-        let worktree_path = self
-            .worktrees_dir
-            .join(format!("{}-{}", pair_id, ticket_id));
+    /// Create a new branch from the current HEAD (assumed to be main).
+    fn create_branch_from_main(&self, worktree_path: &Path, branch_name: &str) -> Result<()> {
+        self.delete_branch_if_exists(branch_name);
 
-        let branch_name = Self::branch_name(pair_id, ticket_id);
+        let output = Command::new("git")
+            .args(["checkout", "-b", branch_name])
+            .current_dir(worktree_path)
+            .output()
+            .context("Failed to create new branch")?;
+
+        if !output.status.success() {
+            return Err(anyhow!(
+                "Failed to create branch {}: {}",
+                branch_name,
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+
+        info!(path = %worktree_path.display(), branch = %branch_name, "Created new branch from main");
+        Ok(())
+    }
+
+    /// Remove a worktree and its associated branch by pair_id.
+    pub fn remove_worktree(&self, pair_id: &str) -> Result<()> {
+        let worktree_path = self.worktrees_dir.join(pair_id);
+
+        if !worktree_path.exists() {
+            bail!("No worktree found for pair {}", pair_id);
+        }
+
+        let current_branch = self.get_current_branch(&worktree_path).ok();
+        let branch_name = current_branch.unwrap_or_else(|| "unknown".to_string());
+
         self.remove_worktree_by_path(&worktree_path, &branch_name)
+    }
+
+    /// Remove a specific worktree (now keyed by pair_id only).
+    pub fn remove_worktree_for_ticket(&self, pair_id: &str, _ticket_id: &str) -> Result<()> {
+        self.remove_worktree(pair_id)
     }
 
     /// Remove a worktree by its path and branch name.
@@ -204,21 +282,20 @@ impl WorktreeManager {
         Ok(())
     }
 
-    /// Create an idle worktree on main branch.
+    /// Create an idle worktree on main branch (keyed by pair_id).
     pub fn create_idle_worktree(&self, pair_id: &str) -> Result<PathBuf> {
-        let worktree_path = self.worktrees_dir.join(format!("{}-idle", pair_id));
+        let worktree_path = self.worktrees_dir.join(pair_id);
 
         info!(pair_id, "Creating idle worktree on main");
 
         if worktree_path.exists() {
-            let _ = self.remove_worktree_by_path(&worktree_path, "main");
+            let current = self.get_current_branch(&worktree_path).ok();
+            self.remove_worktree_by_path(&worktree_path, &current.unwrap_or_default())?;
         }
 
-        // Create worktrees directory if needed
         std::fs::create_dir_all(&self.worktrees_dir)
             .context("Failed to create worktrees directory")?;
 
-        // Create worktree on main branch
         let output = Command::new("git")
             .args(["worktree", "add"])
             .arg(&worktree_path)
@@ -452,23 +529,6 @@ impl WorktreeManager {
             .unwrap_or(0);
 
         Ok(count)
-    }
-
-    fn run_git_in_main(&self, args: &[&str]) -> Result<()> {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(&self.project_root)
-            .output()
-            .context("Failed to run git command")?;
-
-        if !output.status.success() {
-            return Err(anyhow!(
-                "Git command failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            ));
-        }
-
-        Ok(())
     }
 
     fn prune_stale_worktrees(&self) {

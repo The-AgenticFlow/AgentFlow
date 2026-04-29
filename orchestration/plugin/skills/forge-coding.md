@@ -105,6 +105,9 @@ When SENTINEL approves all segments and you're ready to finish:
    - Use `create_pull_request` from the GitHub MCP server
    - Set title: `[T-{id}] Brief description of the change`
    - Set body: Use the PR description from `final-review.md`
+     - MUST include `Closes #<issue_number>` to auto-close the issue on merge
+     - Extract issue number from `SPRINTLESS_TICKET_ID`: `T-004` → `Closes #4`
+     - DO NOT use `Closes: T-004` (invalid - will not close the issue)
    - Set head: `forge-${SPRINTLESS_PAIR_ID}/${SPRINTLESS_TICKET_ID}`
    - Set base: `main`
 

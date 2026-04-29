@@ -109,6 +109,10 @@ Implements JWT-based authentication for the login endpoint.
 - Manual testing completed
 
 Closes #42
+
+> **IMPORTANT**: The PR body MUST include `Closes #<issue_number>` (with `#` prefix, no colon) to auto-close the issue on merge.
+> - Extract the issue number from `SPRINTLESS_TICKET_ID`: `T-004` → issue number `4`
+> - Use: `Closes #4` (correct) — NOT `Closes: T-004` (wrong)
 ```
 
 ## Environment variables

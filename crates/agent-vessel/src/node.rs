@@ -48,6 +48,8 @@ const MAX_CI_FIX_ATTEMPTS: u32 = 3;
 struct CiFixPrInfo {
     pr_number: u64,
     head_branch: String,
+    /// Actual ticket_id from PR title (may differ from branch name).
+    ticket_id: Option<String>,
 }
 
 impl VesselNode {
@@ -74,11 +76,12 @@ impl VesselNode {
             return None;
         }
         let pair_id = parts[0];
-        let ticket_id = parts[1];
+        // Worktrees are keyed by pair_id only (not pair_id-ticket_id).
+        // See WorktreeManager::create_worktree which uses `worktrees_dir.join(pair_id)`.
         Some(
             PathBuf::from(workspace_root)
                 .join("worktrees")
-                .join(format!("{}-{}", pair_id, ticket_id)),
+                .join(pair_id),
         )
     }
 }
@@ -287,6 +290,7 @@ impl Node for VesselNode {
                             &CiFixPrInfo {
                                 pr_number: *pr_number,
                                 head_branch: head_branch.clone(),
+                                ticket_id: ticket_id.clone(),
                             },
                             reason,
                             failure_detail.as_ref(),
@@ -426,6 +430,7 @@ impl Node for VesselNode {
                             &CiFixPrInfo {
                                 pr_number: *pr_number,
                                 head_branch: head_branch.clone(),
+                                ticket_id: ticket_id.clone(),
                             },
                             "CI timed out — possible stuck or flaky CI run",
                             None,
@@ -921,6 +926,7 @@ impl VesselNode {
             }
         };
 
+        // Extract pair_id from branch name (e.g., "forge-1/T-005" -> "forge-1")
         let branch = &pr_info.head_branch;
         let parts: Vec<&str> = branch.splitn(2, '/').collect();
         if parts.len() != 2 {
@@ -931,13 +937,25 @@ impl VesselNode {
             return false;
         }
         let pair_id = parts[0];
-        let ticket_id = parts[1];
+        
+        // Use ticket_id from PR info (extracted from title), not from branch name.
+        // The branch name may be stale or mismatched with the actual ticket.
+        let ticket_id = match &pr_info.ticket_id {
+            Some(tid) => tid.clone(),
+            None => {
+                warn!(
+                    branch,
+                    "No ticket_id in PR info — skipping CONFLICT_RESOLUTION.md"
+                );
+                return false;
+            }
+        };
 
         let shared_dir = PathBuf::from(&workspace_root)
             .join("orchestration")
             .join("pairs")
             .join(pair_id)
-            .join(ticket_id)
+            .join(&ticket_id)
             .join("shared");
 
         // Ensure the shared directory exists before writing CONFLICT_RESOLUTION.md.
@@ -1265,6 +1283,7 @@ impl VesselNode {
             }
         };
 
+        // Extract pair_id from branch name (e.g., "forge-1/T-005" -> "forge-1")
         let branch = &pr_placeholder.head_branch;
         let parts: Vec<&str> = branch.splitn(2, '/').collect();
         if parts.len() != 2 {
@@ -1275,7 +1294,15 @@ impl VesselNode {
             return false;
         }
         let pair_id = parts[0];
-        let ticket_id = parts[1];
+        
+        // Use ticket_id from PR info (extracted from title), not from branch name.
+        // The branch name may be stale or mismatched with the actual ticket.
+        // Fall back to branch-derived ticket_id if not available.
+        let ticket_id = pr_placeholder
+            .ticket_id
+            .as_ref()
+            .map(|s| s.as_str())
+            .unwrap_or(parts[1]);
 
         let shared_dir = PathBuf::from(&workspace_root)
             .join("orchestration")
