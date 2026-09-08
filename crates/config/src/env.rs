@@ -1,19 +1,21 @@
 //! Centralized environment configuration.
 //!
-//! All process-startup configuration is defined here as [`envconfig`] -derived
+//! All process-startup configuration is defined here as [`envconfig`]-derived
 //! structs so that env-var reads are type-safe, validated, and initialized once
 //! at startup instead of being scattered as inline `std::env::var(...)` calls
 //! across the workspace.
 //!
-//! The structs intentionally use conservative defaults so existing deployments
-//! keep working, while required values (e.g. Coder auth tokens in the
-//! controller) surface clear errors at startup.
+//! Secrets (tokens, passwords) are redacted from [`std::fmt::Debug`] output so
+//! configuration never leaks credentials into logs or error diagnostics.
 
 use envconfig::Envconfig;
+use std::fmt;
 use std::path::PathBuf;
 
 /// Coder-related configuration.
-#[derive(Debug, Clone, Envconfig)]
+///
+/// `Debug` is implemented manually to redact credentials.
+#[derive(Clone, Envconfig)]
 pub struct CoderConfig {
     #[envconfig(from = "CODER_URL", default = "http://localhost:7080")]
     pub url: String,
@@ -24,8 +26,14 @@ pub struct CoderConfig {
     #[envconfig(from = "CODER_ADMIN_EMAIL", default = "admin@openflows.dev")]
     pub admin_email: String,
 
-    #[envconfig(from = "CODER_ADMIN_PASSWORD", default = "Op3nFl0ws!")]
-    pub admin_password: String,
+    /// Admin password for the initial Coder user. No default is baked in:
+    /// the bootstrapper applies its own secure fallback only when the value is
+    /// absent or fails Coder's password policy.
+    #[envconfig(from = "CODER_ADMIN_PASSWORD")]
+    pub admin_password: Option<String>,
+
+    #[envconfig(from = "CODER_ADMIN_USERNAME", default = "admin")]
+    pub admin_username: String,
 
     #[envconfig(from = "CODER_IMAGE_TAG", default = "latest")]
     pub image_tag: String,
@@ -33,11 +41,11 @@ pub struct CoderConfig {
     #[envconfig(from = "CODER_GITHUB_TOKEN")]
     pub github_token: Option<String>,
 
-    #[envconfig(from = "CODER_EXTERNAL_AUTH_0_ID")]
-    pub external_auth_id: Option<String>,
+    #[envconfig(from = "CODER_EXTERNAL_AUTH_0_CLIENT_ID")]
+    pub external_auth_client_id: Option<String>,
 
-    #[envconfig(from = "CODER_EXTERNAL_AUTH_0_SECRET")]
-    pub external_auth_secret: Option<String>,
+    #[envconfig(from = "CODER_EXTERNAL_AUTH_0_CLIENT_SECRET")]
+    pub external_auth_client_secret: Option<String>,
 }
 
 impl CoderConfig {
@@ -100,21 +108,57 @@ impl CoderHooksConfig {
     }
 }
 
+impl fmt::Debug for CoderConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CoderConfig")
+            .field("url", &self.url)
+            .field("session_token", &redact(&self.session_token))
+            .field("admin_email", &self.admin_email)
+            .field("admin_password", &"<redacted>")
+            .field("admin_username", &self.admin_username)
+            .field("image_tag", &self.image_tag)
+            .field("github_token", &redact(&self.github_token))
+            .field("external_auth_client_id", &self.external_auth_client_id)
+            .field(
+                "external_auth_client_secret",
+                &redact(&self.external_auth_client_secret),
+            )
+            .finish()
+    }
+}
+
 /// Infrastructure configuration (Redis, A2A relay).
+///
+/// `REDIS_URL` has no compile-time default: callers that accept a fallback use
+/// [`InfraConfig::effective_redis_url`], while strict entry points (e.g. the
+/// harness) require the variable to be explicitly set.
 #[derive(Debug, Clone, Envconfig)]
 pub struct InfraConfig {
-    #[envconfig(from = "REDIS_URL", default = "redis://localhost:6379")]
-    pub redis_url: String,
+    #[envconfig(from = "REDIS_URL")]
+    pub redis_url: Option<String>,
 
     #[envconfig(from = "A2A_RELAY_ADDR", default = "127.0.0.1:3000")]
     pub a2a_relay_addr: String,
 }
 
+impl InfraConfig {
+    /// Redis URL, falling back to the local stack default.
+    pub fn effective_redis_url(&self) -> String {
+        self.redis_url
+            .clone()
+            .unwrap_or_else(|| "redis://localhost:6379".to_string())
+    }
+}
+
 /// OpenFlows tenant / namespace configuration.
-#[derive(Debug, Clone, Envconfig)]
+///
+/// `OPENFLOWS_TENANT` has no compile-time default so that the controller and
+/// harness can detect when it was not explicitly configured. Callers that
+/// accept the namespace fallback use [`TenantConfig::effective_tenant`].
+#[derive(Clone, Envconfig)]
 pub struct TenantConfig {
-    #[envconfig(from = "OPENFLOWS_TENANT", default = "default")]
-    pub tenant: String,
+    #[envconfig(from = "OPENFLOWS_TENANT")]
+    pub tenant: Option<String>,
 
     #[envconfig(from = "OPENFLOWS_TICKET")]
     pub ticket: Option<String>,
@@ -145,6 +189,11 @@ pub struct TenantConfig {
 }
 
 impl TenantConfig {
+    /// Tenant namespace, defaulting to `"default"` when not explicitly set.
+    pub fn effective_tenant(&self) -> &str {
+        self.tenant.as_deref().unwrap_or("default")
+    }
+
     /// Resolve the OpenFlows home directory, defaulting to `~/.openflows`.
     pub fn openflows_home(&self) -> PathBuf {
         if let Some(home) = &self.home {
@@ -157,8 +206,27 @@ impl TenantConfig {
     }
 }
 
+impl fmt::Debug for TenantConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TenantConfig")
+            .field("tenant", &self.tenant)
+            .field("ticket", &self.ticket)
+            .field("role", &self.role)
+            .field("home", &self.home)
+            .field("registry_path", &self.registry_path)
+            .field("registry_json", &self.registry_json)
+            .field("nexus_workspace_id", &self.nexus_workspace_id)
+            .field("nexus_workspace_name", &self.nexus_workspace_name)
+            .field("nexus_api_token", &redact(&self.nexus_api_token))
+            .field("tar", &self.tar)
+            .finish()
+    }
+}
+
 /// GitHub-related configuration.
-#[derive(Debug, Clone, Envconfig)]
+///
+/// `Debug` is implemented manually to redact tokens.
+#[derive(Clone, Envconfig)]
 pub struct GithubConfig {
     #[envconfig(from = "GITHUB_REPOSITORY")]
     pub repository: Option<String>,
@@ -168,6 +236,9 @@ pub struct GithubConfig {
 
     #[envconfig(from = "GITHUB_PERSONAL_ACCESS_TOKEN")]
     pub personal_access_token: Option<String>,
+
+    #[envconfig(from = "GITHUB_API_BASE", default = "https://api.github.com")]
+    pub api_base: String,
 }
 
 impl GithubConfig {
@@ -180,17 +251,44 @@ impl GithubConfig {
     }
 }
 
+impl fmt::Debug for GithubConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GithubConfig")
+            .field("repository", &self.repository)
+            .field("token", &redact(&self.token))
+            .field(
+                "personal_access_token",
+                &redact(&self.personal_access_token),
+            )
+            .finish()
+    }
+}
+
 /// Agent/workspace configuration.
 #[derive(Debug, Clone, Envconfig)]
 pub struct AgentConfig {
+    /// Preferred workspace root, sourced from `AGENTFLOW_WORKSPACE_ROOT`.
     #[envconfig(from = "AGENTFLOW_WORKSPACE_ROOT")]
     pub workspace_root: Option<String>,
 
+    /// Fallback workspace root sourced from the legacy `WORKSPACE_ROOT`
+    /// variable. [`AgentConfig::effective_workspace_root`] prefers
+    /// [`Self::workspace_root`] and only falls back to this one.
     #[envconfig(from = "WORKSPACE_ROOT")]
     pub legacy_workspace_root: Option<String>,
 
-    #[envconfig(from = "USE_AI_GATEWAY", default = "false")]
-    pub use_ai_gateway: bool,
+    /// Whether the AI gateway is enabled.
+    #[envconfig(from = "USE_AI_GATEWAY")]
+    pub use_ai_gateway: Option<String>,
+
+    /// Whether the bootstrapper should create the Nexus control-plane
+    /// workspace.
+    #[envconfig(from = "OPENFLOWS_CREATE_NEXUS_WORKSPACE")]
+    pub create_nexus_workspace: Option<String>,
+
+    /// The role this process runs as (e.g. `nexus`).
+    #[envconfig(from = "ROLE")]
+    pub role: Option<String>,
 }
 
 impl AgentConfig {
@@ -200,9 +298,20 @@ impl AgentConfig {
             .clone()
             .or_else(|| self.legacy_workspace_root.clone())
     }
+
+    /// Whether the AI gateway is enabled.
+    pub fn use_ai_gateway_enabled(&self) -> bool {
+        matches!(self.use_ai_gateway.as_deref(), Some("true" | "1"))
+    }
+
+    /// Whether the bootstrapper should create the Nexus control-plane
+    /// workspace.
+    pub fn create_nexus_workspace_enabled(&self) -> bool {
+        self.create_nexus_workspace.as_deref() != Some("false")
+    }
 }
 
-/// Aggregated environment configuration loaded once at startup.
+/// Aggregate environment configuration loaded once at startup.
 #[derive(Debug, Clone)]
 pub struct EnvConfig {
     pub coder: CoderConfig,
@@ -211,6 +320,11 @@ pub struct EnvConfig {
     pub tenant: TenantConfig,
     pub github: GithubConfig,
     pub agent: AgentConfig,
+}
+
+/// Redact an optional secret for [`fmt::Debug`] output.
+fn redact(v: &Option<String>) -> Option<&'static str> {
+    v.as_deref().map(|_| "<redacted>")
 }
 
 impl EnvConfig {
@@ -226,7 +340,7 @@ impl EnvConfig {
                  openflows-nexus workspace."
             );
         }
-        if self.tenant.tenant.is_empty() {
+        if self.tenant.tenant.is_none() {
             anyhow::bail!(
                 "OPENFLOWS_TENANT is not set. The Controller must run inside an \
                  openflows-nexus workspace."
@@ -288,10 +402,32 @@ mod tests {
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-    fn clear(keys: &[&str]) {
-        for k in keys {
-            unsafe {
+    /// Snapshot the given variables and restore them on drop so test-runner
+    /// environment changes never leak to other tests.
+    struct EnvGuard {
+        snapshots: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl EnvGuard {
+        fn capture(keys: &[&'static str]) -> Self {
+            let snapshots = keys.iter().map(|k| (*k, std::env::var(k).ok())).collect();
+            EnvGuard { snapshots }
+        }
+
+        fn unset_all(&self) {
+            for (k, _) in &self.snapshots {
                 std::env::remove_var(k);
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (k, v) in &self.snapshots {
+                match v {
+                    Some(val) => std::env::set_var(k, val),
+                    None => std::env::remove_var(k),
+                }
             }
         }
     }
@@ -299,7 +435,7 @@ mod tests {
     #[test]
     fn defaults_applied_when_unset() {
         let _g = ENV_LOCK.lock().unwrap();
-        clear(&[
+        let guard = EnvGuard::capture(&[
             "CODER_URL",
             "CODER_ADMIN_EMAIL",
             "CODER_ADMIN_PASSWORD",
@@ -310,61 +446,112 @@ mod tests {
             "OPENFLOWS_TAR",
             "USE_AI_GATEWAY",
         ]);
+        guard.unset_all();
         let cfg = EnvConfig::from_env().unwrap();
         assert_eq!(cfg.coder.url, "http://localhost:7080");
         assert_eq!(cfg.coder.admin_email, "admin@openflows.dev");
-        assert_eq!(cfg.coder.admin_password, "Op3nFl0ws!");
+        assert_eq!(cfg.coder.admin_username, "admin");
+        assert_eq!(cfg.coder.admin_password, None);
         assert_eq!(cfg.coder.image_tag, "latest");
-        assert_eq!(cfg.infra.redis_url, "redis://localhost:6379");
+        assert_eq!(cfg.infra.effective_redis_url(), "redis://localhost:6379");
         assert_eq!(cfg.infra.a2a_relay_addr, "127.0.0.1:3000");
-        assert_eq!(cfg.tenant.tenant, "default");
+        assert_eq!(cfg.tenant.effective_tenant(), "default");
         assert_eq!(cfg.tenant.tar, "tar");
-        assert!(!cfg.agent.use_ai_gateway);
+        assert_eq!(cfg.agent.use_ai_gateway, None);
+        assert!(!cfg.agent.use_ai_gateway_enabled());
     }
 
     #[test]
     fn overrides_from_env() {
         let _g = ENV_LOCK.lock().unwrap();
+        let _guard = EnvGuard::capture(&[
+            "CODER_URL",
+            "REDIS_URL",
+            "OPENFLOWS_TENANT",
+            "USE_AI_GATEWAY",
+        ]);
         for (k, v) in [
             ("CODER_URL", "http://coder.example.com:8080"),
             ("REDIS_URL", "redis://redis.example.com:6379"),
             ("OPENFLOWS_TENANT", "acme"),
             ("USE_AI_GATEWAY", "true"),
         ] {
-            unsafe {
-                std::env::set_var(k, v);
-            }
+            std::env::set_var(k, v);
         }
         let cfg = EnvConfig::from_env().unwrap();
         assert_eq!(cfg.coder.url, "http://coder.example.com:8080");
-        assert_eq!(cfg.infra.redis_url, "redis://redis.example.com:6379");
-        assert_eq!(cfg.tenant.tenant, "acme");
-        assert!(cfg.agent.use_ai_gateway);
-        clear(&[
-            "CODER_URL",
-            "REDIS_URL",
-            "OPENFLOWS_TENANT",
-            "USE_AI_GATEWAY",
-        ]);
+        assert_eq!(
+            cfg.infra.effective_redis_url(),
+            "redis://redis.example.com:6379"
+        );
+        assert_eq!(cfg.tenant.effective_tenant(), "acme");
+        assert!(cfg.agent.use_ai_gateway_enabled());
     }
 
     #[test]
-    fn parse_error_for_invalid_bool() {
+    fn ai_gateway_accepts_valid_values_without_aborting() {
         let _g = ENV_LOCK.lock().unwrap();
-        unsafe {
-            std::env::set_var("USE_AI_GATEWAY", "not-a-bool");
+        let _guard = EnvGuard::capture(&["USE_AI_GATEWAY"]);
+        for (v, expected) in [
+            ("true", true),
+            ("1", true),
+            ("false", false),
+            ("garbage", false),
+        ] {
+            std::env::set_var("USE_AI_GATEWAY", v);
+            let cfg = EnvConfig::from_env().unwrap();
+            assert_eq!(
+                cfg.agent.use_ai_gateway_enabled(),
+                expected,
+                "USE_AI_GATEWAY={v}"
+            );
         }
-        let err = EnvConfig::from_env().unwrap_err();
-        assert!(format!("{err}").contains("Agent config"));
-        unsafe {
-            std::env::remove_var("USE_AI_GATEWAY");
+    }
+
+    #[test]
+    fn create_nexus_workspace_is_lenient_and_defaults_enabled() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let _guard = EnvGuard::capture(&["OPENFLOWS_CREATE_NEXUS_WORKSPACE"]);
+        std::env::remove_var("OPENFLOWS_CREATE_NEXUS_WORKSPACE");
+        assert!(EnvConfig::from_env()
+            .unwrap()
+            .agent
+            .create_nexus_workspace_enabled());
+
+        for (v, expected) in [
+            ("false", false),
+            ("true", true),
+            ("1", true),
+            ("garbage", true),
+        ] {
+            std::env::set_var("OPENFLOWS_CREATE_NEXUS_WORKSPACE", v);
+            let cfg = EnvConfig::from_env().unwrap();
+            assert_eq!(
+                cfg.agent.create_nexus_workspace_enabled(),
+                expected,
+                "OPENFLOWS_CREATE_NEXUS_WORKSPACE={v}"
+            );
         }
+    }
+
+    #[test]
+    fn debug_redacts_secrets() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let _guard = EnvGuard::capture(&["CODER_SESSION_TOKEN", "CODER_ADMIN_PASSWORD"]);
+        std::env::set_var("CODER_SESSION_TOKEN", "s3cr3t-token");
+        std::env::set_var("CODER_ADMIN_PASSWORD", "hunter2");
+        let cfg = EnvConfig::from_env().unwrap();
+        let dbg = format!("{:?}", cfg.coder);
+        assert!(dbg.contains("<redacted>"));
+        assert!(!dbg.contains("s3cr3t-token"));
+        assert!(!dbg.contains("hunter2"));
     }
 
     #[test]
     fn openflows_home_defaults_to_tilde() {
         let _g = ENV_LOCK.lock().unwrap();
-        clear(&["OPENFLOWS_HOME", "HOME", "USERPROFILE"]);
+        let guard = EnvGuard::capture(&["OPENFLOWS_HOME", "HOME", "USERPROFILE"]);
+        guard.unset_all();
         let cfg = EnvConfig::from_env().unwrap();
         assert!(cfg
             .tenant

@@ -181,8 +181,8 @@ async fn run_controller() -> Result<()> {
     cfg.validate_controller()?;
     let coder_url = cfg.coder.url.clone();
     let _coder_token = cfg.coder.effective_token();
-    let redis_url = cfg.infra.redis_url.clone();
-    let tenant = cfg.tenant.tenant.clone();
+    let redis_url = cfg.infra.effective_redis_url();
+    let tenant = cfg.tenant.effective_tenant().to_string();
     let github_repo = cfg
         .github
         .repository
@@ -419,7 +419,7 @@ async fn run_bootstrap() -> Result<()> {
         eprintln!("\n  ⚠ {}", e);
     }
 
-    println!("\nBootstrap complete. Run `openflows tenant add <owner/repo>` to add a tenant.");
+    println!("\nBootstrap complete.");
     Ok(())
 }
 
@@ -428,8 +428,7 @@ async fn run_tenant_clean(action: &TenantCommands) -> Result<()> {
         unreachable!("run_tenant_clean called with non-clean action");
     };
 
-    let redis_url =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string());
+    let redis_url = config::EnvConfig::from_env()?.infra.effective_redis_url();
     // Scope the store to the tenant we are cleaning: SharedStore namespaces
     // every key as `ns:{tenant}:{key}`, so we pass it the tenant and use plain
     // keys below. (We must NOT also hand-format `ns:{name}:` prefixes here,
@@ -544,8 +543,7 @@ async fn run_tenant(action: TenantCommands) -> Result<()> {
         TenantCommands::List => {
             println!("Tenants (from Redis namespaces):");
             // Read all ns:* keys from Redis and list unique tenants
-            let redis_url =
-                std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string());
+            let redis_url = config::EnvConfig::from_env()?.infra.effective_redis_url();
             match pocketflow_core::SharedStore::new_redis(&redis_url).await {
                 Ok(store) => {
                     // raw_keys scans full Redis keys (`ns:*`) without re-applying
@@ -576,8 +574,7 @@ async fn run_tenant(action: TenantCommands) -> Result<()> {
             println!("Removing tenant '{}'...", name);
 
             if purge {
-                let redis_url = std::env::var("REDIS_URL")
-                    .unwrap_or_else(|_| "redis://localhost:6379".to_string());
+                let redis_url = config::EnvConfig::from_env()?.infra.effective_redis_url();
                 match pocketflow_core::SharedStore::new_redis(&redis_url).await {
                     Ok(store) => {
                         // raw_keys + raw_del operate on full keys, so we purge the
@@ -609,8 +606,7 @@ async fn run_tenant(action: TenantCommands) -> Result<()> {
 }
 
 async fn run_status(tenant: Option<String>, json: bool) -> Result<()> {
-    let redis_url =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string());
+    let redis_url = config::EnvConfig::from_env()?.infra.effective_redis_url();
 
     // raw_keys scans full Redis keys without namespacing, so we can enumerate
     // all `ns:{tenant}:` namespaces from a single store.
@@ -696,8 +692,7 @@ async fn run_status(tenant: Option<String>, json: bool) -> Result<()> {
 async fn run_gate(action: GateCommands) -> Result<()> {
     use openflows_harness::Harness;
 
-    let redis_url =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+    let redis_url = config::EnvConfig::from_env()?.infra.effective_redis_url();
 
     match action {
         GateCommands::Approve {

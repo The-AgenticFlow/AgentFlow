@@ -24,18 +24,22 @@ the new centralized `crates/config/src/env.rs` layer.
 | `CODER_URL` | coder-client, agent-sentinel, agent-nexus, agent-forge, binary | in-use · duplicated | Centralize default (`http://localhost:7080`) in `CoderConfig.url` |
 | `CODER_SESSION_TOKEN` | coder-client, sentinel, nexus, forge, vessel, binary | required | `CoderConfig.session_token`; required in controller |
 | `CODER_API_TOKEN` | sentinel, nexus, forge, vessel, binary/doctor | legacy-alias | **Excluded from centralized layer** (duplicate of `CODER_SESSION_TOKEN`); callers keep their inline fallback |
-| `CODER_ADMIN_USERNAME` | coder-client/bootstrap | stale | **Removed** — Coder signs in by email, not username |
+| `CODER_ADMIN_USERNAME` | coder-client/bootstrap | in-use | `CoderConfig.admin_username` (default `admin`) |
 | `CODER_ADMIN_EMAIL` | coder-client/bootstrap | in-use | `CoderConfig.admin_email` (default `admin@openflows.dev`) |
-| `CODER_ADMIN_PASSWORD` | coder-client/bootstrap | in-use | `CoderConfig.admin_password` (default `Op3nFl0ws!`) |
+| `CODER_ADMIN_PASSWORD` | coder-client/bootstrap | in-use | `CoderConfig.admin_password` (Option; no baked-in default — bootstrapper applies a secure fallback only when absent/weak) |
 | `CODER_GITHUB_TOKEN` | agent-vessel/types | in-use | `CoderConfig.github_token` |
 | `CODER_IMAGE_TAG` | binary/doctor | in-use | `CoderConfig.image_tag` (default `latest`) |
 | `CODER_TRANSPORT_VERBOSE` | provisioner/transport | confusing | **Excluded from centralized layer** |
 | `CODER_WORKSPACE_ID` | openflows-harness/store | confusing | **Excluded from centralized layer** (read inline with default only) |
-| `CODER_EXTERNAL_AUTH_0_ID` | binary/doctor | in-use | `CoderConfig.external_auth_id` |
-| `CODER_EXTERNAL_AUTH_0_SECRET` | binary/doctor | in-use | `CoderConfig.external_auth_secret` |
-| `REDIS_URL` | binary, debug, doctor | in-use · duplicated | `InfraConfig.redis_url` (default `redis://localhost:6379`) |
+| `CODER_EXTERNAL_AUTH_0_CLIENT_ID` | .env.example, docker-compose | in-use | `CoderConfig.external_auth_client_id` (canonical; `CODER_EXTERNAL_AUTH_0_ID` remains an inline read in binary/doctor) |
+| `CODER_EXTERNAL_AUTH_0_CLIENT_SECRET` | .env.example, docker-compose | in-use | `CoderConfig.external_auth_client_secret` (canonical; `CODER_EXTERNAL_AUTH_0_SECRET` remains an inline read in binary/doctor) |
+| `CODER_EXTERNAL_AUTH_0_ID` | .env.example, binary/doctor | in-use · inline | OIDC external-auth provider ID (inline read; not centralized) |
+| `CODER_EXTERNAL_AUTH_0_TYPE` | .env.example | in-use · Coder-side | External-auth provider type (e.g. `github`); Coder config, not centralized |
+| `CODER_EXTERNAL_AUTH_0_SCOPES` | .env.example | in-use · Coder-side | External-auth requested scopes (e.g. `repo`); Coder config, not centralized |
+| `CODER_EXTERNAL_AUTH_0_APP_INSTALL_URL` | .env.example | in-use · Coder-side | GitHub App install URL surfaced in the Coder UI; not centralized |
+| `REDIS_URL` | binary, debug, doctor, harness | required (harness) | `InfraConfig.redis_url` (Option; `effective_redis_url()` default `redis://localhost:6379`; harness requires it) |
 | `A2A_RELAY_ADDR` | agent-nexus/a2a, harness/a2a_client | in-use · duplicated | `InfraConfig.a2a_relay_addr` (default `127.0.0.1:3000`) |
-| `OPENFLOWS_TENANT` | coder-client, pocketflow-core, nexus, harness, binary | required · duplicated | `TenantConfig.tenant` (default `default`; required in controller) |
+| `OPENFLOWS_TENANT` | coder-client, pocketflow-core, nexus, harness, binary | required (controller/harness) | `TenantConfig.tenant` (Option; `effective_tenant()` default `default`; required in controller) |
 | `OPENFLOWS_TICKET` | openflows-harness | required | `TenantConfig.ticket` |
 | `OPENFLOWS_ROLE` | openflows-harness | required | `TenantConfig.role` |
 | `OPENFLOWS_HOME` | agent-vessel, binary/orchestration | in-use | `TenantConfig.home` (default `~/.openflows`) |
@@ -53,7 +57,10 @@ the new centralized `crates/config/src/env.rs` layer.
 | `GITHUB_TOKEN` | agent-nexus | in-use | `GithubConfig.token` |
 | `GITHUB_REPOSITORY` | coder-client, nexus, binary | required | `GithubConfig.repository` |
 | `GITHUB_PERSONAL_ACCESS_TOKEN` | coder-client, agent-lore, vessel, config | required | `GithubConfig.personal_access_token`; `effective_token()` |
-| `USE_AI_GATEWAY` | config/registry | in-use | `AgentConfig.use_ai_gateway` |
+| `GITHUB_API_BASE` | github/rest | in-use | `GithubConfig.api_base` (default `https://api.github.com`); `GithubRestClient::new` resolves it via `GithubConfig::init_from_env()` |
+| `USE_AI_GATEWAY` | config/registry | in-use | `AgentConfig.use_ai_gateway` (lenient string; `"true"`/`"1"` enabled via `use_ai_gateway_enabled()`, consistent with `registry::resolve_ai_gateway_enabled`) |
+| `ROLE` | coder-client/bootstrap | in-use | `AgentConfig.role` |
+| `OPENFLOWS_CREATE_NEXUS_WORKSPACE` | coder-client/bootstrap | in-use | `AgentConfig.create_nexus_workspace_enabled()` (lenient string; default enabled, only `"false"` disables) |
 | `DEFAULT_CLI` | config/registry | in-use | keep (registry-specific) |
 | `SLACK_WEBHOOK_URL` | notifier | in-use | **Excluded from centralized layer** (notifier config removed) |
 | `DISCORD_WEBHOOK_URL` | notifier | in-use | **Excluded from centralized layer** (notifier config removed) |
@@ -77,7 +84,6 @@ The following config was intentionally left out of `config::env` in issue #185:
   `WHATSAPP_*` vars: notifier config and its struct were removed entirely.
 - **`CODER_API_TOKEN`** — duplicate of `CODER_SESSION_TOKEN`; excluded (existing
   callers keep their inline fallback).
-- **`CODER_ADMIN_USERNAME`** — removed; Coder signs in by email, not username.
 - **`CODER_TRANSPORT_VERBOSE`** — excluded (inline read in provisioner only).
 - **`CODER_WORKSPACE_ID`** — excluded (inline read with default only).
 
@@ -87,6 +93,12 @@ The following config was intentionally left out of `config::env` in issue #185:
    time (kept only as a deprecated alias for now).
 2. Reconcile `OPENFLOWS_NEXUS_API_TOKEN` vs `NEXUS_CODER_API_TOKEN`.
 3. Remove docker-compose-only vars from Rust-facing documentation.
-4. Migrate remaining inline `std::env::var` reads in the agent crates onto the
+4. ~~Migrate remaining inline `std::env::var` reads in the agent crates onto the
    centralized accessors (`CoderConfig`, `InfraConfig`, `TenantConfig`,
-   `GithubConfig`, `AgentConfig`).
+   `GithubConfig`, `AgentConfig`).~~ **Done** — all remaining reads that belong to
+   a centralized variable now route through the `config::env` structs. The only
+   reads left are documented exclusions (e.g. `CODER_API_TOKEN`,
+   `CODER_TRANSPORT_VERBOSE`, `CODER_WORKSPACE_ID`, notifier vars, `ARTIFACTS_DIR`,
+   `TF_VAR_dev_binary_host_path`, `HOME`/`USERPROFILE`), dynamic keys, and
+   `OPENFLOWS_TAR` in `coder-client/build.rs` (build scripts can only use
+   `[build-dependencies]`, so the central `config` crate is not reachable there).
