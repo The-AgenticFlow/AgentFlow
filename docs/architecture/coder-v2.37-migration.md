@@ -40,10 +40,10 @@ The default-organization chat-model routes were **removed immediately** in v2.37
 | `get_chat_messages` | `lib.rs:1378` | `GET /api/experimental/chats/{id}/messages` | `GET /api/v2/chats/{id}/messages` |
 | `archive_chat` | `lib.rs:1411` | `PATCH /api/experimental/chats/{id}` | `PATCH /api/v2/chats/{id}` |
 | `interrupt_chat` | `lib.rs:1434` | `POST /api/experimental/chats/{id}/interrupt` | `POST /api/v2/chats/{id}/interrupt` |
-| `ChatStream::connect` | `chat_stream.rs:107/112` | `GET /api/experimental/chats/{id}/events` (WS) | `GET /api/v2/chats/{id}/events` (WS) |
+| `ChatStream::connect` | `chat_stream.rs:107/112` | `GET /api/experimental/chats/{id}/events` (WS) | `GET /api/v2/chats/{chat}/stream` (WS) |
 | `list_chat_models` | `lib.rs:1468` / `1494` | `GET /api/experimental/chats/models` | `GET /api/v2/organizations/{organization}/chats/models` |
 
-> **OpenFlows state today:** every one of the above calls in `crates/coder-client` still targets the experimental paths. The **models** endpoint (`lib.rs:1468`) is already broken against v2.37; the remaining chat endpoints break when v2.38 ships.
+> **OpenFlows state (post-migration):** `crates/coder-client` now targets the `/api/v2` paths above (T1, merged into develop). `ChatStream::connect` uses `GET /api/v2/chats/{chat}/stream` for real-time chat events; the org-scoped `list_chat_models` endpoint is required because the experimental `/api/experimental/chats/models` routes were **removed in v2.37.0**.
 
 ### 1.4 Other v2.37.0 breaking changes that may affect OpenFlows
 
@@ -64,20 +64,22 @@ All from the v2.37.0 BREAKING CHANGES section (https://github.com/coder/coder/re
 | Date | Event |
 |---|---|
 | **01 Sep 2026** | v2.37.0 released; `/api/experimental/chats/models` + `/model-configs` **removed**; Coder Agents GA |
-| **~early Oct 2026** (one month after v2.37) | Experimental chats compatibility routes **removed in v2.38**; `:latest` then has no experimental chat surface at all |
+| **~early Oct 2026** (one month after v2.37) | Experimental chats compatibility routes **removed in v2.38**; pinned `v2.37.0` then has no experimental chat surface at all |
 
-Because OpenFlows' `docker-compose.yml:29` runs `ghcr.io/coder/coder:${CODER_IMAGE_TAG:-latest}`, `:latest` already resolves to v2.37.0 today — meaning the **models endpoint is failing now**, and all chat endpoints fail when v2.38 ships.
+Because OpenFlows' `docker-compose.yml:29` runs `ghcr.io/coder/coder:${CODER_IMAGE_TAG:-v2.37.0}`, deployments are pinned to **v2.37.0** (T4). Under v2.37.0 the experimental `/api/experimental/chats/models` + `/model-configs` routes are already **removed**, so the org-scoped models endpoint is required *today*; the remaining chat endpoints must use `/api/v2` before v2.38 removes the experimental compatibility routes.
 
 ---
 
-## 3. Version-pinning gap
+## 3. Version pinning
 
-`openflows-system-architecture.md` §4 (line 450) states *"a verified Coder version is pinned (see §4)"*, but **no Coder version is actually pinned anywhere**:
+`openflows-system-architecture.md` §8.4 (line 450) states *"a verified Coder version is pinned (see §4)"*, and that pin is now enforced in the shipped config (T4), closing the previously documented gap:
 
-- `docker-compose.yml:29` → `image: ghcr.io/coder/coder:${CODER_IMAGE_TAG:-latest}` (defaults to `latest`, no pinned default).
-- `binary/src/doctor.rs:46` → `CODER_IMAGE_TAG` defaults to `"latest"`.
+- `docker-compose.yml:29` → `image: ghcr.io/coder/coder:${CODER_IMAGE_TAG:-v2.37.0}` (pinned default of `v2.37.0`).
+- `.env.example:49` → `CODER_IMAGE_TAG=v2.37.0`.
+- `crates/config/src/env.rs:38` → `CODER_IMAGE_TAG` defaults to `"v2.37.0"`.
+- `binary/src/doctor.rs:46` → reads `CODER_IMAGE_TAG` (default `v2.37.0`), compares fabricated `vN.N.N` tags semantically, and skips floating tags so `latest`/branch names are never coerced into an exact version match.
 
-This is a pre-existing drift between the documented guarantee and the shipped config, and it makes the GA migration urgent rather than optional.
+Pinning to v2.37.0 makes the GA migration deliberate: the org-scoped models route is required immediately (the experimental routes were removed in v2.37.0), and every chat endpoint must remain on `/api/v2` before v2.38 removes the experimental surface entirely.
 
 ---
 
@@ -86,10 +88,10 @@ This is a pre-existing drift between the documented guarantee and the shipped co
 Published against **The-AgenticFlow/openflows**. Blocking edges defined in each ticket.
 
 - **Epic:** Migrate OpenFlows to Coder v2.37.0 GA (Chats API experimental → `/api/v2`, org-scoped models, pin version)
-- **T1 [URGENT]** Migrate `coder-client` Chats API to `/api/v2` (chat lifecycle + events + org-scoped models endpoint). *No blockers.*
+- **T1 [URGENT]** Migrate `coder-client` Chats API to `/api/v2` (chat lifecycle + stream + org-scoped models endpoint). *No blockers.*
 - **T2** Update mock chat server + `coder-client` tests to v2 paths. *Blocked by T1.*
 - **T3** Update non-code references (`config/registry.rs`, `types.rs`, `doctor.rs`, docs). *Blocked by T1.*
-- **T4** Pin and validate the Coder version (replace `:latest`; document tested version in §4). *Blocked by T1.*
+- **T4** Pin and validate the Coder version (replace `:latest`; document tested version in §4). *Blocked by T1.* *Done — `v2.37.0` pinned in `docker-compose.yml`, `.env.example`, and `config/env.rs`; validated by `doctor`.*
 - **T5** Assess the remaining v2.37.0 breaking changes (MCP / model-config / external-auth / OAuth). *No blockers.*
 - **T6** Full integration verification against pinned Coder v2.37.0. *Blocked by T1–T5.*
 
