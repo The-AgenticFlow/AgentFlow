@@ -4,28 +4,100 @@ Get OpenFlows running on a fresh machine in 10 steps. For what OpenFlows is and 
 
 > **Working directory:** all commands run from the **project root** (the directory containing `docker-compose.yml`). No need to `cd` into subdirectories.
 
+## Contents
+
+- [Prerequisites](#prerequisites)
+- [Step 1 — Create a GitHub App](#step-1--create-a-github-app)
+- [Step 2 — Set up .env](#step-2--set-up-env)
+- [Step 3 — Start Docker](#step-3--start-docker)
+- [Step 4 — Sign in with GitHub](#step-4--sign-in-with-github)
+- [Step 5 — Get your Coder session token](#step-5--get-your-coder-session-token)
+- [Step 6 — Configure an LLM model](#step-6--configure-an-llm-model)
+- [Step 7 — Test the AI setup](#step-7--test-the-ai-setup)
+- [Step 8 — Bootstrap](#step-8--bootstrap)
+- [Step 9 — Add a tenant](#step-9--add-a-tenant)
+- [Step 10 — Run the controller](#step-10--run-the-controller)
+- [Verify it's working](#verify-its-working)
+- [Configuration](#configuration)
+- [Troubleshooting](#troubleshooting)
+- [More](#more)
+
+---
+
 ## Prerequisites
 
 - Docker 24+
 - Rust 1.70+ (builds the `openflows` binary during bootstrap)
-- Node 18+
 - The `coder` CLI on your `PATH` — bootstrap shells out to `coder templates push`:
   ```bash
   curl -fsSL https://coder.com/install.sh | sh
   ```
-- A GitHub personal access token with the `repo` scope.
+- A GitHub account.
 
 ---
 
-## Step 1 — Start Docker
+## Step 1 — Create a GitHub App
 
-First, make sure ports 6379 (Redis) and 7080 (Coder) are free so there's no conflict. If you ran OpenFlows before, cleanly stop this project's containers:
+OpenFlows agents authenticate to your GitHub repositories (including private repos) through a **GitHub App** using GitHub OIDC / Coder external auth. Creating the app is free.
+
+1. On GitHub, go to **Settings → Developer settings → GitHub Apps → New GitHub App**.
+2. Fill in:
+   - **GitHub App name** — this becomes your app's URL slug (e.g. `my-openflows-app`).
+   - **Homepage URL** — any URL you own.
+   - **Callback URL** — exactly:
+     ```
+     http://localhost:7080/external-auth/primary-github/callback
+     ```
+   - **Webhook** — can be left **Active: false** (blank).
+   - **Permissions → Repository permissions → Contents** — set to **Read and write** (needed to clone/push private repos).
+   - **Where can this GitHub App be installed?** — choose **Any account** (or limit to specific orgs).
+3. Click **Create GitHub App**.
+4. On the app's page, copy the **Client ID** (top of the page).
+5. In the **Client secrets** section, click **Generate a new client secret** and copy it now — it is shown only once.
+6. Your **Install URL** is:
+   ```
+   https://github.com/apps/<your-app-slug>/installations/new
+   ```
+   where `<your-app-slug>` is the slug from step 2. This URL is how you (and your agents) install the app on your org/repos.
+
+Keep the Client ID, Client Secret, and Install URL — you'll need all three in the next step.
+
+---
+
+## Step 2 — Set up `.env`
+
+Create your `.env` from the template:
 
 ```bash
-docker compose down
+cp .env.example .env
 ```
 
-If another, unrelated container is already holding one of those ports (e.g. a `streamr-redis` on 6379), find it and remove only that one by name:
+Fill in the required values:
+
+| Variable | What to put |
+|----------|-------------|
+| `GITHUB_TOKEN` | GitHub PAT with `repo` scope. |
+| `GITHUB_REPOSITORY` | The repo the controller watches, as `owner/repo`. |
+| `CODER_SESSION_TOKEN` | Leave empty for now — you'll fill it in [Step 5](#step-5--get-your-coder-session-token). |
+
+Then uncomment the GitHub external auth block in `.env` and set the three values from [Step 1](#step-1--create-a-github-app):
+
+```bash
+CODER_EXTERNAL_AUTH_0_ID=primary-github
+CODER_EXTERNAL_AUTH_0_TYPE=github
+CODER_EXTERNAL_AUTH_0_CLIENT_ID=<your-github-app-client-id>
+CODER_EXTERNAL_AUTH_0_CLIENT_SECRET=<your-github-app-client-secret>
+CODER_EXTERNAL_AUTH_0_SCOPES=repo
+CODER_EXTERNAL_AUTH_0_APP_INSTALL_URL=https://github.com/apps/<your-app-slug>/installations/new
+```
+
+> **Why now?** The Coder container reads these vars from `.env` when it starts (see `docker-compose.yml`). Setting them here **before** starting Docker means Coder comes up with GitHub App auth already wired — no UI editing, and no risk of Coder failing to start with empty credentials.
+
+---
+
+## Step 3 — Start Docker
+
+First, make sure ports 6379 (Redis) and 7080 (Coder) are free so there's no conflict. If another, unrelated container is already holding one of those ports, find and remove only that one by name:
 
 ```bash
 docker ps --filter "publish=6379" --filter "publish=7080"
@@ -44,33 +116,17 @@ Wait until all three report healthy:
 docker compose ps
 ```
 
----
-
-## Step 2 — Set up `.env`
-
-Create your `.env` from the template:
-
-```bash
-cp .env.example .env
-```
-
-Only these three are required:
-
-| Variable | What to put |
-|----------|-------------|
-| `GITHUB_TOKEN` | GitHub PAT with `repo` scope. |
-| `GITHUB_REPOSITORY` | The repo the controller watches, as `owner/repo`. |
-| `CODER_SESSION_TOKEN` | Leave empty for now — you'll fill it in [Step 4](#step-4--get-your-coder-session-token). |
+> **Next:** visit your app's **Install URL** and install the GitHub App on your org/repos so the app can access them.
 
 ---
 
-## Step 3 — Sign in with GitHub
+## Step 4 — Sign in with GitHub
 
 Open **http://localhost:7080** and sign in with your GitHub account (Coder's device flow).
 
 ---
 
-## Step 4 — Get your Coder session token
+## Step 5 — Get your Coder session token
 
 1. Open **http://localhost:7080/settings/tokens**
 2. Click **Create Token**, copy it.
@@ -81,7 +137,7 @@ Open **http://localhost:7080** and sign in with your GitHub account (Coder's dev
 
 ---
 
-## Step 5 — Configure an LLM model
+## Step 6 — Configure an LLM model
 
 OpenFlows agents need at least one model.
 
@@ -91,13 +147,13 @@ OpenFlows agents need at least one model.
 
 ---
 
-## Step 6 — Test the AI setup
+## Step 7 — Test the AI setup
 
 Open **http://localhost:7080/agents** and confirm agents/models show up. Say "hello" in the chat to verify the model responds.
 
 ---
 
-## Step 7 — Bootstrap
+## Step 8 — Bootstrap
 
 Run the one-time setup to initialize Coder with the OpenFlows templates and config:
 
@@ -111,7 +167,7 @@ Confirm the templates were pushed at **http://localhost:7080/templates**.
 
 ---
 
-## Step 8 — Add a tenant
+## Step 9 — Add a tenant
 
 Bind a GitHub repo to the controller:
 
@@ -123,7 +179,7 @@ You'll see the tenant under **http://localhost:7080/workspaces**.
 
 ---
 
-## Step 9 — Run the controller
+## Step 10 — Run the controller
 
 Open a **separate terminal** (the controller runs in the foreground and streams logs) and run:
 
@@ -216,6 +272,16 @@ sudo chown -R "$USER":"$USER" .dev-binaries/
 
 Another process/container holds port 6379. Stop or remove the conflicting container, or change the Redis port mapping in `docker-compose.yml`.
 
+### Coder fails to start / external auth not showing in the UI
+
+Confirm the external auth vars are set in `.env` **before** running `docker compose up -d`, then restart Coder:
+
+```bash
+docker compose restart coder
+```
+
+Then verify the provider at **http://localhost:7080/external-auth** (or the admin external-auth page).
+
 ### Controller not picking up issues
 
 1. Confirm a tenant is bound (`./scripts/prod.sh tenant <owner/repo> --name <my-team>`).
@@ -227,5 +293,5 @@ Another process/container holds port 6379. Stop or remove the conflicting contai
 ## More
 
 - **Full docs:** [README.md](README.md)
-- **Testing & debugging:** [TESTING_QUICK_START.md](TESTING_QUICK_START.md)
-- **Token acquisition:** [TOKEN_GUIDE.md](TOKEN_GUIDE.md)
+- **Testing & debugging:** [testing_quick_start.md](testing_quick_start.md)
+- **Token acquisition:** [token_guide.md](token_guide.md)
