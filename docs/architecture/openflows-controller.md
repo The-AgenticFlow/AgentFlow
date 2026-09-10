@@ -419,7 +419,7 @@ Source: `crates/agent-nexus/src/a2a/mod.rs` + `http_server.rs` + `routing.rs` + 
 - **Workspaces:** `create_workspace`/`create_workspace_for_user`/`create_role_workspace`, `start/stop/delete_workspace`, `get_workspace`, `wait_for_workspace_ready`/`wait_for_workspace_ssh`, `workspace_exec_*` (legacy/deprecated for CLI spawning), `workspace_read_file`/`write_file`.
 - **Chats API (the LLM loop):** `create_chat`, `get_chat`/`get_chat_opt`, `list_chats`, `send_chat_message`, `get_chat_messages`, `archive_chat`, `interrupt_chat`, `list_chat_models`, `create_ticket_chat`, `archive_ticket_chats`.
 - **Admin/bootstrap:** `create_first_user`, `login_with_password`, `list_users`, `get_me`, `create_api_token`, `push_template`, `list_templates`, `list_organizations`.
-- **Model resolution:** `model_config_id` expects a UUID; `create_ticket_chat` passes `None` and lets the server use the default model (matched against `GET /api/experimental/chats/models`).
+- **Model resolution:** `model_config_id` expects a UUID; `create_ticket_chat` passes `None` and lets the server use the default model (matched against the org-scoped `GET /api/v2/organizations/{organization}/chats/models`).
 
 The Chat lifecycle within the Controller: **provision workspace → create empty chat → SessionStart hook boots the agent with initial context** (the agent is never given a giant hardcoded prompt).
 

@@ -1,14 +1,14 @@
 // crates/coder-client/src/mock_chat_server.rs
 //! Mock WebSocket chat server for testing the ChatStream implementation.
 //!
-//! Provides a lightweight server that mimics Coder's `/api/experimental/chats/{id}/events`
+//! Provides a lightweight server that mimics Coder's `/api/v2/chats/{id}/stream`
 //! WebSocket endpoint, emitting predetermined events for testing.
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{info, warn};
@@ -62,6 +62,14 @@ impl MockChatServer {
         format!("ws://{}", self.addr)
     }
 
+    /// Get the full v2 stream endpoint for a chat session.
+    ///
+    /// Mimics Coder's `/api/v2/chats/{id}/stream` WebSocket route so tests
+    /// exercise the same path the client connects to.
+    pub fn v2_stream_url(&self, chat_id: &str) -> String {
+        format!("{}/api/v2/chats/{}/stream", self.ws_url(), chat_id)
+    }
+
     /// Get just the host:port part (e.g., "127.0.0.1:8080").
     pub fn addr_str(&self) -> String {
         self.addr.to_string()
@@ -95,7 +103,13 @@ impl MockChatServer {
                     info!(peer = %peer_addr, "Mock chat server: new WS connection");
                     let events_clone = Arc::clone(&events);
                     tokio::spawn(async move {
-                        if let Ok(ws_stream) = tokio_tungstenite::accept_async(stream).await {
+                        // Echo the requested subprotocol so the client's
+                        // `Sec-WebSocket-Protocol: chat-stream-v1` handshake
+                        // succeeds (the real Coder server negotiates it too),
+                        // and reject connections to any non-stream route so the
+                        // mock independently verifies the client's target URL.
+                        if let Ok(ws_stream) = accept_v2_stream_handshake(stream).await
+                        {
                             let (mut _ws_sink, _ws_stream) = ws_stream.split();
 
                             // Emit events to the client sequentially
@@ -135,6 +149,51 @@ impl MockChatServer {
     }
 }
 
+/// Accept a WebSocket connection for the mock chat server, but only when the
+/// client is connecting to the Coder v2 chat stream route
+/// `/api/v2/chats/{chat_id}/stream`. Any other URI is rejected so the mock
+/// independently verifies the client's target endpoint rather than accepting
+/// every path.
+///
+/// The handshake callback's `Err` variant is inherently large (tungstenite's
+/// `Error` type), so `result_large_err` is suppressed here.
+#[allow(clippy::result_large_err)]
+async fn accept_v2_stream_handshake(
+    stream: TcpStream,
+) -> Result<
+    tokio_tungstenite::WebSocketStream<TcpStream>,
+    tokio_tungstenite::tungstenite::error::Error,
+> {
+    tokio_tungstenite::accept_hdr_async(
+        stream,
+        |req: &tokio_tungstenite::tungstenite::handshake::server::Request,
+         mut resp: tokio_tungstenite::tungstenite::handshake::server::Response| {
+            let path = req.uri().path();
+            let is_v2_stream = path.starts_with("/api/v2/chats/") && path.ends_with("/stream");
+            if !is_v2_stream {
+                warn!(
+                    uri = %req.uri(),
+                    "Mock chat server: rejecting handshake for non-v2-stream path"
+                );
+                let err_resp: tokio_tungstenite::tungstenite::handshake::server::ErrorResponse =
+                    tokio_tungstenite::tungstenite::http::Response::builder()
+                        .status(tokio_tungstenite::tungstenite::http::StatusCode::NOT_FOUND)
+                        .body(None)
+                        .expect("valid static error response");
+                return Err(err_resp);
+            }
+
+            // Echo the negotiated subprotocol so the client's handshake succeeds.
+            resp.headers_mut().insert(
+                "Sec-WebSocket-Protocol",
+                "chat-stream-v1".parse().expect("valid static header value"),
+            );
+            Ok(resp)
+        },
+    )
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,6 +205,11 @@ mod tests {
             .expect("Failed to create mock server");
         let url = server.ws_url();
         assert!(url.starts_with("ws://127.0.0.1:"));
+        // The v2 stream endpoint helper must point at the Coder v2 route.
+        assert_eq!(
+            server.v2_stream_url("chat-123"),
+            format!("{}/api/v2/chats/chat-123/stream", url)
+        );
         // Server is dropped here, which will terminate the task
     }
 

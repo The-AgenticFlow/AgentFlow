@@ -174,7 +174,8 @@ pub struct RegistryEntry {
     /// v2: Whether this role is enabled.
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// v2: Coder model hint (matched against GET /api/experimental/chats/models).
+    /// v2: Coder model hint (matched against the org-scoped
+    /// GET /api/v2/organizations/{organization}/chats/models).
     #[serde(default)]
     pub model: Option<String>,
     /// v2: Create the chat in plan mode (review-only roles).

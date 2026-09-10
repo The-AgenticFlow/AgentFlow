@@ -183,7 +183,7 @@ Coder is the **execution substrate**. It contributes:
 The Controller talks to Coder exclusively through the **Chats API** and workspace CRUD:
 
 - Create/stop/delete workspaces from templates.
-- Create chats with a bound workspace and (optionally) a model hint matched against `GET /api/experimental/chats/models`.
+- Create chats with a bound workspace and (optionally) a model hint matched against the org-scoped `GET /api/v2/organizations/{organization}/chats/models`.
 - Chats are created with an **empty content vector** — the agent's initial context comes from the `SessionStart` hook (Section 10), not a hardcoded prompt.
 
 ### 4.3 Network policy

@@ -103,14 +103,7 @@ impl ChatStream {
     pub async fn connect(coder_url: &str, token: &str, chat_id: &str) -> Result<Self> {
         use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
-        let ws_url = if coder_url.starts_with("ws") {
-            format!("{}/api/experimental/chats/{}/events", coder_url, chat_id)
-        } else {
-            coder_url
-                .replace("http://", "ws://")
-                .replace("https://", "wss://")
-                + &format!("/api/experimental/chats/{}/events", chat_id)
-        };
+        let ws_url = Self::stream_url(coder_url, chat_id);
 
         debug!(url = %ws_url, chat_id, "Connecting to chat WebSocket stream");
 
@@ -140,6 +133,25 @@ impl ChatStream {
             chat_id: chat_id.to_string(),
             finished: false,
         })
+    }
+
+    /// Build the v2 WebSocket stream URL for a chat session.
+    ///
+    /// Points at Coder's `/api/v2/chats/{chat_id}/stream` endpoint. An
+    /// `http(s)://` base URL is translated to `ws(s)://`; a `ws(s)://` base
+    /// URL is used as-is.
+    fn stream_url(coder_url: &str, chat_id: &str) -> String {
+        let path = format!("/api/v2/chats/{}/stream", chat_id);
+        if coder_url.starts_with("ws") {
+            format!("{}{}", coder_url.trim_end_matches('/'), path)
+        } else {
+            coder_url
+                .replace("http://", "ws://")
+                .replace("https://", "wss://")
+                .trim_end_matches('/')
+                .to_string()
+                + &path
+        }
     }
 
     /// The chat ID this stream is reading from.
@@ -269,5 +281,59 @@ mod tests {
             ChatEvent::StatusUpdate { status } => assert_eq!(status, "running"),
             other => panic!("Expected StatusUpdate, got: {:?}", other),
         }
+    }
+
+    #[test]
+    fn stream_url_uses_v2_path_for_ws_prefixed_base() {
+        let url = ChatStream::stream_url("ws://127.0.0.1:4321", "chat-123");
+        assert_eq!(url, "ws://127.0.0.1:4321/api/v2/chats/chat-123/stream");
+    }
+
+    #[test]
+    fn stream_url_translates_http_to_ws() {
+        let url = ChatStream::stream_url("http://localhost:3000", "chat-123");
+        assert_eq!(url, "ws://localhost:3000/api/v2/chats/chat-123/stream");
+    }
+
+    #[test]
+    fn stream_url_translates_https_to_wss() {
+        let url = ChatStream::stream_url("https://coder.example.com", "chat-9");
+        assert_eq!(url, "wss://coder.example.com/api/v2/chats/chat-9/stream");
+    }
+
+    #[test]
+    fn stream_url_handles_trailing_slash() {
+        let url = ChatStream::stream_url("http://localhost:3000/", "chat-1");
+        assert_eq!(url, "ws://localhost:3000/api/v2/chats/chat-1/stream");
+    }
+
+    #[tokio::test]
+    async fn connect_reaches_v2_stream_endpoint_on_mock_server() {
+        use futures::StreamExt;
+
+        let server = crate::mock_chat_server::test_helpers::create_typical_mock().await;
+        let url = server.ws_url();
+        let mut stream = ChatStream::connect(&url, "test-token", "chat-123")
+            .await
+            .expect("connect should succeed against mock server");
+
+        assert_eq!(stream.chat_id(), "chat-123");
+
+        let events: Vec<_> = stream.by_ref().collect().await;
+        assert!(!events.is_empty(), "expected events from mock stream");
+        for event in &events {
+            let event = event.as_ref().expect("stream item should be Ok");
+            assert!(
+                matches!(
+                    event,
+                    ChatEvent::StatusUpdate { .. }
+                        | ChatEvent::Text { .. }
+                        | ChatEvent::Finished { .. }
+                ),
+                "unexpected event {:?}",
+                event
+            );
+        }
+        server.shutdown().await;
     }
 }

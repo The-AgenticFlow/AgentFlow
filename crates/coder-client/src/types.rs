@@ -362,12 +362,13 @@ impl ChatInputPart {
 #[derive(Debug, Clone, Serialize)]
 pub struct CreateChatRequest {
     /// Organization ID that the chat belongs to.
-    /// Required by the Coder experimental chats API.
+    /// Required by the Coder v2 GA Chats API — the caller must be a member of
+    /// this organization.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub organization_id: Option<String>,
     /// Workspace ID to run the chat in.
     pub workspace_id: String,
-    /// The model config ID (from `/api/experimental/chats/models`).
+    /// The model config ID (from `/api/v2/organizations/{org}/chats/models`).
     /// If None, Coder will use the workspace's default model.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_config_id: Option<String>,
@@ -424,7 +425,7 @@ pub struct ChatMessage {
     pub created_at_raw: String,
 }
 
-/// A model returned from `GET /api/experimental/chats/models`.
+/// A model returned from `GET /api/v2/organizations/{org}/chats/models`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelInfo {
     pub id: String,

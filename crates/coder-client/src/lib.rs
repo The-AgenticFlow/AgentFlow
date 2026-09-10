@@ -63,7 +63,7 @@ pub struct CoderClient {
     cached_username: Arc<RwLock<Option<String>>>,
 }
 
-/// Parse the JSON body returned by `GET /api/experimental/chats/models`.
+/// Parse the JSON body returned by `GET /api/v2/organizations/{org}/chats/models`.
 ///
 /// Coder nests models under a top-level `providers` array:
 /// `{"providers":[{"provider":"openai-compat","models":[
@@ -1227,13 +1227,13 @@ impl CoderClient {
     }
 
     /// Create a new Chat session bound to a workspace.
-    /// POST /api/experimental/chats
+    /// POST /api/v2/chats
     pub async fn create_chat(
         &self,
         req: &crate::types::CreateChatRequest,
     ) -> Result<crate::types::Chat> {
         let resp = self
-            .authenticated_request(reqwest::Method::POST, "/api/experimental/chats")
+            .authenticated_request(reqwest::Method::POST, "/api/v2/chats")
             .json(req)
             .send()
             .await
@@ -1251,7 +1251,7 @@ impl CoderClient {
     }
 
     /// Get a Chat by ID.
-    /// GET /api/experimental/chats/{chat}
+    /// GET /api/v2/chats/{chat}
     ///
     /// Returns `Err` for transient failures (timeouts, rate limits, 5xx,
     /// network errors). Callers that need to distinguish "the chat no longer
@@ -1262,10 +1262,7 @@ impl CoderClient {
     /// [`get_chat_opt`]: CoderClient::get_chat_opt
     pub async fn get_chat(&self, chat_id: &str) -> Result<crate::types::Chat> {
         let resp = self
-            .authenticated_request(
-                reqwest::Method::GET,
-                &format!("/api/experimental/chats/{}", chat_id),
-            )
+            .authenticated_request(reqwest::Method::GET, &format!("/api/v2/chats/{}", chat_id))
             .send()
             .await
             .context("Failed to get chat")?;
@@ -1289,10 +1286,7 @@ impl CoderClient {
     /// [`get_chat`]: CoderClient::get_chat
     pub async fn get_chat_opt(&self, chat_id: &str) -> Result<Option<crate::types::Chat>> {
         let resp = self
-            .authenticated_request(
-                reqwest::Method::GET,
-                &format!("/api/experimental/chats/{}", chat_id),
-            )
+            .authenticated_request(reqwest::Method::GET, &format!("/api/v2/chats/{}", chat_id))
             .send()
             .await
             .context("Failed to get chat")?;
@@ -1309,10 +1303,10 @@ impl CoderClient {
     }
 
     /// List all Chats for the current user.
-    /// GET /api/experimental/chats
+    /// GET /api/v2/chats
     pub async fn list_chats(&self) -> Result<Vec<crate::types::Chat>> {
         let resp = self
-            .authenticated_request(reqwest::Method::GET, "/api/experimental/chats")
+            .authenticated_request(reqwest::Method::GET, "/api/v2/chats")
             .send()
             .await
             .context("Failed to list chats")?;
@@ -1337,7 +1331,7 @@ impl CoderClient {
     }
 
     /// Send a message to an existing Chat.
-    /// POST /api/experimental/chats/{chat_id}/messages
+    /// POST /api/v2/chats/{chat_id}/messages
     pub async fn send_chat_message(
         &self,
         chat_id: &str,
@@ -1346,7 +1340,7 @@ impl CoderClient {
         let resp = self
             .authenticated_request(
                 reqwest::Method::POST,
-                &format!("/api/experimental/chats/{}/messages", chat_id),
+                &format!("/api/v2/chats/{}/messages", chat_id),
             )
             .json(&serde_json::json!({
                 "content": content,
@@ -1367,7 +1361,7 @@ impl CoderClient {
     }
 
     /// Get recent messages from a Chat.
-    /// GET /api/experimental/chats/{chat_id}/messages?after_id={id}&limit={n}
+    /// GET /api/v2/chats/{chat_id}/messages?after_id={id}&limit={n}
     pub async fn get_chat_messages(
         &self,
         chat_id: &str,
@@ -1376,10 +1370,7 @@ impl CoderClient {
         let resp = self
             .authenticated_request(
                 reqwest::Method::GET,
-                &format!(
-                    "/api/experimental/chats/{}/messages?limit={}",
-                    chat_id, limit
-                ),
+                &format!("/api/v2/chats/{}/messages?limit={}", chat_id, limit),
             )
             .send()
             .await
@@ -1405,12 +1396,12 @@ impl CoderClient {
     }
 
     /// Archive a Chat (soft delete).
-    /// PATCH /api/experimental/chats/{chat_id}
+    /// PATCH /api/v2/chats/{chat_id}
     pub async fn archive_chat(&self, chat_id: &str) -> Result<()> {
         let resp = self
             .authenticated_request(
                 reqwest::Method::PATCH,
-                &format!("/api/experimental/chats/{}", chat_id),
+                &format!("/api/v2/chats/{}", chat_id),
             )
             .json(&serde_json::json!({ "archived": true }))
             .send()
@@ -1428,12 +1419,12 @@ impl CoderClient {
     }
 
     /// Interrupt a running Chat.
-    /// POST /api/experimental/chats/{chat_id}/interrupt
+    /// POST /api/v2/chats/{chat_id}/interrupt
     pub async fn interrupt_chat(&self, chat_id: &str) -> Result<()> {
         let resp = self
             .authenticated_request(
                 reqwest::Method::POST,
-                &format!("/api/experimental/chats/{}/interrupt", chat_id),
+                &format!("/api/v2/chats/{}/interrupt", chat_id),
             )
             .send()
             .await
@@ -1450,7 +1441,10 @@ impl CoderClient {
     }
 
     /// List available models for chats.
-    /// GET /api/experimental/chats/models
+    /// GET /api/v2/organizations/{organization}/chats/models
+    ///
+    /// Models are organization-scoped in Coder v2.37+; the default organization
+    /// is resolved via [`CoderClient::get_default_organization_id`].
     ///
     /// Uses an internal cache (5-minute TTL) to reduce API calls.
     /// Call `invalidate_cache()` to force a refresh.
@@ -1465,9 +1459,15 @@ impl CoderClient {
             }
         }
 
+        // Models are organization-scoped in Coder v2.37+.
+        let organization_id = self.get_default_organization_id().await?;
+
         // Fetch from API
         let resp = self
-            .authenticated_request(reqwest::Method::GET, "/api/experimental/chats/models")
+            .authenticated_request(
+                reqwest::Method::GET,
+                &format!("/api/v2/organizations/{}/chats/models", organization_id),
+            )
             .send()
             .await
             .context("Failed to list chat models")?;
@@ -1489,11 +1489,17 @@ impl CoderClient {
     }
 
     /// List available models for chats without caching.
-    /// GET /api/experimental/chats/models
+    /// GET /api/v2/organizations/{organization}/chats/models
     #[cfg(not(feature = "chats-api"))]
     pub async fn list_chat_models(&self) -> Result<Vec<crate::types::ModelInfo>> {
+        // Models are organization-scoped in Coder v2.37+.
+        let organization_id = self.get_default_organization_id().await?;
+
         let resp = self
-            .authenticated_request(reqwest::Method::GET, "/api/experimental/chats/models")
+            .authenticated_request(
+                reqwest::Method::GET,
+                &format!("/api/v2/organizations/{}/chats/models", organization_id),
+            )
             .send()
             .await
             .context("Failed to list chat models")?;
@@ -1541,6 +1547,15 @@ impl CoderClient {
         let repo_url = format!("https://github.com/{}.git", repository);
         let template_name = format!("openflows-{}", role);
 
+        // Resolve the default organization ID BEFORE provisioning the workspace.
+        // In the Coder v2 GA Chats API the organization_id is REQUIRED — the caller
+        // must be a member of the org the chat belongs to. Failing fast here avoids
+        // consuming workspace resources (create/start/await) when the org cannot be
+        // resolved, since the chat could never be created without it.
+        let organization_id = self.get_default_organization_id().await.context(
+            "Failed to resolve default organization ID (required by the Coder v2 Chats API)",
+        )?;
+
         // Create (or find existing) workspace
         info!(
             workspace_name,
@@ -1562,18 +1577,6 @@ impl CoderClient {
         self.wait_for_workspace_ssh(&workspace.id, std::time::Duration::from_secs(120))
             .await?;
 
-        // Resolve the default organization ID required by the Coder chats API.
-        let organization_id = match self.get_default_organization_id().await {
-            Ok(id) => Some(id),
-            Err(e) => {
-                warn!(
-                    error = %e,
-                    "Failed to resolve default organization ID; chat creation may fail"
-                );
-                None
-            }
-        };
-
         // Let Coder use the workspace's default model.
         // model_config_id expects a UUID, not a model name, so we pass None.
         let model_config_id = None;
@@ -1584,7 +1587,7 @@ impl CoderClient {
             .to_string();
         let labels = build_chat_labels(ticket_id, role, "openflows", &tenant);
         let chat_req = CreateChatRequest {
-            organization_id,
+            organization_id: Some(organization_id),
             workspace_id: workspace.id.clone(),
             model_config_id,
             content: vec![ChatInputPart::text(prompt)],
@@ -1721,6 +1724,160 @@ fn canonicalize_host_path(p: &str) -> String {
 }
 
 #[cfg(test)]
+mod http_mock {
+    use std::net::SocketAddr;
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio::sync::Mutex;
+
+    /// A minimal in-process HTTP/1.1 server for exercising the Coder client
+    /// against mocked `/api/v2` routes without a real Coder deployment.
+    pub struct HttpMock {
+        addr: SocketAddr,
+        requests: Arc<Mutex<Vec<RecordedRequest>>>,
+        handle: Option<tokio::task::JoinHandle<()>>,
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct RecordedRequest {
+        pub method: String,
+        pub path: String,
+        pub body: String,
+    }
+
+    impl HttpMock {
+        pub async fn new() -> anyhow::Result<Self> {
+            let listener = TcpListener::bind("127.0.0.1:0").await?;
+            let addr = listener.local_addr()?;
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let handle = tokio::spawn(Self::run(listener, Arc::clone(&requests)));
+            Ok(Self {
+                addr,
+                requests,
+                handle: Some(handle),
+            })
+        }
+
+        pub fn url(&self) -> String {
+            format!("http://{}", self.addr)
+        }
+
+        pub async fn requests(&self) -> Vec<RecordedRequest> {
+            self.requests.lock().await.clone()
+        }
+
+        pub async fn shutdown(self) {
+            if let Some(handle) = self.handle {
+                handle.abort();
+                let _ = handle.await;
+            }
+        }
+
+        async fn run(listener: TcpListener, requests: Arc<Mutex<Vec<RecordedRequest>>>) {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let requests = Arc::clone(&requests);
+                tokio::spawn(async move {
+                    let _ = Self::handle_conn(stream, requests).await;
+                });
+            }
+        }
+
+        async fn handle_conn(
+            mut stream: TcpStream,
+            requests: Arc<Mutex<Vec<RecordedRequest>>>,
+        ) -> std::io::Result<()> {
+            let mut buf: Vec<u8> = Vec::with_capacity(4096);
+            loop {
+                // Read until a full header terminator is in the buffer.
+                let header_end = loop {
+                    if let Some(pos) = find_subsequence(&buf, b"\r\n\r\n") {
+                        break pos + 4;
+                    }
+                    let mut chunk = [0u8; 512];
+                    let n = stream.read(&mut chunk).await?;
+                    if n == 0 {
+                        return Ok(());
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                };
+
+                let head = String::from_utf8_lossy(&buf[..header_end]);
+                let mut lines = head.lines();
+                let mut req_parts = lines.next().unwrap_or("").split_whitespace();
+                let method = req_parts.next().unwrap_or("").to_string();
+                let path = req_parts.next().unwrap_or("").to_string();
+                let mut content_length = 0usize;
+                for line in lines {
+                    let lower = line.to_ascii_lowercase();
+                    if let Some(v) = lower.strip_prefix("content-length:") {
+                        content_length = v.trim().parse().unwrap_or(0);
+                    }
+                }
+
+                while buf.len() < header_end + content_length {
+                    let mut chunk = [0u8; 512];
+                    let n = stream.read(&mut chunk).await?;
+                    if n == 0 {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::UnexpectedEof,
+                            "unexpected EOF while reading body",
+                        ));
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                }
+
+                let body = String::from_utf8_lossy(&buf[header_end..header_end + content_length])
+                    .to_string();
+                requests.lock().await.push(RecordedRequest {
+                    method: method.clone(),
+                    path: path.clone(),
+                    body,
+                });
+
+                let (status, content) = route(&method, &path);
+                let response = format!(
+                    "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n{}",
+                    status,
+                    content.len(),
+                    content
+                );
+                stream.write_all(response.as_bytes()).await?;
+                stream.flush().await?;
+
+                buf.drain(..header_end + content_length);
+            }
+        }
+    }
+
+    fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+        haystack.windows(needle.len()).position(|w| w == needle)
+    }
+
+    fn route(method: &str, path: &str) -> (&'static str, String) {
+        match (method, path) {
+            ("GET", "/api/v2/organizations") => (
+                "200 OK",
+                r#"[{"id":"org-abc","name":"default","is_default":true}]"#.to_string(),
+            ),
+            ("GET", "/api/v2/organizations/org-abc/chats/models") => (
+                "200 OK",
+                r#"{"providers":[{"provider":"openai-compat","available":true,"models":[{"id":"openai-compat:reviewer-pro","provider":"openai-compat","model":"reviewer-pro","display_name":"Reviewer Pro"}]}]}"#
+                    .to_string(),
+            ),
+            ("POST", "/api/v2/chats") => (
+                "201 Created",
+                r#"{"id":"chat-1","organization_id":"org-abc"}"#.to_string(),
+            ),
+            _ => ("404 Not Found", r#"{"message":"not found"}"#.to_string()),
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::parse_chat_models_body;
 
@@ -1800,5 +1957,74 @@ mod tests {
         let models = parse_chat_models_body(&body);
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].id, "x");
+    }
+
+    #[tokio::test]
+    async fn list_chat_models_resolves_default_org_and_hits_org_scoped_path() {
+        let server = super::http_mock::HttpMock::new().await.unwrap();
+        let client = crate::CoderClient::new(&server.url(), "test-token");
+
+        let models = client
+            .list_chat_models()
+            .await
+            .expect("list_chat_models should succeed against mock");
+
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "reviewer-pro");
+        assert_eq!(models[0].provider, "openai-compat");
+
+        let requests = server.requests().await;
+        let orgs_hit = requests
+            .iter()
+            .any(|r| r.method == "GET" && r.path == "/api/v2/organizations");
+        assert!(
+            orgs_hit,
+            "expected org resolution to hit /api/v2/organizations"
+        );
+        let models_hit = requests
+            .iter()
+            .any(|r| r.method == "GET" && r.path == "/api/v2/organizations/org-abc/chats/models");
+        assert!(
+            models_hit,
+            "expected models fetch to hit /api/v2/organizations/'{{org}}'/chats/models"
+        );
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn create_chat_sends_required_non_empty_organization_id() {
+        use crate::types::CreateChatRequest;
+
+        let server = super::http_mock::HttpMock::new().await.unwrap();
+        let client = crate::CoderClient::new(&server.url(), "test-token");
+
+        let req = CreateChatRequest {
+            organization_id: Some("org-abc".to_string()),
+            workspace_id: "ws-1".to_string(),
+            model_config_id: None,
+            content: vec![crate::types::ChatInputPart::text("hello")],
+            labels: None,
+        };
+        let chat = client
+            .create_chat(&req)
+            .await
+            .expect("create_chat should succeed against mock");
+        assert_eq!(chat.id, "chat-1");
+
+        let requests = server.requests().await;
+        let create = requests
+            .iter()
+            .find(|r| r.method == "POST" && r.path == "/api/v2/chats")
+            .expect("expected a POST /api/v2/chats request");
+
+        let body: serde_json::Value =
+            serde_json::from_str(&create.body).expect("recorded body should be valid JSON");
+        let org_id = body
+            .get("organization_id")
+            .and_then(|v| v.as_str())
+            .expect("organization_id must be present and a string");
+        assert!(!org_id.is_empty(), "organization_id must not be empty");
+        assert_eq!(org_id, "org-abc");
+        server.shutdown().await;
     }
 }
