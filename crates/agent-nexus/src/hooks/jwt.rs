@@ -3,29 +3,29 @@
 //!
 //! Coder signs each hook request with the deployment-wide
 //! `CODER_CHAT_HOOK_SECRET` and sends the token in `Authorization: Bearer`.
-//! Per the gist/coder contract the consumer must check:
+//! Per the coder contract the consumer must check:
 //!   - signature (HS256 against the shared secret),
-//!   - `iss`,
+//!   - `iss` (non-empty; Coder signs with its deployment ID),
 //!   - `aud` == the hook URL,
 //!   - `exp`,
 //!   - `jti` == `dispatch_id`,
 //!   - `body_sha256` == sha256 of the request body.
 //!
 //! This is the OpenFlows-side analogue of `codersdk/x/agenthooks`
-//! `agenthooks.NewHTTPHandler`.
+//! `agenthooks.NewHTTPHandler`. Like the reference handler, the `iss` check is
+//! "non-empty" rather than pinned to a literal, because Coder signs with its
+//! per-deployment ID which we do not configure here.
 
 use anyhow::{anyhow, Context, Result};
 use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-/// The expected issuer Coder uses for hook JWTs.
-const EXPECTED_ISSUER: &str = "coder";
-
 /// Claims verified on the hook JWT.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct HookClaims {
-    /// Emitted by Coder (expected "coder").
+    /// Emitted by Coder — its per-deployment ID (must be non-empty).
+    #[serde(default)]
     pub iss: String,
     /// Audience — must equal the configured hook URL.
     pub aud: String,
@@ -73,7 +73,9 @@ pub fn verify_hook_jwt(
         .context("missing Authorization: Bearer header")?;
 
     let mut validation = Validation::new(Algorithm::HS256);
-    validation.set_issuer(&[EXPECTED_ISSUER]);
+    // Coder signs `iss` with its per-deployment ID, so we do not pin a literal
+    // issuer (matching coder's reference consumer, which accepts any non-empty
+    // iss unless an expected issuer is configured).
     validation.set_audience(&[expected_aud]);
     validation.validate_exp = true;
 
@@ -82,6 +84,11 @@ pub fn verify_hook_jwt(
         .map_err(|e| anyhow!("hook JWT verification failed: {e}"))?;
 
     let claims = token.claims;
+
+    // `iss` must be present and non-empty.
+    if claims.iss.trim().is_empty() {
+        return Err(anyhow!("hook JWT has an empty `iss` claim"));
+    }
 
     // `jti` must equal the dispatch_id carried in the payload.
     if !claims.jti.is_empty() && claims.jti != dispatch_id {

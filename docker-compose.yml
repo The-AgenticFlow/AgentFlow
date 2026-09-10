@@ -58,6 +58,8 @@ services:
       CODER_EXPERIMENTS: ${CODER_EXPERIMENTS:-}
       CODER_CHAT_HOOK_URL: ${CODER_CHAT_HOOK_URL:-}
       CODER_CHAT_HOOK_SECRET: ${CODER_CHAT_HOOK_SECRET:-}
+      # Dev-only: allow the plain-http hook URL above. Remove in production.
+      CODER_CHAT_HOOK_ALLOW_INSECURE: ${CODER_CHAT_HOOK_ALLOW_INSECURE:-false}
     extra_hosts:
       # Make the host reachable from inside the container so Coder can POST to
       # the OpenFlows lifecycle hook consumer running on the host.

@@ -70,6 +70,27 @@ fn verifies_a_valid_hs256_jwt() {
 }
 
 #[test]
+fn accepts_deployment_id_issuer() {
+    // Coder signs `iss` with its per-deployment ID (not the literal "coder").
+    // The consumer must accept any non-empty issuer, matching Coder's reference
+    // consumer. This was the bug that rejected all real dispatches.
+    let body = make_payload("d-iss");
+    let token = sign(
+        SECRET,
+        &json!({
+            "iss": "00000000-0000-0000-0000-000000000000",
+            "aud": URL,
+            "exp": 4_000_000_000usize,
+            "jti": "d-iss",
+            "type": EVENT,
+            "sub": format!("coder:chat:{}", CHAT),
+            "body_sha256": sha256_hex(&body),
+        }),
+    );
+    verify(SECRET, &token, "d-iss", &body).expect("deployment-ID issuer should verify");
+}
+
+#[test]
 fn rejects_missing_bearer_header() {
     let body = make_payload("d1");
     assert!(verify_hook_jwt(None, SECRET, URL, "d1", CHAT, EVENT, &body).is_err());
